@@ -300,6 +300,10 @@ class Store:
             return list(self.db.execute("SELECT * FROM conversations WHERE title LIKE ? ORDER BY updated_at DESC", (pattern,)))
         return list(self.db.execute("SELECT * FROM conversations ORDER BY updated_at DESC"))
 
+    def conversation_ids(self) -> set[str]:
+        """Return conversation IDs without treating sqlite3.Row as a dict."""
+        return {str(row["id"]) for row in self.list_conversations()}
+
     def get_conversation(self, identifier: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM conversations WHERE id=?", (identifier,)).fetchone()
 
@@ -1424,7 +1428,7 @@ class MoyaIshkaApp:
             docs = []
         added_docs = self.research_library.add_documents([d for d in docs[:1000] if isinstance(d, dict)])
         self._refresh_chat_list()
-        if self.current_chat_id not in {str(c.get("id")) for c in self.store.list_conversations()}:
+        if self.current_chat_id not in self.store.conversation_ids():
             self.current_chat_id = self.store.ensure_conversation()
         self._render_current_chat()
         self._refresh_memory_list()
