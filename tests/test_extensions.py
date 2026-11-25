@@ -152,6 +152,12 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(items[0]["problem"], "None")
         self.assertEqual(items[0]["benefit"], "True")
 
+    def test_parse_suggestions_repairs_regex_backslashes(self):
+        response = r'{"suggestions":[{"title":"Regex","current":"pattern = \d+","proposed":"pattern = \\d+"}]}'
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["current"], r"pattern = \d+")
+
     def test_apply_single_file_diff(self):
         original = "first\nsecond\nthird\n"
         patch = """--- a/main.py
