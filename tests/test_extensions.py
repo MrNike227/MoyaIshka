@@ -194,9 +194,11 @@ class UpdaterTests(unittest.TestCase):
             log = root / "AppData" / "MoyaIshka" / "update.log"
             denied = PermissionError(5, "Access is denied")
             process = Mock()
-            with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \\
-                 patch.object(updater_helper.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \\
-                 patch.object(updater_helper.subprocess, "Popen", side_effect=[denied, process]) as popen:
+            with (
+                patch.object(updater_helper.shutil, "which", return_value="powershell.exe"),
+                patch.object(updater_helper.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+                patch.object(updater_helper.subprocess, "Popen", side_effect=[denied, process]) as popen,
+            ):
                 updater_helper.launch_windows_replacement(
                     staged, target, 1234, log, expected_version="4.1.6",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
