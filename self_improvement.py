@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Reviewable unified-diff workflow for controlled self-modification."""
 from __future__ import annotations
+import ast
 import re
 import os
 import shutil
@@ -10,6 +11,163 @@ from datetime import datetime
 from pathlib import Path
 
 EDITABLE_SUFFIXES = {".py"}
+
+
+MAX_MODEL_CONTEXT_CHARS = 90_000
+MAX_SINGLE_DEFINITION_CHARS = 36_000
+
+_PROMPT_STOP_WORDS = {
+    "добавь", "добавить", "сделай", "сделать", "измени", "изменить", "улучши",
+    "улучшить", "исправь", "исправить", "создай", "создать", "удали", "удалить",
+    "нужно", "надо", "пожалуйста", "можно", "чтобы", "который", "которая",
+    "которые", "этот", "эта", "это", "для", "при", "после", "перед", "между",
+    "через", "приложение", "программа", "и", "в", "на", "по", "с", "из", "к",
+    "the", "and", "for", "with", "from", "that", "this", "please", "make",
+    "add", "change", "update", "fix", "create", "into", "when", "then",
+}
+
+
+def build_model_source_context(
+    source: str,
+    prompt: str,
+    max_chars: int = MAX_MODEL_CONTEXT_CHARS,
+) -> str:
+    """Bound model input for large files while preserving original line numbers."""
+    if not isinstance(source, str) or not source:
+        raise ValueError("Файл пустой или не содержит текст.")
+    if max_chars < 2_000:
+        raise ValueError("Лимит контекста слишком мал.")
+    if len(source) <= max_chars:
+        return source
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError(
+            "Большой файл содержит синтаксическую ошибку. Исправь её перед саморазвитием."
+        ) from exc
+
+    lines = source.splitlines(keepends=True)
+    prompt_words = {
+        word for word in re.findall(r"[^\W_]{3,}", prompt.casefold())
+        if word not in _PROMPT_STOP_WORDS
+    }
+    terms = set(prompt_words)
+    terms.update(word[:5] for word in prompt_words if len(word) >= 5)
+    symbol_rows: list[tuple[int, str]] = []
+    candidates: list[tuple[int, int, int, str, str]] = []
+    ui_request = any(
+        term in prompt.casefold()
+        for term in (
+            "кноп", "интерф", "страниц", "окно", "меню", "виджет",
+            "button", "widget", "page", "screen",
+        )
+    )
+
+    class_parents: dict[int, str] = {}
+    nested_function_ids: set[int] = set()
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            if isinstance(parent, ast.ClassDef) and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                class_parents[id(child)] = parent.name
+            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                nested_function_ids.add(id(child))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        start = min([node.lineno] + [
+            decorator.lineno for decorator in getattr(node, "decorator_list", [])
+        ])
+        end = getattr(node, "end_lineno", None) or node.lineno
+        header = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else node.name
+        owner = class_parents.get(id(node), "")
+        symbol_rows.append((
+            start,
+            f"{owner + '.' if owner else ''}{node.name} — {header[:180]}",
+        ))
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if id(node) in nested_function_ids or end - start > 1200:
+            continue
+        body = "".join(lines[start - 1:end])
+        lowered = body.casefold()
+        score = sum(1 for term in terms if term in lowered)
+        if node.name.casefold() in terms:
+            score += 5
+        if score:
+            candidates.append((score, start, end, node.name, body))
+
+    if not candidates and ui_request:
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            start = min([node.lineno] + [
+                decorator.lineno for decorator in getattr(node, "decorator_list", [])
+            ])
+            end = getattr(node, "end_lineno", None) or node.lineno
+            if id(node) in nested_function_ids:
+                continue
+            if node.name.startswith("_build_") or node.name in {"show_page", "refresh_ui"}:
+                body = "".join(lines[start - 1:end])
+                if len(body) <= MAX_SINGLE_DEFINITION_CHARS:
+                    candidates.append((1, start, end, node.name, body))
+
+    if not candidates:
+        raise ValueError(
+            "Файл большой, и я не нашёл в нём нужный раздел. "
+            "Опиши, на какой странице или в какой функции нужно сделать изменение."
+        )
+
+    symbol_index = "\n".join(
+        f"{line}: {name}" for line, name in sorted(symbol_rows, key=lambda row: row[0])
+    )
+    if len(symbol_index) > 18_000:
+        symbol_index = symbol_index[:17_700] + "\n… список сокращён"
+    parts = [
+        "Файл больше лимита полного контекста. Ниже — индекс и точные фрагменты исходника.",
+        "Номера строк в заголовках диапазонов — реальные номера строк файла; не добавляй их в сам diff.",
+        "Меняй только показанные фрагменты. В заголовках @@ используй исходные номера строк.",
+        "\nИндекс функций и методов:\n" + symbol_index,
+    ]
+
+    imports: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            start = node.lineno
+            end = getattr(node, "end_lineno", None) or start
+            imports.extend(lines[start - 1:end])
+    if imports:
+        parts.append(
+            "\nИмпорты исходного файла:\n@@FENCE@@python\n"
+            + "".join(imports)
+            + "\n@@FENCE@@"
+        )
+
+    used = sum(len(part) for part in parts)
+    selected = 0
+    for _score, start, end, name, body in sorted(
+        candidates, key=lambda item: (-item[0], len(item[4]), item[1])
+    ):
+        block = (
+            f"\nФрагмент {name}, исходные строки {start}-{end}:\n"
+            f"@@FENCE@@python\n{body}"
+            + ("" if body.endswith("\n") else "\n")
+            + "@@FENCE@@"
+        )
+        if used + len(block) > max_chars:
+            continue
+        parts.append(block)
+        used += len(block)
+        selected += 1
+    if not selected:
+        raise ValueError(
+            "Нужный раздел файла слишком большой для безопасной отправки. "
+            "Выбери более узкий модуль или уточни, какую функцию изменить."
+        )
+    fence = chr(96) * 3
+    return "\n".join(parts).replace("@@FENCE@@", fence)
+
 
 
 def project_dir() -> Path:
