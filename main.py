@@ -4810,7 +4810,7 @@ def _packaged_import_self_test() -> int:
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
         ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.7-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.6-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.7-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
