@@ -281,8 +281,28 @@ try {
     }
 
     if (Test-Path -LiteralPath $ReceiptPath) { Remove-Item -LiteralPath $ReceiptPath -Force }
-    $argList = '--confirm-update "{0}" "{1}" "{2}" "{3}"' -f $ReceiptPath, $ExpectedVersion, $ExpectedSha256, $TargetPath
-    $newProcess = Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -ArgumentList $argList -PassThru
+    # Pass the confirmation data through the child process environment.
+    # This avoids Windows command-line quoting issues for user folders containing
+    # spaces, Cyrillic characters or other non-ASCII symbols.
+    $env:MOYA_UPDATE_RECEIPT = $ReceiptPath
+    $env:MOYA_UPDATE_VERSION = $ExpectedVersion
+    $env:MOYA_UPDATE_SHA256 = $ExpectedSha256
+    $env:MOYA_UPDATE_TARGET = $TargetPath
+
+    $launchErrors = @()
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $newProcess = Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -PassThru -ErrorAction Stop
+            if ($newProcess) { break }
+        } catch {
+            $launchErrors += $_.Exception.Message
+            Write-UpdateLog "Попытка запуска новой версии $attempt/3 завершилась ошибкой: $($_.Exception.Message)"
+            Start-Sleep -Seconds 2
+        }
+    }
+    if (-not $newProcess) {
+        throw ("Не удалось автоматически запустить установленный EXE после трёх попыток: " + ($launchErrors -join "; "))
+    }
     Write-UpdateLog "Новая программа запущена (PID $($newProcess.Id)); ожидаю подтверждение версии и пути."
 
     # Do not claim success until the new application verifies itself after its GUI starts.
