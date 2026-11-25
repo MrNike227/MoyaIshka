@@ -8,6 +8,7 @@ LoadLibrary even on Windows machines without the VC++ Redistributable installed.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -76,7 +77,10 @@ def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | 
 
 def main() -> int:
     executable_dir = Path(sys.executable).resolve().parent
-    roots = (Path(sys.base_prefix), Path(sys.prefix), executable_dir)
+    system_root = Path(os.environ.get("SystemRoot", r"C:\\Windows"))
+    # Prefer the current system VC runtime over the older app-local copy that
+    # may ship with a Python installation; this avoids runtime version conflicts.
+    roots = (system_root / "System32", Path(sys.base_prefix), Path(sys.prefix), executable_dir)
     destination = Path(__file__).resolve().parent / "build" / "python_runtime"
     try:
         copied = collect_runtime_dlls(roots, destination)
