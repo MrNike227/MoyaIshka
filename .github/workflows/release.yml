@@ -54,9 +54,10 @@ jobs:
           if (-not (Test-Path 'dist/MoyaIshka.exe')) {
             throw 'PyInstaller did not create dist/MoyaIshka.exe'
           }
-          & 'dist/MoyaIshka.exe' --self-test-imports
-          if ($LASTEXITCODE -ne 0) {
-            throw "Frozen EXE cryptography smoke test failed with exit code $LASTEXITCODE"
+          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
+          $process = Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Frozen EXE cryptography smoke test failed with exit code $($process.ExitCode)"
           }
 
       - name: Create SHA-256 checksum
