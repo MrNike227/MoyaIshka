@@ -156,6 +156,13 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("repaired_response = self._current_model_call(repair_messages)", source)
         self.assertIn("Не добавляй пояснений, Markdown или полный файл", source)
 
+    def test_portable_exe_is_checked_without_python_on_path(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("Verify standalone EXE without installed Python on PATH", workflow)
+        self.assertIn("$startInfo.Environment['PATH'] = ", workflow)
+        self.assertIn("'python311.dll'", workflow)
+
+
 
 if __name__ == "__main__":
     unittest.main()
