@@ -76,6 +76,10 @@ def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | 
 
 
 def main() -> int:
+    # Windows runners may use cp1252 for Python stdout even after chcp 65001.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     executable_dir = Path(sys.executable).resolve().parent
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     # Prefer the current system VC runtime over the older app-local copy that
