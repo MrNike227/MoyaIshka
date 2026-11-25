@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Copy the Microsoft Visual C++ runtime beside the frozen Python DLL.
+"""Bundle the Microsoft VC++ and Universal CRT DLLs beside frozen Python.
 
 PyInstaller --onefile extracts these files into the same temporary directory
-as python311.dll. This makes its non-system runtime dependencies available to
-LoadLibrary even on Windows machines without the VC++ Redistributable installed.
+as python311.dll, so its native runtime dependencies are available to LoadLibrary.
 """
 from __future__ import annotations
 
@@ -25,8 +24,10 @@ RUNTIME_DLL_NAMES = (
     "msvcp140_codecvt_ids.dll",
     "concrt140.dll",
     "vcomp140.dll",
+    "ucrtbase.dll",
 )
-REQUIRED_RUNTIME_DLLS = {"vcruntime140.dll"}
+RUNTIME_DLL_GLOBS = ("api-ms-win-crt-*.dll",)
+REQUIRED_RUNTIME_DLLS = {"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll"}
 
 
 def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | Path) -> list[Path]:
@@ -51,11 +52,19 @@ def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | 
                 found[name] = dlls_candidate
                 break
 
+    # The Universal CRT is split into API-set DLLs on Windows. Include every
+    # available api-ms-win-crt-* forwarder as well as ucrtbase.dll so older
+    # Windows 10 installations do not have to supply those files themselves.
+    for root in roots:
+        for pattern in RUNTIME_DLL_GLOBS:
+            for candidate in sorted(root.glob(pattern)):
+                found.setdefault(candidate.name.lower(), candidate)
+
     missing = sorted(REQUIRED_RUNTIME_DLLS.difference(found))
     if missing:
         searched = "\n".join(f"  {root}" for root in roots) or "  (папки не найдены)"
         raise RuntimeError(
-            "Не найден обязательный Microsoft Visual C++ Runtime: "
+            "Не найден обязательный Microsoft Visual C++ / Universal CRT runtime: "
             + ", ".join(missing)
             + ". Установи/используй официальный 64-bit Python 3.11 с runtime DLL. "
             + "Проверены папки:\n"
@@ -84,7 +93,9 @@ def main() -> int:
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     # Prefer the current system VC runtime over the older app-local copy that
     # may ship with a Python installation; this avoids runtime version conflicts.
-    roots = (system_root / "System32", Path(sys.base_prefix), Path(sys.prefix), executable_dir)
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)"))
+    ucrt_redist = program_files_x86 / "Windows Kits" / "10" / "Redist" / "ucrt" / "DLLs" / "x64"
+    roots = (ucrt_redist, system_root / "System32", Path(sys.base_prefix), Path(sys.prefix), executable_dir)
     destination = Path(__file__).resolve().parent / "build_runtime" / "python_runtime"
     try:
         copied = collect_runtime_dlls(roots, destination)
