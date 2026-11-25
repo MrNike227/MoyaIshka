@@ -194,7 +194,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_portable_exe_is_checked_without_python_on_path(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Verify standalone EXE without installed Python on PATH", workflow)
+        self.assertIn("Verify EXE starts without Python on PATH", workflow)
         self.assertIn("$startInfo.Environment['PATH'] = ", workflow)
         self.assertIn("'python311.dll'", workflow)
 
