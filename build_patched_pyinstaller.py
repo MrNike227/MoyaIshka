@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -157,7 +158,16 @@ def build_patched_bootloader() -> None:
         print("Кастомный PyInstaller bootloader уже установлен и проверен.")
         return
 
-    temp_root = Path(tempfile.mkdtemp(prefix="moya_pyinstaller_bootloader_"))
+    # Keep the Waf/MSVC source tree under a short path. Long paths in the
+    # runner's default %LOCALAPPDATA%\\Temp can be transformed into relative
+    # 8.3 paths by MSVC, and one source file may then fail with C1083.
+    temp_parent = Path(
+        os.environ.get("RUNNER_TEMP")
+        or os.environ.get("TEMP")
+        or tempfile.gettempdir()
+    )
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(tempfile.mkdtemp(prefix="mpyi_", dir=str(temp_parent)))
     source_root = temp_root / "pyinstaller"
     try:
         print(f"Загрузка исходников PyInstaller {PYINSTALLER_TAG}...")

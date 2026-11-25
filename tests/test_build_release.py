@@ -36,6 +36,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('stream.reconfigure(encoding="utf-8", errors="backslashreplace")', source)
         self.assertIn('build_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"', source)
         self.assertIn('build_env["PYTHONUTF8"] = "1"', source)
+        self.assertIn('os.environ.get("RUNNER_TEMP")', source)
+        self.assertIn('tempfile.mkdtemp(prefix="mpyi_", dir=str(temp_parent))', source)
 
     def test_build_uses_custom_bootloader_builder(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
