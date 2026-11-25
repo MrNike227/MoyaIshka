@@ -7,9 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseBuildTests(unittest.TestCase):
-    def test_application_version_is_418(self):
+    def test_pyinstaller_bootloader_version_is_pinned(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("pyinstaller==6.22.3", requirements)
+
+    def test_application_version_is_4182(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.8"', source)
+        self.assertIn('APP_VERSION = "4.1.8.2"', source)
 
     def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -28,17 +32,48 @@ class ReleaseBuildTests(unittest.TestCase):
             source = root / "python"
             destination = root / "bundle"
             source.mkdir()
-            (source / "vcruntime140.dll").write_bytes(b"runtime")
-            (source / "vcruntime140_1.dll").write_bytes(b"runtime-helper")
-            (source / "msvcp140.dll").write_bytes(b"cxx")
-            (source / "ucrtbase.dll").write_bytes(b"ucrt")
-            (source / "api-ms-win-crt-runtime-l1-1-0.dll").write_bytes(b"api")
+            def write_pe(path, machine=0x8664):
+                data = bytearray(0x86)
+                data[:2] = b"MZ"
+                data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+                data[0x80:0x84] = b"PE\0\0"
+                data[0x84:0x86] = machine.to_bytes(2, "little")
+                path.write_bytes(data)
+
+            write_pe(source / "vcruntime140.dll")
+            write_pe(source / "vcruntime140_1.dll")
+            write_pe(source / "msvcp140.dll")
+            write_pe(source / "ucrtbase.dll")
+            write_pe(source / "api-ms-win-crt-runtime-l1-1-0.dll")
             copied = collect_runtime_dlls([source], destination)
             self.assertEqual(
                 {item.name for item in copied},
                 {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
             )
-            self.assertEqual((destination / "vcruntime140.dll").read_bytes(), b"runtime")
+            self.assertEqual((destination / "vcruntime140.dll").read_bytes()[:2], b"MZ")
+
+    def test_runtime_dll_collector_rejects_32_bit_runtime_dll(self):
+        from prepare_python_runtime import collect_runtime_dlls
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "python"
+            source.mkdir()
+
+            def write_pe(path, machine=0x8664):
+                data = bytearray(0x86)
+                data[:2] = b"MZ"
+                data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+                data[0x80:0x84] = b"PE\0\0"
+                data[0x84:0x86] = machine.to_bytes(2, "little")
+                path.write_bytes(data)
+
+            write_pe(source / "vcruntime140.dll", 0x14C)
+            write_pe(source / "vcruntime140_1.dll")
+            write_pe(source / "msvcp140.dll")
+            write_pe(source / "ucrtbase.dll")
+            write_pe(source / "api-ms-win-crt-runtime-l1-1-0.dll")
+            with self.assertRaisesRegex(RuntimeError, "требуется x64"):
+                collect_runtime_dlls([source], root / "bundle")
 
     def test_runtime_dll_collector_fails_when_core_runtime_is_missing(self):
         from prepare_python_runtime import collect_runtime_dlls
@@ -95,7 +130,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
-        self.assertIn("Verify packaged VC runtime DLLs are embedded", workflow)
+        self.assertIn("Verify x64 VC runtime and Universal CRT DLLs are embedded", workflow)
         self.assertIn("pyi-archive_viewer -l", workflow)
         self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
         self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
@@ -123,9 +158,9 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_windows_version_resource_is_418(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,8,0)", source)
-        self.assertIn("prodvers=(4,1,8,0)", source)
-        self.assertIn("ProductVersion', '4.1.8'", source)
+        self.assertIn("filevers=(4,1,8,2)", source)
+        self.assertIn("prodvers=(4,1,8,2)", source)
+        self.assertIn("ProductVersion', '4.1.8.2'", source)
 
 
 
@@ -137,7 +172,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.8", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8.2", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
@@ -146,7 +181,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_publishes_only_after_frozen_exe_smoke_test(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertLess(workflow.index("Verify packaged VC runtime DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
+        self.assertLess(workflow.index("Verify x64 VC runtime and Universal CRT DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
         self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.exe.sha256", workflow)
 
