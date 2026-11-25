@@ -56,7 +56,7 @@ if errorlevel 1 goto runtime_failed
   --add-data "requirements.txt;source_project" ^
   --add-data "requirements_voice.txt;source_project" ^
   --add-data "prepare_python_runtime.py;source_project" ^
-  --add-binary "build\python_runtime;." ^
+  --add-binary "build_runtime\python_runtime;." ^
   --add-data "START.bat;source_project" ^
   --add-data "BUILD_EXE.bat;source_project" ^
   --add-data "INSTALL_OPTIONAL_DOCS.bat;source_project" ^
