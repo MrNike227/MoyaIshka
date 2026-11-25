@@ -303,8 +303,19 @@ def _repair_json_controls(candidate: str) -> str:
                 output.append(char)
                 escaped = False
             elif char == "\\":
-                output.append(char)
-                escaped = True
+                next_char = candidate[index + 1] if index + 1 < len(candidate) else ""
+                valid_escape = next_char in '"\\/bfnrt'
+                valid_unicode = (
+                    next_char == "u"
+                    and index + 5 < len(candidate)
+                    and all(item in "0123456789abcdefABCDEF" for item in candidate[index + 2:index + 6])
+                )
+                if valid_escape or valid_unicode:
+                    output.append(char)
+                    escaped = True
+                else:
+                    # Model code examples often contain regex/path escapes such as \d or \w.
+                    output.append("\\\\")
             elif char == '"':
                 output.append(char)
                 in_string = False
