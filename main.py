@@ -49,6 +49,7 @@ from cryptography import __version__ as CRYPTOGRAPHY_VERSION
 from cryptography.exceptions import InvalidTag as _CryptoInvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _CryptoAESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt as _CryptoScrypt
+from cffi import FFI as _CffiFFI
 
 from cloud_sync import (
     CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
@@ -4508,6 +4509,10 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
 def _packaged_import_self_test() -> int:
     """Fast, no-GUI smoke test used by CI to verify frozen crypto imports."""
     try:
+        ffi = _CffiFFI()
+        backend_probe = ffi.new("int *", 23)
+        if backend_probe[0] != 23:
+            return 73
         salt = b"MoyaIshka-test-salt"
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
