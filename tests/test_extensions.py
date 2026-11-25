@@ -191,7 +191,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("Выполняется откат", script)
         self.assertIn("ПОДТВЕРЖДЕНО", script)
         self.assertIn("$env:MOYA_UPDATE_RECEIPT", script)
-        self.assertIn("Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -PassThru -ErrorAction Stop", script)
+        self.assertIn("Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -WindowStyle Normal -PassThru -ErrorAction Stop", script)
         self.assertNotIn("-ArgumentList $argList", script)
 
     def test_updater_script_is_written_with_windows_crlf_and_bom(self):
