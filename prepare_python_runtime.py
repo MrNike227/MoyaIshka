@@ -85,7 +85,7 @@ def main() -> int:
     # Prefer the current system VC runtime over the older app-local copy that
     # may ship with a Python installation; this avoids runtime version conflicts.
     roots = (system_root / "System32", Path(sys.base_prefix), Path(sys.prefix), executable_dir)
-    destination = Path(__file__).resolve().parent / "build" / "python_runtime"
+    destination = Path(__file__).resolve().parent / "build_runtime" / "python_runtime"
     try:
         copied = collect_runtime_dlls(roots, destination)
     except Exception as exc:
