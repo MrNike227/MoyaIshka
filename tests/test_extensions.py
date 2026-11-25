@@ -111,6 +111,47 @@ class PatchTests(unittest.TestCase):
     def test_parse_empty_improvement_suggestions(self):
         self.assertEqual(parse_improvement_suggestions('{"suggestions":[]}'), [])
 
+    def test_parse_suggestions_inside_markdown_and_surrounding_text(self):
+        fence = chr(96) * 3
+        response = (
+            "Результат анализа:\n" + fence + "json\n"
+            '{"suggestions":[{"title":"Обработка {ошибок}","problem":"Нет журнала",'
+            '"current":"except: pass","proposed":"except OSError as exc: log(exc)",'
+            '"benefit":"Ошибки видны"}]}\n' + fence + "\nГотово."
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Обработка {ошибок}")
+
+    def test_parse_suggestions_repairs_literal_newlines_and_trailing_commas(self):
+        response = (
+            '{"suggestions":[{"title":"Логи","problem":"Строка первая\\nстрока вторая",'
+            '"current":"print(1)","proposed":"logger.info(1)",'
+            '"benefit":"Диагностика",},],}'
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertIn("строка вторая", items[0]["problem"])
+
+    def test_parse_suggestions_recovers_complete_item_from_truncated_wrapper(self):
+        response = (
+            '{"suggestions":[{"title":"Проверка","problem":"Нет проверки",'
+            '"current":"return value","proposed":"if value is None: return False"}'
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Проверка")
+
+    def test_parse_suggestions_accepts_python_style_literal_safely(self):
+        response = (
+            "{'suggestions': [{'title': 'Локальная проверка', 'current': 'a', "
+            "'proposed': 'b', 'problem': None, 'benefit': True}]}"
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["problem"], "None")
+        self.assertEqual(items[0]["benefit"], "True")
+
     def test_apply_single_file_diff(self):
         original = "first\nsecond\nthird\n"
         patch = """--- a/main.py
