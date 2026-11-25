@@ -55,6 +55,20 @@ jobs:
           GITHUB_ACTIONS: 'true'
         run: BUILD_EXE.bat
 
+      - name: Verify packaged VC runtime DLLs are embedded
+        shell: pwsh
+        run: |
+          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
+          $archiveListing = (& pyi-archive_viewer -l $exePath 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not inspect the PyInstaller archive.'
+          }
+          foreach ($dll in @('vcruntime140.dll', 'msvcp140.dll', 'ucrtbase.dll')) {
+            if ($archiveListing -notmatch [regex]::Escape($dll)) {
+              throw "Required app-local runtime DLL is missing from the EXE archive: $dll"
+            }
+          }
+
       - name: Verify frozen EXE imports and encryption round-trip
         shell: pwsh
         run: |
