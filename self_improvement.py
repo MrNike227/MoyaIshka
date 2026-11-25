@@ -276,8 +276,6 @@ def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
         clean = {key: str(item.get(key, "")).strip()[:1800] for key in ("title", "problem", "current", "proposed", "benefit")}
         if clean["title"] and clean["current"] and clean["proposed"]:
             result.append(clean)
-    if not result:
-        raise ValueError("Нет конкретных улучшений с примерами «как сейчас / как будет».")
     return result
 
 def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> str:
