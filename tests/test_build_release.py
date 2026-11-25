@@ -51,6 +51,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
         self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
+        self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
+        self.assertIn("$process.ExitCode", workflow)
+        self.assertNotIn("$LASTEXITCODE -ne 0", workflow)
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
