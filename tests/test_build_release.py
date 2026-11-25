@@ -238,12 +238,21 @@ class ReleaseBuildTests(unittest.TestCase):
 
 
 
-    def test_push_to_main_does_not_create_or_replace_a_release(self):
+    def test_push_to_main_does_not_create_or_replace_a_release_without_hotfix_marker(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
-        self.assertIn("if: startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertNotIn("github.ref == 'refs/heads/main'", release_step)
-        self.assertNotIn("$tag = if ($env:GITHUB_REF", release_step)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.8.3]')", release_step)
+        self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
+        self.assertIn("Refusing to create a new release from main", release_step)
+
+    def test_hotfix_marker_refreshes_existing_v4183_release_and_tag_only(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.3' }}", workflow)
+        self.assertIn("- name: Update v4.1.8.3 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.1.8.3", workflow)
+        self.assertIn("git tag --force --annotate --message", workflow)
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.3 tag to validated root source"))
 if __name__ == "__main__":
     unittest.main()
 
