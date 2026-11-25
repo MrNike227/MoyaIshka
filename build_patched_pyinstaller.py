@@ -24,14 +24,14 @@ PYINSTALLER_TAG = f"v{PYINSTALLER_VERSION}"
 PYINSTALLER_REPOSITORY = "https://github.com/pyinstaller/pyinstaller.git"
 BOOTLOADER_SOURCE_RELATIVE = Path("bootloader") / "src" / "pyi_dylib_python.c"
 BOOTLOADER_ARCH = "Windows-64bit-intel"
-PATCH_MARKER = "MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3"
+PATCH_MARKER = "MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3_R2"
 SOURCE_ANCHOR = """    /* Look for python shared library relative to the top-level application directory.
      * Assuming that python shared library name contains only ASCII characters,
      * we can use it directly in the wide-char string formatting function,
      * without having to explicitly convert it from UTF8 to wide-char. */""";
 
 PRELOAD_C_BLOCK = r'''
-    /* MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3
+    /* MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3_R2
      *
      * Explicitly load app-local Microsoft VC runtime DLLs before python311.dll.
      * Loading python311.dll directly can otherwise fail with ERROR_MOD_NOT_FOUND
@@ -87,7 +87,7 @@ PRELOAD_C_BLOCK = r'''
 
 '''
 BOOTLOADER_FILES = ("run.exe", "runw.exe", "run_d.exe", "runw_d.exe")
-MARKER_FILE = "moya_vc_runtime_preload_4.1.8.3.json"
+MARKER_FILE = "moya_vc_runtime_preload_4.1.8.3_r2.json"
 
 
 def patch_bootloader_source(source_path: str | Path) -> bool:
@@ -145,7 +145,7 @@ def verify_installed_bootloader() -> bool:
             (destination / name).is_file()
             and hashes.get(name) == _sha256(destination / name)
             for name in BOOTLOADER_FILES
-        ) and marker.get("version") == PYINSTALLER_VERSION
+        ) and marker.get("version") == PYINSTALLER_VERSION and marker.get("patch") == PATCH_MARKER
     except (OSError, ValueError, TypeError):
         return False
 
