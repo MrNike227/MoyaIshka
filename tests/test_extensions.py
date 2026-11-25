@@ -87,6 +87,11 @@ class PatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_unified_diff("--- a/main.py\n+++ b/main.py\nизменений нет", "main.py")
 
+    def test_apply_insertion_hunk_after_first_line(self):
+        original = "one\ntwo\n"
+        patch = "--- a/main.py\n+++ b/main.py\n@@ -1,0 +2 @@\n+inserted\n"
+        self.assertEqual(apply_unified_diff(original, patch, "main.py"), "one\ninserted\ntwo\n")
+
     def test_patch_rejects_hunk_line_count_mismatch(self):
         patch = "--- a/main.py\n+++ b/main.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
         with self.assertRaises(ValueError):
