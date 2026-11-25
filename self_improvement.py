@@ -2,8 +2,8 @@
 """Reviewable unified-diff workflow for controlled self-modification."""
 from __future__ import annotations
 import ast
-import re
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -131,18 +131,17 @@ def build_model_source_context(
         "\nИндекс функций и методов:\n" + symbol_index,
     ]
 
-    imports: list[str] = []
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             start = node.lineno
             end = getattr(node, "end_lineno", None) or start
-            imports.extend(lines[start - 1:end])
-    if imports:
-        parts.append(
-            "\nИмпорты исходного файла:\n@@FENCE@@python\n"
-            + "".join(imports)
-            + "\n@@FENCE@@"
-        )
+            import_text = "".join(lines[start - 1:end])
+            parts.append(
+                f"\\nИмпорт, исходные строки {start}-{end}:\\n@@FENCE@@python\\n"
+                + import_text
+                + (" " if import_text.endswith("\\n") else "\\n")
+                + "@@FENCE@@"
+            )
 
     used = sum(len(part) for part in parts)
     selected = 0
