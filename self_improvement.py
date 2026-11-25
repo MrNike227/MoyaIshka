@@ -261,30 +261,180 @@ def extract_unified_diff(response: str, expected_path: str) -> str:
     return "--- a/" + expected + "\n+++ b/" + expected + "\n" + "".join(body)
 
 
-def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
-    """Parse bounded JSON suggestions from the code-review model."""
-    if not isinstance(response, str) or not response.strip():
-        raise ValueError("Модель не вернула предложения по улучшению.")
-    text = response.strip().lstrip("\ufeff")
-    text = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text, flags=re.IGNORECASE)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("Модель вернула некорректный список предложений.")
+def _iter_json_objects(text: str):
+    """Yield balanced JSON object candidates, ignoring braces inside quoted strings."""
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            current = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:index + 1]
+                    break
+
+
+def _repair_json_controls(candidate: str) -> str:
+    """Escape literal control characters inside JSON strings and remove trailing commas."""
+    output = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(candidate):
+        char = candidate[index]
+        if in_string:
+            if escaped:
+                output.append(char)
+                escaped = False
+            elif char == "\\":
+                next_char = candidate[index + 1] if index + 1 < len(candidate) else ""
+                valid_escape = next_char in '"\\/bfnrt'
+                valid_unicode = (
+                    next_char == "u"
+                    and index + 5 < len(candidate)
+                    and all(item in "0123456789abcdefABCDEF" for item in candidate[index + 2:index + 6])
+                )
+                if valid_escape or valid_unicode:
+                    output.append(char)
+                    escaped = True
+                else:
+                    # Model code examples often contain regex/path escapes such as \d or \w.
+                    output.append("\\\\")
+            elif char == '"':
+                output.append(char)
+                in_string = False
+            elif char == "\n":
+                output.append("\\n")
+            elif char == "\r":
+                output.append("\\r")
+            elif char == "\t":
+                output.append("\\t")
+            elif ord(char) < 0x20:
+                output.append(" ")
+            else:
+                output.append(char)
+        else:
+            if char == '"':
+                output.append(char)
+                in_string = True
+            elif char == ",":
+                lookahead = index + 1
+                while lookahead < len(candidate) and candidate[lookahead].isspace():
+                    lookahead += 1
+                if not (lookahead < len(candidate) and candidate[lookahead] in "}]"):
+                    output.append(char)
+            else:
+                output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _python_literal_fallback(candidate: str):
+    """Safely parse Python-style dict/list literals; never evaluates executable code."""
+    normalized = []
+    in_string = None
+    escaped = False
+    index = 0
+    while index < len(candidate):
+        char = candidate[index]
+        if in_string:
+            normalized.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            in_string = char
+            normalized.append(char)
+            index += 1
+            continue
+        match = re.match(r"(true|false|null)\b", candidate[index:], flags=re.IGNORECASE)
+        if match:
+            token = match.group(1).lower()
+            normalized.append({"true": "True", "false": "False", "null": "None"}[token])
+            index += len(match.group(0))
+            continue
+        normalized.append(char)
+        index += 1
     try:
-        payload = json.loads(text[start:end + 1])
-    except json.JSONDecodeError as exc:
-        raise ValueError("Не удалось прочитать предложения модели.") from exc
-    raw = payload.get("suggestions") if isinstance(payload, dict) else None
-    if not isinstance(raw, list):
-        raise ValueError("В ответе модели не найден список suggestions.")
+        return ast.literal_eval("".join(normalized))
+    except (ValueError, SyntaxError):
+        return None
+
+
+def _decode_suggestion_payload(candidate: str):
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        repaired = _repair_json_controls(candidate)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            return _python_literal_fallback(repaired)
+
+
+def _clean_suggestion_items(raw: list) -> list[dict[str, str]]:
     result = []
     for item in raw[:5]:
         if not isinstance(item, dict):
             continue
-        clean = {key: str(item.get(key, "")).strip()[:1800] for key in ("title", "problem", "current", "proposed", "benefit")}
+        clean = {
+            key: str(item.get(key, "")).strip()[:1800]
+            for key in ("title", "problem", "current", "proposed", "benefit")
+        }
         if clean["title"] and clean["current"] and clean["proposed"]:
             result.append(clean)
     return result
+
+
+def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
+    """Parse model suggestions even when wrapped in prose or mildly malformed JSON."""
+    if not isinstance(response, str) or not response.strip():
+        raise ValueError("Модель не вернула предложения по улучшению.")
+
+    text = response.strip().lstrip("\ufeff")
+    for candidate in _iter_json_objects(text):
+        payload = _decode_suggestion_payload(candidate)
+        if isinstance(payload, dict) and "suggestions" in payload:
+            raw = payload.get("suggestions")
+            if not isinstance(raw, list):
+                raise ValueError("Модель вернула поле suggestions не в виде списка.")
+            return _clean_suggestion_items(raw)
+        # Recover complete suggestions if the outer response was truncated or malformed.
+        if isinstance(payload, dict) and all(
+            key in payload for key in ("title", "current", "proposed")
+        ):
+            recovered = _clean_suggestion_items([payload])
+            if recovered:
+                return recovered
+
+    if '"suggestions"' in text or "'suggestions'" in text:
+        raise ValueError(
+            "Ответ модели похож на JSON, но он неполный или повреждён. Повтори анализ."
+        )
+    raise ValueError(
+        "Модель вернула ответ без корректного списка предложений. Повтори анализ."
+    )
 
 def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> str:
     """Apply a single-file unified diff, checking every context/deletion line."""

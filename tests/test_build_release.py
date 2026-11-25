@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseBuildTests(unittest.TestCase):
-    def test_application_version_is_417(self):
+    def test_application_version_is_418(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.7"', source)
+        self.assertIn('APP_VERSION = "4.1.8"', source)
 
     def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -121,11 +121,11 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_417(self):
+    def test_windows_version_resource_is_418(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,7,0)", source)
-        self.assertIn("prodvers=(4,1,7,0)", source)
-        self.assertIn("ProductVersion', '4.1.7'", source)
+        self.assertIn("filevers=(4,1,8,0)", source)
+        self.assertIn("prodvers=(4,1,8,0)", source)
+        self.assertIn("ProductVersion', '4.1.8'", source)
 
 
 
@@ -137,7 +137,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.7", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
@@ -149,6 +149,13 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertLess(workflow.index("Verify packaged VC runtime DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
         self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.exe.sha256", workflow)
+
+    def test_self_improvement_retries_when_model_does_not_return_diff(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("except ValueError as first_error", source)
+        self.assertIn("repaired_response = self._current_model_call(repair_messages)", source)
+        self.assertIn("Не добавляй пояснений, Markdown или полный файл", source)
+
 
 if __name__ == "__main__":
     unittest.main()
