@@ -113,6 +113,24 @@ def build_model_source_context(
                 if len(body) <= MAX_SINGLE_DEFINITION_CHARS:
                     candidates.append((1, start, end, node.name, body))
 
+    if not candidates and any(
+        marker in prompt.casefold()
+        for marker in ("анализ", "аудит", "review", "саморазвит", "улучшен")
+    ):
+        # General reviews have no single search keyword: select bounded functions.
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if id(node) in nested_function_ids:
+                continue
+            start = min([node.lineno] + [
+                decorator.lineno for decorator in getattr(node, "decorator_list", [])
+            ])
+            end = getattr(node, "end_lineno", None) or node.lineno
+            body = "".join(lines[start - 1:end])
+            if body and len(body) <= MAX_SINGLE_DEFINITION_CHARS:
+                candidates.append((0, start, end, node.name, body))
+
     if not candidates:
         raise ValueError(
             "Файл большой, и я не нашёл в нём нужный раздел. "
