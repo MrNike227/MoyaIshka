@@ -2,6 +2,7 @@
 """Reviewable unified-diff workflow for controlled self-modification."""
 from __future__ import annotations
 import ast
+import json
 import os
 import re
 import shutil
@@ -211,6 +212,73 @@ def editable_project_files() -> list[str]:
 def _normal(line: str) -> str:
     return line.rstrip("\r\n")
 
+
+def _normalize_diff_path(header: str) -> str:
+    value = header.strip().split("\t", 1)[0].strip().strip('"')
+    if value.startswith(("a/", "b/")):
+        value = value[2:]
+    return value.replace("\\\\", "/")
+
+
+def extract_unified_diff(response: str, expected_path: str) -> str:
+    """Extract a single-file unified diff from Markdown or explanatory output."""
+    if not isinstance(response, str) or not response.strip():
+        raise ValueError("Модель не вернула diff. Повтори генерацию.")
+    text = response.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.splitlines(keepends=True)
+    hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+    start = next((i for i, line in enumerate(lines) if hunk_re.match(line)), None)
+    if start is None:
+        raise ValueError("Не найден блок изменений @@. Повтори генерацию.")
+    header = None
+    for i in range(start - 1):
+        if lines[i].startswith("--- ") and i + 1 < start and lines[i + 1].startswith("+++ "):
+            header = i
+    expected = expected_path.replace("\\\\", "/")
+    if header is not None:
+        old_path = _normalize_diff_path(lines[header][4:])
+        new_path = _normalize_diff_path(lines[header + 1][4:])
+        if old_path != expected or new_path != expected:
+            raise ValueError("Diff пытается изменить другой файл.")
+    body = []
+    for line in lines[start:]:
+        if hunk_re.match(line) or line.startswith("\\\\ No newline at end of file"):
+            body.append(line if line.endswith("\n") else line + "\n")
+        elif line and line[0] in " +-":
+            body.append(line if line.endswith("\n") else line + "\n")
+        else:
+            break
+    if not any(line.startswith("+") for line in body) or not any(line.startswith("-") for line in body):
+        raise ValueError("В diff нет парных строк добавления и удаления.")
+    return "--- a/" + expected + "\n+++ b/" + expected + "\n" + "".join(body)
+
+
+def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
+    """Parse bounded JSON suggestions from the code-review model."""
+    if not isinstance(response, str) or not response.strip():
+        raise ValueError("Модель не вернула предложения по улучшению.")
+    text = response.strip().lstrip("\ufeff")
+    text = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text, flags=re.IGNORECASE)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("Модель вернула некорректный список предложений.")
+    try:
+        payload = json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError("Не удалось прочитать предложения модели.") from exc
+    raw = payload.get("suggestions") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        raise ValueError("В ответе модели не найден список suggestions.")
+    result = []
+    for item in raw[:5]:
+        if not isinstance(item, dict):
+            continue
+        clean = {key: str(item.get(key, "")).strip()[:1800] for key in ("title", "problem", "current", "proposed", "benefit")}
+        if clean["title"] and clean["current"] and clean["proposed"]:
+            result.append(clean)
+    if not result:
+        raise ValueError("Нет конкретных улучшений с примерами «как сейчас / как будет».")
+    return result
 
 def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> str:
     """Apply a single-file unified diff, checking every context/deletion line."""
