@@ -395,26 +395,77 @@ def launch_windows_replacement(
     try:
         write_powershell_updater_script(helper)
 
-        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
-        if not powershell:
-            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-            fallback = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-            if fallback.is_file():
-                powershell = str(fallback)
-        if not powershell:
+        # Prefer the Windows-provided PowerShell executable. A PATH entry can
+        # point to a shim or an unexpected copy, which is especially undesirable
+        # in a privileged file-replacement step.
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        candidates: list[str] = []
+        for candidate in (
+            system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+            system_root / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+            system_root / "SysWOW64" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+        ):
+            if candidate.is_file():
+                value = str(candidate)
+                if os.path.normcase(value) not in {os.path.normcase(item) for item in candidates}:
+                    candidates.append(value)
+        for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+            found = shutil.which(name)
+            if found and os.path.normcase(found) not in {os.path.normcase(item) for item in candidates}:
+                candidates.append(found)
+        if not candidates:
             raise FileNotFoundError("Windows PowerShell не найден. Он обычно входит в Windows 10.")
 
-        command = [
-            powershell,
+        command_tail = [
             "-NoLogo", "-NoProfile", "-NonInteractive",
             "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
             "-File", str(helper),
             str(staged), str(target), str(int(parent_pid)), digest,
             expected_version.strip().lstrip("v"), str(log), str(receipt),
         ]
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(command, close_fds=True, creationflags=creation_flags)
-        return helper
+        startupinfo = None
+        startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+        if startupinfo_type is not None:
+            startupinfo = startupinfo_type()
+            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+            startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+
+        # CREATE_NO_WINDOW is sufficient to keep PowerShell invisible. Do not
+        # combine it with DETACHED_PROCESS; retry without flags if Windows denies
+        # process creation with the hidden-console flag.
+        no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flag_attempts = [no_window]
+        if no_window:
+            flag_attempts.append(0)
+        launch_errors: list[str] = []
+        for powershell in candidates:
+            command = [powershell, *command_tail]
+            for flags in flag_attempts:
+                options: dict[str, Any] = {"close_fds": True, "creationflags": flags}
+                if startupinfo is not None:
+                    options["startupinfo"] = startupinfo
+                try:
+                    process = subprocess.Popen(command, **options)
+                except OSError as exc:
+                    error_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+                    launch_errors.append(
+                        f"{powershell} (creationflags={flags}, error={error_code}): {exc}"
+                    )
+                    continue
+
+                try:
+                    with log.open("a", encoding="utf-8") as stream:
+                        from datetime import datetime
+                        stream.write(
+                            f"{datetime.now().astimezone().isoformat()}  "
+                            f"PowerShell-установщик запущен: {powershell}; PID: {getattr(process, 'pid', 'unknown')}\n"
+                        )
+                except OSError:
+                    pass
+                return helper
+
+        details = "; ".join(launch_errors) or "Windows не вернул подробности ошибки."
+        raise OSError(f"Не удалось запустить PowerShell-установщик. Попытки: {details}")
     except Exception as exc:
         helper.unlink(missing_ok=True)
         try:
@@ -431,7 +482,7 @@ def apply_update(staged_path: str, target_path: str, process_id: str) -> int:
     try:
         launch_windows_replacement(
             staged_path, target_path, int(process_id),
-            user_install_dir() / "update.log", expected_version="4.1.6",
+            user_install_dir() / "update.log", expected_version="4.1.7",
         )
         return 0
     except Exception:
