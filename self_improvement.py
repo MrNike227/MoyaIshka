@@ -137,9 +137,9 @@ def build_model_source_context(
             end = getattr(node, "end_lineno", None) or start
             import_text = "".join(lines[start - 1:end])
             parts.append(
-                f"\\nИмпорт, исходные строки {start}-{end}:\\n@@FENCE@@python\\n"
+                f"\nИмпорт, исходные строки {start}-{end}:\n@@FENCE@@python\n"
                 + import_text
-                + (" " if import_text.endswith("\\n") else "\\n")
+                + ("" if import_text.endswith("\n") else "\n")
                 + "@@FENCE@@"
             )
 
