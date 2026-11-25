@@ -63,10 +63,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not inspect the PyInstaller archive.'
           }
-          foreach ($dll in @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'ucrtbase.dll', 'api-ms-win-crt-runtime-l1-1-0.dll')) {
+          foreach ($dll in @('python311.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'ucrtbase.dll', 'api-ms-win-crt-runtime-l1-1-0.dll')) {
             if ($archiveListing -notmatch [regex]::Escape($dll)) {
               throw "Required app-local runtime DLL is missing from the EXE archive: $dll"
             }
+          }
+
+      - name: Verify standalone EXE without installed Python on PATH
+        shell: pwsh
+        run: |
+          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $exePath
+          $startInfo.Arguments = '--self-test-imports'
+          $startInfo.UseShellExecute = $false
+          $startInfo.CreateNoWindow = $true
+          # Keep only Windows system folders in PATH; Python and its Scripts directory are excluded.
+          $startInfo.Environment['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot"
+          $process = [System.Diagnostics.Process]::Start($startInfo)
+          if (-not $process.WaitForExit(120000)) {
+            $process.Kill()
+            throw 'Standalone EXE did not finish its isolated startup test within 120 seconds.'
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Standalone EXE failed without Python on PATH (exit code $($process.ExitCode))."
           }
 
       - name: Verify frozen EXE imports and encryption round-trip
@@ -88,12 +108,12 @@ jobs:
           "$hash  MoyaIshka.exe" | Set-Content -Path 'dist/MoyaIshka.exe.sha256' -Encoding ascii
 
       - name: Create release or replace assets
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = if ($env:GITHUB_REF -eq 'refs/heads/main') { 'v4.1.8' } else { $env:GITHUB_REF_NAME }
+          $tag = $env:GITHUB_REF_NAME
           gh release view "$tag" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload "$tag" 'dist/MoyaIshka.exe' 'dist/MoyaIshka.exe.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
