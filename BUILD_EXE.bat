@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.2 single-file Windows application...
+echo Building Moya Ishka 4.1.3 single-file Windows application...
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
 where python >nul 2>nul
@@ -16,7 +16,7 @@ set "PY=py -3.11"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0
+%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0 cryptography psutil
 if errorlevel 1 goto failed
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico ^
   --add-data "app_icon.ico;." ^
@@ -36,6 +36,10 @@ if errorlevel 1 goto failed
   --add-data "updater.py;source_project" ^
   --add-data "updater_helper.py;source_project" ^
   --add-data "web_research.py;source_project" ^
+  --add-data "cloud_sync.py;source_project" ^
+  --add-data "google_drive_sync.py;source_project" ^
+  --add-data "resource_governor.py;source_project" ^
+  --add-data "sql;source_project/sql" ^
   --add-data "requirements.txt;source_project" ^
   --add-data "requirements_voice.txt;source_project" ^
   --add-data "START.bat;source_project" ^
@@ -44,6 +48,9 @@ if errorlevel 1 goto failed
   --add-data "INSTALL_VOICE.bat;source_project" ^
   --add-data "INSTALLER.iss;source_project" ^
   --add-data "README_RU.md;source_project" ^
+  --add-data "SUPABASE_SETUP_RU.md;source_project" ^
+  --add-data "GOOGLE_DRIVE_SETUP_RU.md;source_project" ^
+  --add-data "CHANGELOG_RU.md;source_project" ^
   --add-data "LICENSE.txt;source_project" ^
   --add-data "THIRD_PARTY_NOTICES.md;source_project" ^
   --add-data "licenses/GPL-3.0.txt;source_project/licenses" ^
@@ -54,6 +61,7 @@ if errorlevel 1 goto failed
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
+  --collect-all cryptography --collect-all psutil ^
   --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes ^
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py

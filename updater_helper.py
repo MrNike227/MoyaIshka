@@ -196,3 +196,126 @@ def apply_update(staged_path: str, target_path: str, process_id: str) -> int:
         return 0
     except Exception:
         return 1
+
+
+def _looks_like_moya_executable(filename: str) -> bool:
+    """Recognize only this application's executable names."""
+    name = filename.casefold()
+    return (
+        name in {"moyaishka.exe", "моя иишка.exe", "moyaishka_update.exe", "моя иишка_update.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
+        or (name.startswith("moyaishka_") and name.endswith(".exe"))
+        or (name.startswith("моя иишка_") and name.endswith(".exe"))
+    )
+
+
+def _version_hint_from_path(path: Path) -> str:
+    import re
+    candidates = [path.stem, *reversed(path.parts[:-1])]
+    for value in candidates:
+        match = re.search(r"(?<!\d)v?(\d+\.\d+(?:\.\d+){0,2})(?!\d)", value, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return "Не определена"
+
+
+def scan_application_copies(
+    configured_install_dir: str | Path | None = None,
+    current_exe: str | Path | None = None,
+    data_dir: str | Path | None = None,
+    *,
+    local_app_data: str | Path | None = None,
+    roaming_app_data: str | Path | None = None,
+    user_home: str | Path | None = None,
+) -> list[dict[str, str | int | bool]]:
+    """Find likely MoyaIshka EXE copies in common install/download locations.
+
+    This intentionally does not scan the entire disk. It checks the active and
+    configured install folders, per-user Programs folders, the app's updater
+    staging folder, Desktop and Downloads. The currently running EXE is always
+    excluded from results.
+    """
+    import datetime as _dt
+    home = Path(user_home or Path.home()).expanduser()
+    local = Path(local_app_data or os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+    roaming = Path(roaming_app_data or os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+    running = Path(current_exe).expanduser().resolve() if current_exe else None
+
+    roots: list[tuple[Path, int]] = []
+    if configured_install_dir:
+        roots.append((Path(configured_install_dir).expanduser(), 1))
+    if current_exe:
+        roots.append((Path(current_exe).expanduser().resolve().parent, 1))
+    roots.extend([
+        (local / "Programs", 4),
+        (local / "MoyaIshka", 3),
+        (roaming / "MoyaIshka" / "update_staging", 2),
+        (home / "Desktop", 2),
+        (home / "Downloads", 2),
+    ])
+    if data_dir:
+        # Only inspect the updater staging folder, never the whole data directory.
+        roots.append((Path(data_dir).expanduser() / "update_staging", 2))
+
+    found: dict[str, dict[str, str | int | bool]] = {}
+    prune_names = {
+        "$recycle.bin", "windows", "system volume information", "node_modules",
+        ".git", "__pycache__", "temp", "tmp",
+    }
+    for raw_root, max_depth in roots:
+        try:
+            root = raw_root.resolve()
+            if not root.is_dir():
+                continue
+        except (OSError, RuntimeError):
+            continue
+        for directory, dirnames, filenames in os.walk(root):
+            current_dir = Path(directory)
+            try:
+                depth = len(current_dir.relative_to(root).parts)
+            except ValueError:
+                depth = max_depth + 1
+            dirnames[:] = [
+                name for name in dirnames
+                if name.casefold() not in prune_names and depth < max_depth
+            ]
+            for filename in filenames:
+                if not _looks_like_moya_executable(filename):
+                    continue
+                candidate = current_dir / filename
+                try:
+                    resolved = candidate.resolve(strict=True)
+                    if not resolved.is_file() or (running and resolved == running):
+                        continue
+                    stat = resolved.stat()
+                    key = os.path.normcase(str(resolved))
+                    parent_name = resolved.parent.name.casefold()
+                    if parent_name == "update_staging":
+                        category = "Временный файл обновления"
+                    elif "programs" in {part.casefold() for part in resolved.parts}:
+                        category = "Копия в папке программ"
+                    else:
+                        category = "Отдельная копия"
+                    found[key] = {
+                        "path": str(resolved),
+                        "version": _version_hint_from_path(resolved),
+                        "category": category,
+                        "size": int(stat.st_size),
+                        "modified": _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+                        "is_current": False,
+                    }
+                except (OSError, RuntimeError):
+                    continue
+
+    return sorted(found.values(), key=lambda item: str(item["path"]).casefold())
+
+
+def delete_application_copy(path: str | Path, current_exe: str | Path | None = None) -> None:
+    """Delete a selected stale copy, refusing to delete the running executable."""
+    target = Path(path).expanduser().resolve(strict=True)
+    if current_exe:
+        running = Path(current_exe).expanduser().resolve()
+        if target == running:
+            raise ValueError("Нельзя удалить приложение, которое сейчас запущено.")
+    if not target.is_file() or not _looks_like_moya_executable(target.name):
+        raise ValueError("Выбранный файл не распознан как исполняемый файл Моей ИИшки.")
+    target.unlink()

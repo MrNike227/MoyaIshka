@@ -7,7 +7,7 @@ from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
 from self_improvement import apply_unified_diff
 from updater import version_tuple
-from updater_helper import install_from_source, _powershell_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable
+from updater_helper import install_from_source, _powershell_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
 
 
@@ -68,12 +68,12 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_412(self):
+    def test_application_release_version_is_413(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.1.2")
+        self.assertEqual(APP_VERSION, "4.1.3")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
@@ -119,6 +119,45 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(resolve_install_dir(configured=selected), selected.resolve())
             self.assertEqual(ensure_install_dir_writable(selected), selected.resolve())
             self.assertTrue((selected / ".").exists())
+
+    def test_old_version_scanner_finds_copies_but_excludes_running_exe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            current_dir = root / "Installed"
+            old_dir = root / "Downloads" / "MoyaIshka_v4.1.1"
+            current_dir.mkdir(parents=True)
+            old_dir.mkdir(parents=True)
+            current_exe = current_dir / "MoyaIshka.exe"
+            old_exe = old_dir / "MoyaIshka.exe"
+            current_exe.write_bytes(b"current")
+            old_exe.write_bytes(b"old version")
+            found = scan_application_copies(
+                configured_install_dir=old_dir,
+                current_exe=current_exe,
+                local_app_data=root / "LocalAppData",
+                roaming_app_data=root / "RoamingAppData",
+                user_home=root / "User",
+            )
+            paths = {item["path"] for item in found}
+            self.assertIn(str(old_exe.resolve()), paths)
+            self.assertNotIn(str(current_exe.resolve()), paths)
+            old_record = next(item for item in found if item["path"] == str(old_exe.resolve()))
+            self.assertEqual(old_record["version"], "4.1.1")
+
+    def test_old_version_delete_removes_only_selected_app_exe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            current_exe = root / "Current" / "MoyaIshka.exe"
+            old_exe = root / "Old" / "MoyaIshka.exe"
+            current_exe.parent.mkdir()
+            old_exe.parent.mkdir()
+            current_exe.write_bytes(b"current")
+            old_exe.write_bytes(b"old")
+            with self.assertRaises(ValueError):
+                delete_application_copy(current_exe, current_exe=current_exe)
+            delete_application_copy(old_exe, current_exe=current_exe)
+            self.assertTrue(current_exe.exists())
+            self.assertFalse(old_exe.exists())
 
 
 if __name__ == "__main__":

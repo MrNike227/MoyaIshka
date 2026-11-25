@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from web_research import (
@@ -7,6 +8,8 @@ from web_research import (
     ResearchLibrary,
     _PageTextParser,
     _SearchResultParser,
+    _search_bing_rss,
+    search_web,
     _validate_public_url,
     format_research_digest,
 )
@@ -27,6 +30,42 @@ class WebParserTests(unittest.TestCase):
         self.assertEqual(parser.results[0]["title"], "Example article")
         self.assertEqual(parser.results[0]["url"], "https://example.com/article")
         self.assertIn("useful summary", parser.results[0]["snippet"])
+
+    @mock.patch("web_research._request_search_response")
+    def test_bing_rss_parser_extracts_title_link_and_snippet(self, request_mock):
+        feed = '''<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel>
+          <item><title>Тестовый источник</title>
+            <link>https://example.com/article</link>
+            <description><![CDATA[Полезная &lt;b&gt;выдержка&lt;/b&gt;]]></description>
+          </item>
+        </channel></rss>'''.encode("utf-8")
+        request_mock.return_value = (feed, "application/rss+xml; charset=utf-8", 200)
+        result = _search_bing_rss("тест", 5, 15)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["title"], "Тестовый источник")
+        self.assertEqual(result[0]["url"], "https://example.com/article")
+        self.assertIn("выдержка", result[0]["snippet"])
+
+    @mock.patch("web_research._search_duckduckgo_html")
+    @mock.patch("web_research._search_bing_rss")
+    def test_search_falls_back_to_duckduckgo_when_bing_fails(self, bing_mock, ddg_mock):
+        bing_mock.side_effect = ResearchError("Bing RSS недоступен")
+        ddg_mock.return_value = [{"title": "Fallback", "url": "https://example.com/", "snippet": "ok"}]
+        results = search_web("тест", max_results=3)
+        self.assertEqual(results[0]["title"], "Fallback")
+        bing_mock.assert_called_once()
+        ddg_mock.assert_called_once()
+
+    @mock.patch("web_research._search_duckduckgo_html")
+    @mock.patch("web_research._search_bing_rss")
+    def test_search_reports_both_provider_failures(self, bing_mock, ddg_mock):
+        bing_mock.side_effect = ResearchError("нет XML")
+        ddg_mock.side_effect = ResearchError("антибот-проверка")
+        with self.assertRaises(ResearchError) as raised:
+            search_web("тест")
+        self.assertIn("Bing RSS", str(raised.exception))
+        self.assertIn("DuckDuckGo", str(raised.exception))
 
     def test_page_parser_omits_scripts_and_navigation(self):
         html = '''<html><head><title>Page title</title><script>bad code</script></head>
@@ -61,6 +100,11 @@ class WebParserTests(unittest.TestCase):
 
 
 class ResearchLibraryTests(unittest.TestCase):
+    def test_research_library_default_retention_is_1000_items(self):
+        with tempfile.TemporaryDirectory() as directory:
+            library = ResearchLibrary(Path(directory) / "research.json")
+            self.assertEqual(library.max_items, 1000)
+
     def test_store_search_context_and_delete(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "research.json"

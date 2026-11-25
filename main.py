@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -42,9 +43,15 @@ from voice_manager import (
 )
 from windows_control import handle_voice_command, launch_app, open_known_folder
 from web_research import ResearchError, ResearchLibrary, format_research_digest, search_and_fetch
+from cloud_sync import (
+    CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
+    load_protected_session, save_protected_session, delete_protected_session,
+)
+from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
+from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.2"
+APP_VERSION = "4.1.3"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -59,6 +66,8 @@ def user_data_dir() -> Path:
 DATA_DIR = user_data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "assistant.db"
+CLOUD_SESSION_PATH = DATA_DIR / "cloud_session.dat"
+GOOGLE_DRIVE_SESSION_PATH = DATA_DIR / "google_drive_session.dat"
 if os.environ.get("APPDATA"):
     LEGACY_DATA_DIR = Path(os.environ["APPDATA"]) / "CustomAI"
 else:
@@ -96,11 +105,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "web_search_enabled": True,
     "auto_search_current": True,
     "use_research_library": True,
-    "research_auto_enabled": False,
-    "research_topics": "",
-    "research_interval_hours": 12,
-    "research_results_limit": 5,
-    "research_fetch_pages": 3,
+    "research_auto_enabled": True,
+    "research_auto_user_configured": False,
+    "research_topics": "Искусственный интеллект и новые модели\nPython и разработка программного обеспечения\nWindows и безопасность компьютера\nНаучно-технические разработки",
+    "research_interval_hours": 3,
+    "research_results_limit": 10,
+    "research_fetch_pages": 5,
+    "cloud_primary_provider": "google_drive",
+    "google_drive_client_id": "",
+    "google_drive_storage_limit_gb": 10,
+    "cloud_url": "",
+    "cloud_publishable_key": "",
+    "cloud_email": "",
+    "cloud_auto_sync": True,
+    "cloud_auto_sync_user_configured": False,
+    "cloud_sync_interval_minutes": 5,
+    "cloud_modified_at": "",
+    "background_ram_limit_mb": 5120,
+    "background_min_available_ram_mb": 8192,
+    "background_cpu_limit_percent": 85,
 }
 
 
@@ -121,12 +144,12 @@ def prepare_source_workspace() -> Path:
         bundled_files = [
             "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
-            "updater_helper.py", "web_research.py", "requirements.txt", "requirements_voice.txt", "START.bat",
+            "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py",
-            ".github/workflows/release.yml",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py",
+            ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
             src = resource_path(f"source_project/{relative}")
@@ -239,10 +262,18 @@ class Store:
             role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
             content TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            sync_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
         """)
+        columns = {str(row[1]) for row in self.db.execute("PRAGMA table_info(messages)")}
+        if "sync_id" not in columns:
+            self.db.execute("ALTER TABLE messages ADD COLUMN sync_id TEXT")
+        rows = self.db.execute("SELECT id FROM messages WHERE sync_id IS NULL OR sync_id='' ").fetchall()
+        for row in rows:
+            self.db.execute("UPDATE messages SET sync_id=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
+        self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sync_id ON messages(sync_id)")
         self.db.commit()
 
     def create_conversation(self, title: str = "Новый диалог") -> str:
@@ -273,9 +304,9 @@ class Store:
         self.db.execute("DELETE FROM conversations WHERE id=?", (identifier,))
         self.db.commit()
 
-    def add_message(self, conversation_id: str, role: str, content: str, source: str = "") -> None:
+    def add_message(self, conversation_id: str, role: str, content: str, source: str = "", sync_id: str | None = None) -> None:
         stamp = now_iso()
-        self.db.execute("INSERT INTO messages(conversation_id,role,content,source,created_at) VALUES(?,?,?,?,?)", (conversation_id, role, content, source, stamp))
+        self.db.execute("INSERT INTO messages(conversation_id,role,content,source,created_at,sync_id) VALUES(?,?,?,?,?,?)", (conversation_id, role, content, source, stamp, sync_id or uuid.uuid4().hex))
         self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (stamp, conversation_id))
         self.db.commit()
         if role == "user":
@@ -539,9 +570,40 @@ class MoyaIshkaApp:
             running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
             self.config["install_dir"] = str(resolve_install_dir(running_exe=running_exe))
 
+        # Enable the requested background research profile when upgrading from releases
+        # where it was opt-in by default and the user has not explicitly configured it.
+        if not self.config.get("research_auto_user_configured", False):
+            self.config["research_auto_enabled"] = True
+            if not str(self.config.get("research_topics", "")).strip():
+                self.config["research_topics"] = DEFAULT_CONFIG["research_topics"]
+            self.config["research_interval_hours"] = min(3, int(self.config.get("research_interval_hours", 3) or 3))
+        if not self.config.get("research_limits_user_configured", False):
+            self.config["research_results_limit"] = 10
+            self.config["research_fetch_pages"] = 5
+        if not self.config.get("cloud_auto_sync_user_configured", False):
+            self.config["cloud_auto_sync"] = True
+        # Preserve the user's 5-GiB AI soft budget and an 8-GiB reserve for other apps.
+        self.config["background_ram_limit_mb"] = max(1024, min(int(self.config.get("background_ram_limit_mb", 5120)), 5120))
+        if int(self.config.get("background_min_available_ram_mb", 4096) or 0) < 8192:
+            self.config["background_min_available_ram_mb"] = 8192
+
         self.api_key = unprotect_api_key(self.config)
+        self.resource_governor = ResourceGovernor(
+            max_ram_mb=int(self.config.get("background_ram_limit_mb", 5120)),
+            min_available_ram_mb=int(self.config.get("background_min_available_ram_mb", 8192)),
+            cpu_pause_percent=int(self.config.get("background_cpu_limit_percent", 85)),
+        )
+        self.resource_governor.start_monitor(interval_seconds=1.5)
+        self.cloud_session = load_protected_session(CLOUD_SESSION_PATH)
+        self.google_drive_session = load_protected_session(GOOGLE_DRIVE_SESSION_PATH)
+        self.google_drive_session_ready = self._is_google_drive_session_ready(self.google_drive_session)
+        self.cloud_sync_busy = False
+        self.cloud_sync_dirty = False
+        self.cloud_sync_after_id: str | None = None
+        self.cloud_sync_periodic_id: str | None = None
+        self.cloud_session_ready = bool(self.cloud_session.get("session", {}).get("access_token") and self.cloud_session.get("e2e_passphrase"))
         self.store = Store(DB_PATH)
-        self.research_library = ResearchLibrary(DATA_DIR / "research_library.json")
+        self.research_library = ResearchLibrary(DATA_DIR / "research_library.json", max_items=1000)
         self.store.import_legacy_history(LEGACY_DATA_DIR / "history.json")
         if not CONFIG_PATH.exists() and isinstance(legacy_config, dict) and legacy_config:
             # Preserve settings from version 1 and move the protected key into the new data folder.
@@ -589,6 +651,8 @@ class MoyaIshkaApp:
         self.root.after(450, self._apply_high_dpi_windows_icon)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
+        if self._any_cloud_session_ready() and bool(self.config.get("cloud_auto_sync", True)):
+            self.root.after(18000, self._start_cloud_sync)
 
     # ---------- visual shell ----------
     def _make_checkbox(self, master: tk.Misc, text: str, variable: tk.BooleanVar,
@@ -766,7 +830,7 @@ class MoyaIshkaApp:
         self.chat_cards: dict[str, dict[str, Any]] = {}
 
         ttk.Separator(self.sidebar, style="Sidebar.TSeparator").pack(fill="x", pady=12)
-        self.sidebar_footer = ttk.Label(self.sidebar, text=f"●  Готова к работе\nВерсия {APP_VERSION}  ·  Локальное хранение", style="SidebarFooter.TLabel", justify="left")
+        self.sidebar_footer = ttk.Label(self.sidebar, text=f"●  Готова к работе\nВерсия {APP_VERSION}  ·  Локально + облако", style="SidebarFooter.TLabel", justify="left")
         self.sidebar_footer.pack(anchor="w")
 
     def _build_chat_page(self) -> None:
@@ -908,6 +972,85 @@ class MoyaIshkaApp:
         ttk.Button(controls, text="Скопировать команду загрузки модели", command=self.copy_ollama_command).pack(side="left", padx=8)
         ttk.Label(local, text="Например: ollama pull qwen2.5:3b. Загрузка модели выполняется один раз; после этого локальный режим может работать без интернета.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
 
+        drive = ttk.LabelFrame(content, text="Основное облако · Google Drive · сквозное шифрование", padding=12)
+        drive.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            drive,
+            text="Google Drive — основное хранилище ИИшки. Данные шифруются на компьютере до отправки и сохраняются в отдельной видимой папке «Моя ИИшка Cloud». Приложение запрашивает только доступ drive.file к собственным файлам, а не ко всему диску. Укажи OAuth Desktop Client ID/Secret из Google Cloud Console и отдельную парольную фразу E2E.",
+            style="MutedPanel.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        self.google_drive_client_id_var = tk.StringVar(value=str(self.config.get("google_drive_client_id", "")))
+        self.google_drive_client_secret_var = tk.StringVar()
+        self.google_drive_e2e_password_var = tk.StringVar()
+        self.google_drive_limit_var = tk.StringVar(value=str(self.config.get("google_drive_storage_limit_gb", 10)))
+        self._form_entry(drive, "Google OAuth Client ID (тип Desktop app)", self.google_drive_client_id_var)
+        ttk.Label(drive, text="Google OAuth Client Secret", style="Panel.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Entry(drive, textvariable=self.google_drive_client_secret_var, show="●").pack(fill="x")
+        ttk.Label(drive, text="Пароль сквозного шифрования (не менее 10 символов; одинаковый на всех устройствах)", style="Panel.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Entry(drive, textvariable=self.google_drive_e2e_password_var, show="●").pack(fill="x")
+        drive_options = ttk.Frame(drive, style="Panel.TFrame")
+        drive_options.pack(fill="x", pady=(8, 2))
+        ttk.Label(drive_options, text="Мягкий лимит папки ИИшки", style="Panel.TLabel").pack(side="left")
+        ttk.Combobox(drive_options, textvariable=self.google_drive_limit_var, state="readonly", width=8, values=["5", "8", "10"]).pack(side="left", padx=8)
+        ttk.Label(drive_options, text="ГБ · это лимит приложения, не квота всего Google-аккаунта", style="MutedPanel.TLabel").pack(side="left")
+        drive_actions = ttk.Frame(drive, style="Panel.TFrame")
+        drive_actions.pack(fill="x", pady=(7, 2))
+        ttk.Button(drive_actions, text="Подключить Google Drive", style="Accent.TButton", command=self.google_drive_connect).pack(side="left")
+        ttk.Button(drive_actions, text="Отключить Google Drive", command=self.google_drive_disconnect).pack(side="left", padx=6)
+        self.google_drive_status_var = tk.StringVar(value=("Google Drive подключён — основное облако." if self.google_drive_session_ready else "Google Drive не подключён. Сначала создай OAuth Desktop Client в Google Cloud Console."))
+        ttk.Label(drive, textvariable=self.google_drive_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(7, 0))
+
+        cloud = ttk.LabelFrame(content, text="Резервное облако · Supabase · сквозное шифрование", padding=12)
+        cloud.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            cloud,
+            text="Supabase остаётся резервным провайдером: при подключении ИИшка хранит там вторую зашифрованную копию, а если Google Drive временно недоступен — может использовать Supabase. Настройка необязательна. Для Free учитывай 500 МБ размера базы данных (не 2 ГБ диска PostgreSQL).",
+            style="MutedPanel.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        self.cloud_url_var = tk.StringVar(value=str(self.config.get("cloud_url", "")))
+        self.cloud_publishable_key_var = tk.StringVar(value=str(self.config.get("cloud_publishable_key", "")))
+        self.cloud_email_var = tk.StringVar(value=str(self.config.get("cloud_email", "")))
+        self.cloud_account_password_var = tk.StringVar()
+        self.cloud_e2e_password_var = tk.StringVar()
+        self.cloud_auto_sync_var = tk.BooleanVar(value=bool(self.config.get("cloud_auto_sync", True)))
+        self._form_entry(cloud, "URL проекта Supabase", self.cloud_url_var)
+        self._form_entry(cloud, "Публичный ключ Supabase (publishable key или legacy anon key)", self.cloud_publishable_key_var)
+        self._form_entry(cloud, "Электронная почта аккаунта", self.cloud_email_var)
+        ttk.Label(cloud, text="Пароль аккаунта Supabase", style="Panel.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Entry(cloud, textvariable=self.cloud_account_password_var, show="●").pack(fill="x")
+        ttk.Label(cloud, text="Пароль E2E для резервной копии (может совпадать с Google Drive)", style="Panel.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Entry(cloud, textvariable=self.cloud_e2e_password_var, show="●").pack(fill="x")
+        self._make_checkbox(cloud, "Автоматически синхронизировать данные с облаком", self.cloud_auto_sync_var, background_key="panel").pack(anchor="w", pady=(8, 4))
+        cloud_actions = ttk.Frame(cloud, style="Panel.TFrame")
+        cloud_actions.pack(fill="x", pady=(4, 2))
+        ttk.Button(cloud_actions, text="Создать резервный аккаунт", command=self.cloud_sign_up).pack(side="left")
+        ttk.Button(cloud_actions, text="Подключить резерв Supabase", style="Accent.TButton", command=self.cloud_sign_in).pack(side="left", padx=6)
+        ttk.Button(cloud_actions, text="Синхронизировать сейчас", command=self.cloud_sync_now).pack(side="left", padx=6)
+        ttk.Button(cloud_actions, text="Сохранить параметры", command=self.save_cloud_preferences).pack(side="left", padx=6)
+        ttk.Button(cloud_actions, text="Отключить Supabase", command=self.cloud_sign_out).pack(side="left", padx=6)
+        self.cloud_status_var = tk.StringVar(value=("Supabase подключён как резервное облако." if self.cloud_session_ready else "Резервный Supabase не подключён."))
+        ttk.Label(cloud, textvariable=self.cloud_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(7, 0))
+
+        resources = ttk.LabelFrame(content, text="Управление нагрузкой компьютера", padding=12)
+        resources.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            resources,
+            text="Профиль учитывает твой ПК: Intel Core i7-12700K, 24 ГБ ОЗУ, GTX 1070 Ti и SSD. Фоновый поиск и облачная синхронизация запускаются с низким приоритетом. Профиль: до 5 ГБ ОЗУ для ИИ-процессов, резерв 8 ГБ свободной ОЗУ под Windows и другие программы, пауза фоновых задач при высокой загрузке CPU. При нагрузке других программ ИИшка замедляет или останавливает фоновые задачи; локальная модель получает меньше потоков и меньший контекст. 5 ГБ — мягкий верхний бюджет, а не обязательное потребление.",
+            style="MutedPanel.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        resource_row = ttk.Frame(resources, style="Panel.TFrame")
+        resource_row.pack(fill="x")
+        ttk.Label(resource_row, text="Максимальный бюджет ОЗУ для ИИ", style="Panel.TLabel").pack(side="left")
+        self.background_ram_var = tk.StringVar(value=str(self.config.get("background_ram_limit_mb", 5120)))
+        ttk.Combobox(resource_row, textvariable=self.background_ram_var, state="readonly", width=10, values=["1024", "2048", "3072", "4096", "5120"]).pack(side="left", padx=(8, 18))
+        ttk.Label(resource_row, text="МБ", style="Panel.TLabel").pack(side="left")
+        ttk.Label(resource_row, text="Порог нагрузки CPU", style="Panel.TLabel").pack(side="left", padx=(22, 6))
+        self.background_cpu_var = tk.StringVar(value=str(self.config.get("background_cpu_limit_percent", 85)))
+        ttk.Combobox(resource_row, textvariable=self.background_cpu_var, state="readonly", width=6, values=["70", "75", "80", "85", "90", "95"]).pack(side="left")
+        ttk.Button(resources, text="Сохранить и применить профиль", command=self.save_resource_settings).pack(anchor="w", pady=(8, 0))
+        self.resource_status_var = tk.StringVar(value="Фоновые задачи работают с низким приоритетом; мониторинг нагрузки включён.")
+        ttk.Label(resources, textvariable=self.resource_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(7, 0))
+
         appearance = ttk.LabelFrame(content, text="Внешний вид", padding=12)
         appearance.pack(fill="x", pady=(0, 10))
         appearance_row = ttk.Frame(appearance, style="Panel.TFrame")
@@ -924,6 +1067,599 @@ class MoyaIshkaApp:
         ttk.Button(bottom, text="Сохранить настройки", style="Accent.TButton", command=self.save_settings).pack(side="left")
         ttk.Button(bottom, text="Открыть папку данных", command=self.open_data_folder).pack(side="left", padx=8)
         ttk.Button(bottom, text="Сбросить настройки", command=self.reset_settings).pack(side="left")
+
+    # ---------- cloud vault and resource-aware background work ----------
+    @staticmethod
+    def _is_google_drive_session_ready(package: dict[str, Any] | None) -> bool:
+        package = package or {}
+        session = package.get("session", {}) if isinstance(package.get("session"), dict) else {}
+        return bool(package.get("client_id") and package.get("client_secret") and package.get("e2e_passphrase") and session.get("refresh_token"))
+
+    def _any_cloud_session_ready(self) -> bool:
+        return bool(self.google_drive_session_ready or self.cloud_session_ready)
+
+    def _preferred_cloud_package(self) -> dict[str, Any] | None:
+        # Google Drive is always primary. Supabase is the optional mirror/failover.
+        if self.google_drive_session_ready:
+            return dict(self.google_drive_session)
+        if self.cloud_session_ready:
+            package = dict(self.cloud_session)
+            package["provider"] = "supabase"
+            return package
+        return None
+
+    def _remember_cloud_package(self, package: dict[str, Any]) -> None:
+        provider = str(package.get("provider", "supabase"))
+        if provider == "google_drive":
+            self.google_drive_session = dict(package)
+            self.google_drive_session_ready = self._is_google_drive_session_ready(self.google_drive_session)
+            try:
+                save_protected_session(GOOGLE_DRIVE_SESSION_PATH, self.google_drive_session)
+            except Exception:
+                pass
+        else:
+            self.cloud_session = dict(package)
+            self.cloud_session_ready = bool(self.cloud_session.get("session", {}).get("access_token") and self.cloud_session.get("e2e_passphrase"))
+            try:
+                save_protected_session(CLOUD_SESSION_PATH, self.cloud_session)
+            except Exception:
+                pass
+
+    def google_drive_connect(self) -> None:
+        client_id = self.google_drive_client_id_var.get().strip()
+        client_secret = self.google_drive_client_secret_var.get().strip()
+        passphrase = self.google_drive_e2e_password_var.get()
+        if not client_id or not client_secret:
+            messagebox.showwarning("Google Drive", "Сначала укажи OAuth Client ID и Client Secret типа Desktop app. Инструкция находится в GOOGLE_DRIVE_SETUP_RU.md.")
+            return
+        if len(passphrase) < 10:
+            messagebox.showwarning("Сквозное шифрование", "Пароль E2E должен содержать не менее 10 символов. Сохрани его в менеджере паролей — без него данные нельзя расшифровать.")
+            return
+        try:
+            limit = max(1, min(int(self.google_drive_limit_var.get()), 10))
+        except (ValueError, AttributeError):
+            limit = 10
+        self.config["google_drive_client_id"] = client_id
+        self.config["google_drive_storage_limit_gb"] = limit
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.google_drive_status_var.set("Открываю браузер для безопасного подключения Google…")
+        threading.Thread(target=self._google_drive_auth_worker,
+                         args=(client_id, client_secret, passphrase), daemon=True).start()
+
+    def _google_drive_auth_worker(self, client_id: str, client_secret: str, passphrase: str) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            session = GoogleDriveVaultClient.authorize(client_id, client_secret)
+            package = {
+                "provider": "google_drive", "client_id": client_id,
+                "client_secret": client_secret, "e2e_passphrase": passphrase,
+                "session": session,
+            }
+            client = GoogleDriveVaultClient(client_id, client_secret, session)
+            row = client.get_vault()
+            remote = decrypt_vault(row, passphrase) if row else None
+            package["session"] = client.session
+            revision = str(row.get("updated_at", "")) if row else ""
+            self.events.put(("google_drive_auth_success", (package, remote, revision)))
+        except Exception as exc:
+            self.events.put(("google_drive_auth_error", str(exc)))
+
+    def google_drive_disconnect(self) -> None:
+        if not self.google_drive_session_ready:
+            self.google_drive_status_var.set("Google Drive не подключён.")
+            return
+        if not messagebox.askyesno("Отключить Google Drive", "Отключить Google Drive на этом компьютере? Файлы в Google Drive останутся нетронутыми."):
+            return
+        delete_protected_session(GOOGLE_DRIVE_SESSION_PATH)
+        self.google_drive_session = {}
+        self.google_drive_session_ready = False
+        self.google_drive_status_var.set("Google Drive отключён на этом ПК. Облачные файлы не удалены.")
+        if self.cloud_session_ready:
+            self.cloud_status_var.set("Supabase продолжает работать как основное доступное облако.")
+        elif self.cloud_sync_periodic_id:
+            try:
+                self.root.after_cancel(self.cloud_sync_periodic_id)
+            except Exception:
+                pass
+            self.cloud_sync_periodic_id = None
+
+    def _cloud_bundle_from_fields(self) -> dict[str, Any]:
+        return {
+            "project_url": self.cloud_url_var.get().strip(),
+            "publishable_key": self.cloud_publishable_key_var.get().strip(),
+            "email": self.cloud_email_var.get().strip(),
+            "account_password": self.cloud_account_password_var.get(),
+            "e2e_passphrase": self.cloud_e2e_password_var.get(),
+        }
+
+    def _save_cloud_bundle(self, bundle: dict[str, Any], session: dict[str, Any]) -> None:
+        self.cloud_session = {
+            "project_url": str(bundle.get("project_url", "")),
+            "publishable_key": str(bundle.get("publishable_key", "")),
+            "email": str(bundle.get("email", "")),
+            "e2e_passphrase": str(bundle.get("e2e_passphrase", "")),
+            "session": dict(session),
+        }
+        self.cloud_session_ready = bool(self.cloud_session["session"].get("access_token") and self.cloud_session["e2e_passphrase"])
+        self.config.update({
+            "cloud_url": self.cloud_session["project_url"],
+            "cloud_publishable_key": self.cloud_session["publishable_key"],
+            "cloud_email": self.cloud_session["email"],
+            "cloud_auto_sync": bool(self.cloud_auto_sync_var.get()) if hasattr(self, "cloud_auto_sync_var") else True,
+            "cloud_auto_sync_user_configured": True,
+        })
+        atomic_json_save(CONFIG_PATH, self.config)
+        if self.cloud_session_ready:
+            try:
+                save_protected_session(CLOUD_SESSION_PATH, self.cloud_session)
+            except Exception as exc:
+                self.cloud_status_var.set(f"Сессия активна до закрытия приложения, но не удалось сохранить её через DPAPI: {exc}")
+
+    def save_cloud_preferences(self) -> None:
+        self.config["cloud_url"] = self.cloud_url_var.get().strip()
+        self.config["cloud_publishable_key"] = self.cloud_publishable_key_var.get().strip()
+        self.config["cloud_email"] = self.cloud_email_var.get().strip()
+        self.config["cloud_auto_sync"] = bool(self.cloud_auto_sync_var.get())
+        self.config["cloud_auto_sync_user_configured"] = True
+        if hasattr(self, "google_drive_client_id_var"):
+            self.config["google_drive_client_id"] = self.google_drive_client_id_var.get().strip()
+            try:
+                self.config["google_drive_storage_limit_gb"] = max(1, min(int(self.google_drive_limit_var.get()), 10))
+            except (ValueError, AttributeError):
+                self.config["google_drive_storage_limit_gb"] = 10
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.cloud_status_var.set("Параметры облака сохранены. Пароли не сохраняются в открытом виде.")
+        if self.config["cloud_auto_sync"] and self._any_cloud_session_ready():
+            self._schedule_cloud_sync_periodic()
+        elif self.cloud_sync_periodic_id:
+            try:
+                self.root.after_cancel(self.cloud_sync_periodic_id)
+            except Exception:
+                pass
+            self.cloud_sync_periodic_id = None
+
+    def cloud_sign_up(self) -> None:
+        bundle = self._cloud_bundle_from_fields()
+        if not bundle["email"] or not bundle["account_password"] or not bundle["e2e_passphrase"]:
+            messagebox.showwarning("Облачный аккаунт", "Заполни URL, публичный ключ Supabase, почту и оба пароля.")
+            return
+        if len(bundle["e2e_passphrase"]) < 10:
+            messagebox.showwarning("Сквозное шифрование", "Пароль шифрования должен содержать не менее 10 символов. Не теряй его: без него восстановить облачную копию невозможно.")
+            return
+        bundle.update({"action": "signup"})
+        self.cloud_status_var.set("Создаю аккаунт Supabase…")
+        threading.Thread(target=self._cloud_auth_worker, args=(bundle,), daemon=True).start()
+
+    def cloud_sign_in(self) -> None:
+        bundle = self._cloud_bundle_from_fields()
+        if not all(bundle.get(key) for key in ("project_url", "publishable_key", "email", "account_password", "e2e_passphrase")):
+            messagebox.showwarning("Облако", "Заполни URL проекта, публичный ключ, почту, пароль аккаунта и пароль шифрования.")
+            return
+        if len(bundle["e2e_passphrase"]) < 10:
+            messagebox.showwarning("Сквозное шифрование", "Пароль шифрования должен содержать не менее 10 символов. Это отдельный ключ доступа к данным.")
+            return
+        bundle.update({"action": "signin"})
+        self.cloud_status_var.set("Вхожу в Supabase и проверяю зашифрованное облако…")
+        threading.Thread(target=self._cloud_auth_worker, args=(bundle,), daemon=True).start()
+
+    def _cloud_auth_worker(self, bundle: dict[str, Any]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            client = SupabaseCloudClient(bundle["project_url"], bundle["publishable_key"])
+            if bundle.get("action") == "signup":
+                signup = client.sign_up(bundle["email"], bundle["account_password"])
+                if signup.get("needs_email_confirmation"):
+                    self.events.put(("cloud_signup_pending", "Supabase создал запрос регистрации. Подтверди адрес электронной почты в письме, затем нажми «Войти и синхронизировать»."))
+                    return
+                if not client.session.get("access_token"):
+                    client.sign_in(bundle["email"], bundle["account_password"])
+            else:
+                client.sign_in(bundle["email"], bundle["account_password"])
+            row = client.get_vault()
+            remote_payload = decrypt_vault(row, bundle["e2e_passphrase"]) if row else None
+            session_package = {
+                "project_url": bundle["project_url"],
+                "publishable_key": bundle["publishable_key"],
+                "email": bundle["email"],
+                "e2e_passphrase": bundle["e2e_passphrase"],
+                "session": client.session,
+            }
+            self.events.put(("cloud_auth_success", (session_package, remote_payload, row.get("updated_at") if row else None)))
+        except Exception as exc:
+            self.events.put(("cloud_auth_error", str(exc)))
+
+    def cloud_sync_now(self) -> None:
+        if hasattr(self, "cloud_auto_sync_var"):
+            self.config["cloud_auto_sync"] = bool(self.cloud_auto_sync_var.get())
+        self.config["cloud_auto_sync_user_configured"] = True
+        self.config["cloud_url"] = self.cloud_url_var.get().strip() if hasattr(self, "cloud_url_var") else str(self.config.get("cloud_url", ""))
+        self.config["cloud_publishable_key"] = self.cloud_publishable_key_var.get().strip() if hasattr(self, "cloud_publishable_key_var") else str(self.config.get("cloud_publishable_key", ""))
+        self.config["cloud_email"] = self.cloud_email_var.get().strip() if hasattr(self, "cloud_email_var") else str(self.config.get("cloud_email", ""))
+        atomic_json_save(CONFIG_PATH, self.config)
+        if not self._any_cloud_session_ready():
+            messagebox.showinfo("Облако не подключено", "Сначала подключи Google Drive. Supabase можно подключить отдельно как резервное облако.")
+            return
+        self._start_cloud_sync(force=True)
+
+    def cloud_sign_out(self) -> None:
+        if not self.cloud_session_ready:
+            self.cloud_status_var.set("Облако не подключено.")
+            return
+        if not messagebox.askyesno("Отключить облако", "Отключить синхронизацию на этом компьютере? Зашифрованная копия в Supabase останется нетронутой."):
+            return
+        delete_protected_session(CLOUD_SESSION_PATH)
+        self.cloud_session = {}
+        self.cloud_session_ready = False
+        self.config["cloud_auto_sync"] = bool(self.google_drive_session_ready)
+        self.config["cloud_auto_sync_user_configured"] = True
+        if hasattr(self, "google_drive_client_id_var"):
+            self.config["google_drive_client_id"] = self.google_drive_client_id_var.get().strip()
+            try:
+                self.config["google_drive_storage_limit_gb"] = max(1, min(int(self.google_drive_limit_var.get()), 10))
+            except (ValueError, AttributeError):
+                self.config["google_drive_storage_limit_gb"] = 10
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.cloud_auto_sync_var.set(bool(self.google_drive_session_ready))
+        self.cloud_status_var.set("Supabase отключён на этом компьютере. Данные в Supabase не удалены.")
+        if self.google_drive_session_ready:
+            self.google_drive_status_var.set("Google Drive продолжает работать как основное облако.")
+            self._schedule_cloud_sync_periodic()
+
+    def _build_cloud_snapshot(self) -> dict[str, Any]:
+        conversations: list[dict[str, Any]] = []
+        for conversation in self.store.list_conversations():
+            item = {key: conversation[key] for key in ("id", "title", "created_at", "updated_at")}
+            item["messages"] = [
+                {key: row[key] for key in ("sync_id", "role", "content", "source", "created_at")}
+                for row in self.store.get_messages(str(conversation["id"]))
+            ]
+            conversations.append(item)
+        safe_preference_keys = (
+            "assistant_name", "role", "personality", "style", "instructions", "mode",
+            "online_url", "online_model", "ollama_url", "ollama_model", "temperature",
+            "theme", "font_family", "font_size", "auto_memory", "voice_tts", "voice_engine",
+            "tts_voice_id", "plugins_enabled", "web_search_enabled", "auto_search_current",
+            "use_research_library", "research_auto_enabled", "research_topics",
+            "research_interval_hours", "research_results_limit", "research_fetch_pages",
+        )
+        preferences = {key: self.config.get(key) for key in safe_preference_keys if key in self.config}
+        return {
+            "schema_version": 1,
+            "exported_at": now_iso(),
+            "config_modified_at": str(self.config.get("cloud_modified_at", "")),
+            "preferences": preferences,
+            "memory": [str(item)[:500] for item in self.config.get("memory", []) if isinstance(item, str)][:2000],
+            "conversations": conversations,
+            "research": list(self.research_library.items[-1000:]),
+        }
+
+    def _merge_cloud_snapshot(self, snapshot: dict[str, Any]) -> tuple[int, int, int]:
+        if not isinstance(snapshot, dict) or int(snapshot.get("schema_version", 0)) != 1:
+            raise CloudSyncError("Структура облачной копии не поддерживается.")
+        conversations = snapshot.get("conversations", [])
+        if not isinstance(conversations, list) or len(conversations) > 10000:
+            raise CloudSyncError("В облачной копии слишком много диалогов или неверный формат.")
+        new_messages = 0
+        new_conversations = 0
+        db = self.store.db
+        db.execute("BEGIN")
+        try:
+            for conv in conversations:
+                if not isinstance(conv, dict):
+                    continue
+                cid = str(conv.get("id", ""))[:80]
+                if not cid:
+                    continue
+                title = str(conv.get("title", "Новый диалог"))[:100]
+                created = str(conv.get("created_at", now_iso()))[:64]
+                updated = str(conv.get("updated_at", created))[:64]
+                cur = db.execute("INSERT OR IGNORE INTO conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)", (cid, title, created, updated))
+                new_conversations += max(0, cur.rowcount)
+                local = db.execute("SELECT updated_at FROM conversations WHERE id=?", (cid,)).fetchone()
+                if local and updated > str(local["updated_at"]):
+                    db.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=?", (title, updated, cid))
+                messages = conv.get("messages", [])
+                if not isinstance(messages, list):
+                    continue
+                for message in messages[:100000]:
+                    if not isinstance(message, dict):
+                        continue
+                    role = str(message.get("role", ""))
+                    if role not in {"user", "assistant", "system"}:
+                        continue
+                    content = str(message.get("content", ""))
+                    if len(content) > 300000:
+                        content = content[:300000]
+                    sync_id = str(message.get("sync_id", ""))[:80] or uuid.uuid4().hex
+                    source = str(message.get("source", ""))[:120]
+                    created_at = str(message.get("created_at", updated))[:64]
+                    cur = db.execute(
+                        "INSERT OR IGNORE INTO messages(conversation_id,role,content,source,created_at,sync_id) VALUES(?,?,?,?,?,?)",
+                        (cid, role, content, source, created_at, sync_id),
+                    )
+                    new_messages += max(0, cur.rowcount)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        local_memory = self.config.get("memory", []) if isinstance(self.config.get("memory", []), list) else []
+        remote_memory = snapshot.get("memory", []) if isinstance(snapshot.get("memory", []), list) else []
+        merged_memory: list[str] = []
+        seen_memory: set[str] = set()
+        for value in local_memory + remote_memory:
+            if not isinstance(value, str):
+                continue
+            text = value.strip()[:500]
+            key = text.casefold()
+            if text and key not in seen_memory:
+                seen_memory.add(key)
+                merged_memory.append(text)
+        self.config["memory"] = merged_memory[-2000:]
+
+        remote_config_time = str(snapshot.get("config_modified_at", ""))
+        local_config_time = str(self.config.get("cloud_modified_at", ""))
+        preferences = snapshot.get("preferences", {})
+        if isinstance(preferences, dict) and remote_config_time and remote_config_time > local_config_time:
+            allowed = set(self._cloud_preference_keys())
+            for key, value in preferences.items():
+                if key in allowed:
+                    self.config[key] = value
+            self.config["cloud_modified_at"] = remote_config_time
+            try:
+                self._reload_settings_controls()
+            except Exception:
+                pass
+        atomic_json_save(CONFIG_PATH, self.config)
+        docs = snapshot.get("research", [])
+        if not isinstance(docs, list):
+            docs = []
+        added_docs = self.research_library.add_documents([d for d in docs[:1000] if isinstance(d, dict)])
+        self._refresh_chat_list()
+        if self.current_chat_id not in {str(c.get("id")) for c in self.store.list_conversations()}:
+            self.current_chat_id = self.store.ensure_conversation()
+        self._render_current_chat()
+        self._refresh_memory_list()
+        self._refresh_research_list()
+        return new_conversations, new_messages, added_docs
+
+    @staticmethod
+    def _cloud_preference_keys() -> tuple[str, ...]:
+        return (
+            "assistant_name", "role", "personality", "style", "instructions", "mode",
+            "online_url", "online_model", "ollama_url", "ollama_model", "temperature",
+            "theme", "font_family", "font_size", "auto_memory", "voice_tts", "voice_engine",
+            "tts_voice_id", "plugins_enabled", "web_search_enabled", "auto_search_current",
+            "use_research_library", "research_auto_enabled", "research_topics",
+            "research_interval_hours", "research_results_limit", "research_fetch_pages",
+        )
+
+    def _schedule_cloud_sync(self) -> None:
+        if not bool(self.config.get("cloud_auto_sync", False)) or not self._any_cloud_session_ready():
+            return
+        if self.cloud_sync_busy:
+            self.cloud_sync_dirty = True
+            return
+        if self.cloud_sync_after_id:
+            try:
+                self.root.after_cancel(self.cloud_sync_after_id)
+            except Exception:
+                pass
+        self.cloud_sync_after_id = self.root.after(5000, self._start_cloud_sync)
+
+    def _cloud_client(self, session_package: dict[str, Any] | None = None):
+        bundle = session_package or self._preferred_cloud_package() or self.cloud_session
+        if str(bundle.get("provider", "supabase")) == "google_drive":
+            return GoogleDriveVaultClient(
+                str(bundle.get("client_id", "")), str(bundle.get("client_secret", "")),
+                dict(bundle.get("session", {})),
+            )
+        return SupabaseCloudClient(
+            str(bundle.get("project_url") or self.config.get("cloud_url", "")),
+            str(bundle.get("publishable_key") or self.config.get("cloud_publishable_key", "")),
+            dict(bundle.get("session", {})),
+        )
+
+    def _mirror_to_supabase_backup(self, snapshot: dict[str, Any], backup_package: dict[str, Any] | None) -> str:
+        if not backup_package:
+            return ""
+        try:
+            client = self._cloud_client(backup_package)
+            row = client.get_vault()
+            encrypted = encrypt_vault(snapshot, str(backup_package.get("e2e_passphrase", "")))
+            if not row:
+                if not client.create_vault(encrypted):
+                    return "резерв Supabase изменился одновременно; повтори синхронизацию"
+                return "резервная копия Supabase обновлена"
+            try:
+                remote = decrypt_vault(row, str(backup_package.get("e2e_passphrase", "")))
+                if snapshot_digest(remote) == snapshot_digest(snapshot):
+                    return "резерв Supabase уже актуален"
+            except CloudSyncError:
+                return "резерв Supabase не обновлён: данные не удалось безопасно расшифровать"
+            if client.update_vault(encrypted, str(row.get("updated_at", ""))):
+                return "резервная копия Supabase обновлена"
+            return "резерв Supabase изменился одновременно; повтори синхронизацию"
+        except Exception as exc:
+            return f"резерв Supabase временно недоступен: {exc}"
+
+    def _enforce_google_drive_soft_quota(self, client: GoogleDriveVaultClient, encrypted: dict[str, Any]) -> tuple[int, int]:
+        """Enforce the app's own folder budget, not the whole Google account quota."""
+        limit_gb = max(1, min(int(self.config.get("google_drive_storage_limit_gb", 10) or 10), 10))
+        limit_bytes = limit_gb * 1024 * 1024 * 1024
+        usage = client.get_app_folder_usage()
+        current = client.get_vault()
+        old_size = int(current.get("size", 0) or 0) if current else 0
+        new_size = len(json.dumps(encrypted, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        projected = max(0, usage - old_size) + new_size
+        if projected > limit_bytes:
+            raise CloudSyncError(
+                f"Достигнут мягкий лимит папки ИИшки в Google Drive ({limit_gb} ГБ). "
+                "Новые данные не загружены и не удалены. Увеличь лимит, освободи место в папке или подключи резервное облако."
+            )
+        return projected, limit_bytes
+
+    def _start_cloud_sync(self, force: bool = False) -> None:
+        self.cloud_sync_after_id = None
+        package = self._preferred_cloud_package()
+        if not package:
+            if force and hasattr(self, "cloud_status_var"):
+                self.cloud_status_var.set("Сначала подключи Google Drive или резервный Supabase.")
+            return
+        if not force and not bool(self.config.get("cloud_auto_sync", False)):
+            return
+        if self.cloud_sync_busy:
+            self.cloud_sync_dirty = True
+            return
+        snapshot = self._build_cloud_snapshot()
+        backup = dict(self.cloud_session) if (package.get("provider") == "google_drive" and self.cloud_session_ready) else None
+        if backup:
+            backup["provider"] = "supabase"
+        self.cloud_sync_busy = True
+        self.cloud_sync_dirty = False
+        if hasattr(self, "cloud_status_var"):
+            self.cloud_status_var.set("Синхронизирую зашифрованные данные: Google Drive — основное облако" + (", Supabase — резервная копия…" if backup else "…"))
+        threading.Thread(target=self._cloud_sync_worker, args=(snapshot, package, backup), daemon=True).start()
+
+    def _cloud_sync_worker(self, snapshot: dict[str, Any], session_package: dict[str, Any], backup_package: dict[str, Any] | None = None) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        provider = str(session_package.get("provider", "supabase"))
+        try:
+            if not self.resource_governor.wait_for_background_slot(max_wait_seconds=900):
+                raise CloudSyncError("Синхронизация отложена: компьютер занят или достигнут лимит ресурсов.")
+            client = self._cloud_client(session_package)
+            row = client.get_vault()
+            updated_session = dict(session_package)
+            updated_session["session"] = client.session
+            if row:
+                remote = decrypt_vault(row, str(session_package.get("e2e_passphrase", "")))
+                if snapshot_digest(snapshot) == snapshot_digest(remote):
+                    backup_note = self._mirror_to_supabase_backup(snapshot, backup_package) if provider == "google_drive" else ""
+                    status = "Google Drive синхронизирован; облачная копия уже актуальна" if provider == "google_drive" else "Облачная копия уже актуальна — повторная загрузка не нужна"
+                    if backup_note:
+                        status += f"; {backup_note}"
+                    self.events.put(("cloud_sync_done", (updated_session, status)))
+                else:
+                    self.events.put(("cloud_remote_data", (remote, str(row.get("updated_at", "")), updated_session)))
+            else:
+                # If the primary Google Drive is empty, recover from the optional Supabase mirror first.
+                if provider == "google_drive" and backup_package:
+                    backup_client = self._cloud_client(backup_package)
+                    backup_row = backup_client.get_vault()
+                    if backup_row:
+                        remote = decrypt_vault(backup_row, str(backup_package.get("e2e_passphrase", "")))
+                        self.events.put(("cloud_remote_data", (remote, "__new__", updated_session)))
+                        return
+                encrypted = encrypt_vault(snapshot, str(session_package.get("e2e_passphrase", "")))
+                if provider == "google_drive":
+                    self._enforce_google_drive_soft_quota(client, encrypted)
+                created = client.create_vault(encrypted)
+                if created:
+                    backup_note = self._mirror_to_supabase_backup(snapshot, backup_package) if provider == "google_drive" else ""
+                    updated_session["session"] = client.session
+                    status = "Создана первая зашифрованная копия в Google Drive" if provider == "google_drive" else "Создана первая зашифрованная облачная копия"
+                    if backup_note:
+                        status += f"; {backup_note}"
+                    self.events.put(("cloud_sync_done", (updated_session, status)))
+                else:
+                    self.events.put(("cloud_sync_conflict", (updated_session, "Облачная запись появилась с другого устройства. Повтори синхронизацию.")))
+        except Exception as primary_exc:
+            # Google Drive is primary; Supabase is a failover and mirror if connected.
+            if provider == "google_drive" and backup_package:
+                try:
+                    backup_client = self._cloud_client(backup_package)
+                    row = backup_client.get_vault()
+                    if row:
+                        remote = decrypt_vault(row, str(backup_package.get("e2e_passphrase", "")))
+                        if snapshot_digest(snapshot) == snapshot_digest(remote):
+                            self.events.put(("cloud_sync_done", (backup_package, f"Google Drive временно недоступен; Supabase использован как резерв. {primary_exc}")))
+                        else:
+                            self.events.put(("cloud_remote_data", (remote, str(row.get("updated_at", "")), backup_package)))
+                    else:
+                        encrypted = encrypt_vault(snapshot, str(backup_package.get("e2e_passphrase", "")))
+                        if backup_client.create_vault(encrypted):
+                            self.events.put(("cloud_sync_done", (backup_package, f"Google Drive недоступен; создана копия в резервном Supabase. {primary_exc}")))
+                        else:
+                            self.events.put(("cloud_sync_conflict", (backup_package, "Не удалось записать резервную копию: запись изменилась одновременно.")))
+                except Exception as backup_exc:
+                    self.events.put(("cloud_sync_error", f"Google Drive: {primary_exc}; резерв Supabase: {backup_exc}"))
+            else:
+                self.events.put(("cloud_sync_error", str(primary_exc)))
+
+    def _finish_google_backup_mirror_worker(self, snapshot: dict[str, Any], session_package: dict[str, Any], counts: tuple[int, int, int]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        backup = dict(self.cloud_session) if self.cloud_session_ready else None
+        note = self._mirror_to_supabase_backup(snapshot, backup)
+        self.events.put(("cloud_sync_done", (session_package,
+            f"Google Drive синхронизирован; диалогов +{counts[0]}, сообщений +{counts[1]}, источников +{counts[2]}; {note}.")))
+
+    def _cloud_upload_worker(self, snapshot: dict[str, Any], session_package: dict[str, Any], expected_updated_at: str) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        provider = str(session_package.get("provider", "supabase"))
+        try:
+            if not self.resource_governor.wait_for_background_slot(max_wait_seconds=900):
+                raise CloudSyncError("Загрузка в облако отложена: компьютер занят или достигнут лимит ресурсов.")
+            client = self._cloud_client(session_package)
+            encrypted = encrypt_vault(snapshot, str(session_package.get("e2e_passphrase", "")))
+            drive_usage_note = ""
+            if provider == "google_drive":
+                projected, limit_bytes = self._enforce_google_drive_soft_quota(client, encrypted)
+                drive_usage_note = f" · папка ИИшки: {projected / (1024**2):.1f} МБ из {limit_bytes / (1024**3):.0f} ГБ"
+            if provider == "google_drive" and expected_updated_at == "__new__":
+                updated = client.create_vault(encrypted)
+            else:
+                updated = client.update_vault(encrypted, expected_updated_at)
+            package = dict(session_package)
+            package["session"] = client.session
+            if updated:
+                extra = ""
+                if provider == "google_drive" and self.cloud_session_ready:
+                    backup = dict(self.cloud_session)
+                    backup["provider"] = "supabase"
+                    extra = "; " + self._mirror_to_supabase_backup(snapshot, backup)
+                label = "Google Drive" if provider == "google_drive" else "облачное хранилище"
+                self.events.put(("cloud_sync_done", (package, f"Изменения объединены и сохранены в {label}{extra}{drive_usage_note}.")))
+            else:
+                self.events.put(("cloud_sync_conflict", (package, "Облако изменилось с другого устройства во время синхронизации. Повтори синхронизацию: локальные данные не удалены.")))
+        except Exception as exc:
+            self.events.put(("cloud_sync_error", str(exc)))
+
+    def _schedule_cloud_sync_periodic(self) -> None:
+        if self.cloud_sync_periodic_id:
+            try:
+                self.root.after_cancel(self.cloud_sync_periodic_id)
+            except Exception:
+                pass
+            self.cloud_sync_periodic_id = None
+        if self._any_cloud_session_ready() and bool(self.config.get("cloud_auto_sync", False)):
+            interval = max(1, min(int(self.config.get("cloud_sync_interval_minutes", 5)), 60))
+            self.cloud_sync_periodic_id = self.root.after(interval * 60 * 1000, self._cloud_periodic_tick)
+
+    def _cloud_periodic_tick(self) -> None:
+        self.cloud_sync_periodic_id = None
+        self._start_cloud_sync()
+        self._schedule_cloud_sync_periodic()
+
+    def save_resource_settings(self) -> None:
+        try:
+            ram_mb = int(self.background_ram_var.get())
+            cpu_limit = int(self.background_cpu_var.get())
+        except (ValueError, AttributeError):
+            messagebox.showerror("Нагрузка компьютера", "Выбери допустимый лимит памяти и порог CPU.")
+            return
+        self.config["background_ram_limit_mb"] = max(1024, min(ram_mb, 5120))
+        self.config["background_min_available_ram_mb"] = 8192
+        self.config["background_cpu_limit_percent"] = max(60, min(cpu_limit, 98))
+        self.resource_governor.configure(
+            max_ram_mb=self.config["background_ram_limit_mb"],
+            min_available_ram_mb=self.config["background_min_available_ram_mb"],
+            cpu_pause_percent=self.config["background_cpu_limit_percent"],
+        )
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.resource_status_var.set(
+            f"Применено: бюджет ИИ {ram_mb} МБ; фон приостанавливается около {cpu_limit}% CPU или при свободной ОЗУ менее 8 ГБ."
+        )
+        self._schedule_cloud_sync()
 
     def _form_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor="w", pady=(7, 4))
@@ -1155,7 +1891,7 @@ class MoyaIshkaApp:
         intro.pack(fill="x", pady=(0, 10))
         ttk.Label(
             intro,
-            text="Интернет-поиск не требует API-ключа: ИИшка ищет общедоступные страницы, читает ограниченное число источников и сохраняет заметки локально. Если языковая модель не подключена, поиск всё равно покажет выдержки и ссылки. Для генеративного ответа подключи локальную модель Ollama или облачный API. Содержимое сайтов считается недоверенными данными: команды и инструкции со страниц не исполняются.",
+            text="Интернет-поиск не требует API-ключа: ИИшка ищет общедоступные страницы, читает ограниченное число источников и сохраняет результаты в библиотеку знаний. При подключённом облаке с включённой синхронизацией зашифрованная копия автоматически отправляется в Supabase. Фоновое исследование приостанавливается, если компьютер занят, загрузка CPU высока или свободной ОЗУ осталось менее 8 ГБ.",
             style="Panel.TLabel", wraplength=900, justify="left"
         ).pack(anchor="w")
         self.web_enabled_var = tk.BooleanVar(value=bool(self.config.get("web_search_enabled", True)))
@@ -1173,33 +1909,33 @@ class MoyaIshkaApp:
         options = ttk.Frame(search, style="Panel.TFrame")
         options.pack(fill="x")
         ttk.Label(options, text="Результатов", style="Panel.TLabel").pack(side="left")
-        self.research_results_var = tk.StringVar(value=str(self.config.get("research_results_limit", 5)))
+        self.research_results_var = tk.StringVar(value=str(self.config.get("research_results_limit", 10)))
         ttk.Combobox(options, textvariable=self.research_results_var, state="readonly", width=5, values=["3", "5", "8", "10"]).pack(side="left", padx=(6, 16))
         ttk.Label(options, text="Читать страниц", style="Panel.TLabel").pack(side="left")
-        self.research_fetch_var = tk.StringVar(value=str(self.config.get("research_fetch_pages", 3)))
+        self.research_fetch_var = tk.StringVar(value=str(self.config.get("research_fetch_pages", 5)))
         ttk.Combobox(options, textvariable=self.research_fetch_var, state="readonly", width=5, values=["0", "1", "2", "3", "5"]).pack(side="left", padx=(6, 16))
         ttk.Button(options, text="Искать и сохранить", style="Accent.TButton", command=self.start_manual_research).pack(side="left")
-        self.research_status_var = tk.StringVar(value="Поиск готов к работе. Автономное исследование выключено, пока ты его не включишь.")
+        self.research_status_var = tk.StringVar(value="Поиск готов. Фоновое исследование выполняется по расписанию, пока компьютер не занят.")
         ttk.Label(search, textvariable=self.research_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
 
         auto = ttk.LabelFrame(content, text="Самостоятельное исследование по темам", padding=12)
         auto.pack(fill="x", pady=(0, 10))
-        ttk.Label(auto, text="Добавь темы, за которыми ИИшка будет периодически следить. Она сохранит новые источники в локальную библиотеку. Это поиск и извлечение информации, а не переобучение весов нейросети.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w")
-        self.research_auto_var = tk.BooleanVar(value=bool(self.config.get("research_auto_enabled", False)))
-        self._make_checkbox(auto, "Включить периодическое исследование (по умолчанию выключено)", self.research_auto_var, background_key="panel").pack(anchor="w", pady=(8, 4))
+        ttk.Label(auto, text="ИИшка периодически ищет обновления по выбранным темам, сохраняет конспекты и источники в базу знаний, а при подключённом облаке шифрует и синхронизирует их с Supabase. Это пополнение внешней базы знаний, а не переобучение весов нейросети.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w")
+        self.research_auto_var = tk.BooleanVar(value=bool(self.config.get("research_auto_enabled", True)))
+        self._make_checkbox(auto, "Включить фоновое исследование по расписанию (рекомендуется)", self.research_auto_var, background_key="panel").pack(anchor="w", pady=(8, 4))
         self.research_topics_box = tk.Text(auto, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9))
         self.research_topics_box.pack(fill="x", pady=(2, 8))
         self.research_topics_box.insert("1.0", str(self.config.get("research_topics", "")))
         auto_row = ttk.Frame(auto, style="Panel.TFrame")
         auto_row.pack(fill="x")
         ttk.Label(auto_row, text="Интервал", style="Panel.TLabel").pack(side="left")
-        self.research_interval_var = tk.StringVar(value=str(self.config.get("research_interval_hours", 12)))
+        self.research_interval_var = tk.StringVar(value=str(self.config.get("research_interval_hours", 3)))
         ttk.Combobox(auto_row, textvariable=self.research_interval_var, state="readonly", width=7, values=["1", "3", "6", "12", "24", "48"]).pack(side="left", padx=(6, 14))
         ttk.Button(auto_row, text="Сохранить настройки исследования", command=self.save_research_settings).pack(side="left")
 
-        library = ttk.LabelFrame(content, text="Локальная библиотека знаний", padding=12)
+        library = ttk.LabelFrame(content, text="База знаний · локальный кеш и облачная копия", padding=12)
         library.pack(fill="both", expand=True, pady=(0, 10))
-        ttk.Label(library, text="Источники хранятся на этом компьютере в research_library.json. Они могут устаревать; смотри дату получения и открывай исходную страницу.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w")
+        ttk.Label(library, text="Основная зашифрованная копия может храниться в Supabase; небольшой локальный кеш нужен для быстрых ответов и работы без сети. Источники могут устаревать — смотри дату получения и открывай исходную страницу.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w")
         list_frame = ttk.Frame(library, style="Panel.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(8, 8))
         list_frame.columnconfigure(0, weight=1)
@@ -1497,6 +2233,7 @@ class MoyaIshkaApp:
         self._render_current_chat()
         self.show_page("chat")
         self.input_box.focus_set()
+        self._schedule_cloud_sync()
         self._set_status("Создан новый диалог")
 
     def rename_chat(self) -> None:
@@ -1507,6 +2244,7 @@ class MoyaIshkaApp:
             self.store.rename_conversation(self.current_chat_id, title)
             self._refresh_chat_list()
             self._render_current_chat()
+            self._schedule_cloud_sync()
 
     def delete_chat(self) -> None:
         if self.busy:
@@ -1518,6 +2256,7 @@ class MoyaIshkaApp:
         self.current_chat_id = self.store.ensure_conversation()
         self._refresh_chat_list()
         self._render_current_chat()
+        self._schedule_cloud_sync()
         self._set_status("Диалог удалён")
 
     def clear_chat(self) -> None:
@@ -1527,6 +2266,7 @@ class MoyaIshkaApp:
             self.store.clear_messages(self.current_chat_id)
             self._render_current_chat()
             self._refresh_chat_list()
+            self._schedule_cloud_sync()
             self._set_status("Переписка очищена")
 
     def _chat_context_menu(self, event: tk.Event) -> None:
@@ -1707,6 +2447,7 @@ class MoyaIshkaApp:
         self.pending_attachment = None
         self.attachment_label_var.set("")
         self.store.add_message(self.current_chat_id, "user", content)
+        self._schedule_cloud_sync()
         if bool(self.config.get("auto_memory", True)) and not had_attachment:
             candidate = extract_memory_candidate(prompt)
             if candidate:
@@ -1715,11 +2456,13 @@ class MoyaIshkaApp:
                     memories.append(candidate)
                     atomic_json_save(CONFIG_PATH, self.config)
                     self._refresh_memory_list()
+                    self._schedule_cloud_sync()
                     self._set_status("Полезный факт сохранён в память")
         web_query = self._extract_web_query(prompt) if not had_attachment else ""
         if web_query and bool(self.config.get("web_search_enabled", True)):
             self._render_current_chat()
             self.busy = True
+            self.resource_governor.set_foreground_busy(True)
             if self.avatar is not None:
                 self.avatar.set_talking(True)
             self.send_button.configure(state="disabled", text="Ищу в интернете…")
@@ -1731,6 +2474,7 @@ class MoyaIshkaApp:
             return
         if windows_action is not None and windows_action.handled:
             self.store.add_message(self.current_chat_id, "assistant", windows_action.message, "Windows")
+            self._schedule_cloud_sync()
             self._render_current_chat()
             self._set_status(windows_action.message)
             if bool(self.config.get("voice_tts", False)):
@@ -1738,6 +2482,7 @@ class MoyaIshkaApp:
             return
         if plugin_response is not None:
             self.store.add_message(self.current_chat_id, "assistant", plugin_response, "плагин")
+            self._schedule_cloud_sync()
             self._render_current_chat()
             self._set_status("Команда обработана Python-плагином")
             if bool(self.config.get("voice_tts", False)):
@@ -1745,6 +2490,7 @@ class MoyaIshkaApp:
             return
         self._render_current_chat()
         self.busy = True
+        self.resource_governor.set_foreground_busy(True)
         if self.avatar is not None:
             self.avatar.set_talking(True)
         self.send_button.configure(state="disabled", text="Думаю…")
@@ -1761,6 +2507,7 @@ class MoyaIshkaApp:
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": float(self.config.get("temperature", 0.7)),
+            "resource_pressure": self.resource_governor.snapshot().system_pressure,
         }
         conversation_id = self.current_chat_id
         threading.Thread(target=self._reply_worker, args=(mode, settings, messages, conversation_id), daemon=True).start()
@@ -1773,6 +2520,7 @@ class MoyaIshkaApp:
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": float(self.config.get("temperature", 0.7)),
+            "resource_pressure": self.resource_governor.snapshot().system_pressure,
         }
 
     def _extract_web_query(self, prompt: str) -> str:
@@ -1803,8 +2551,8 @@ class MoyaIshkaApp:
         try:
             documents = search_and_fetch(
                 query,
-                max_results=int(self.config.get("research_results_limit", 5)),
-                fetch_pages=int(self.config.get("research_fetch_pages", 3)),
+                max_results=int(self.config.get("research_results_limit", 10)),
+                fetch_pages=int(self.config.get("research_fetch_pages", 5)),
             )
             self.events.put(("research_store", documents))
             if messages and messages[-1]["role"] == "user":
@@ -1866,11 +2614,12 @@ class MoyaIshkaApp:
         threading.Thread(target=self._research_worker, args=(query, False), daemon=True).start()
 
     def _research_worker(self, query: str, automatic: bool) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
         try:
             documents = search_and_fetch(
                 query,
-                max_results=int(self.config.get("research_results_limit", 5)),
-                fetch_pages=int(self.config.get("research_fetch_pages", 3)),
+                max_results=int(self.config.get("research_results_limit", 10)),
+                fetch_pages=int(self.config.get("research_fetch_pages", 5)),
             )
             self.events.put(("research_complete", {"query": query, "documents": documents, "automatic": automatic}))
         except Exception as exc:
@@ -1889,12 +2638,16 @@ class MoyaIshkaApp:
             "auto_search_current": bool(self.auto_search_current_var.get()),
             "use_research_library": bool(self.use_research_library_var.get()),
             "research_auto_enabled": bool(self.research_auto_var.get()),
+            "research_auto_user_configured": True,
+            "research_limits_user_configured": True,
             "research_topics": self.research_topics_box.get("1.0", "end").strip(),
             "research_interval_hours": max(1, min(interval, 48)),
             "research_results_limit": max(1, min(results, 10)),
             "research_fetch_pages": max(0, min(pages, 5)),
         })
+        self.config["cloud_modified_at"] = now_iso()
         atomic_json_save(CONFIG_PATH, self.config)
+        self._schedule_cloud_sync()
         self.research_status_var.set("Настройки исследования сохранены.")
         if show_message:
             messagebox.showinfo("Исследования", "Настройки веб-поиска сохранены.")
@@ -1919,7 +2672,13 @@ class MoyaIshkaApp:
         if self.research_busy or not bool(self.config.get("research_auto_enabled", False)) or not bool(self.config.get("web_search_enabled", True)):
             self._schedule_auto_research_next()
             return
-        topics = [line.strip() for line in str(self.config.get("research_topics", "")).splitlines() if line.strip()][:5]
+        pressure = self.resource_governor.snapshot()
+        if self.busy or self.voice_busy or pressure.throttled:
+            reason = pressure.reason or "выполняется пользовательская задача"
+            self.research_status_var.set(f"Фоновое исследование отложено, чтобы не мешать другим программам: {reason}.")
+            self._auto_research_after_id = self.root.after(60000, self._run_auto_research)
+            return
+        topics = [line.strip() for line in str(self.config.get("research_topics", "")).splitlines() if line.strip()][:4]
         if not topics:
             return
         self.research_busy = True
@@ -1927,17 +2686,23 @@ class MoyaIshkaApp:
         threading.Thread(target=self._auto_research_worker, args=(topics,), daemon=True).start()
 
     def _auto_research_worker(self, topics: list[str]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
         all_docs: list[dict[str, Any]] = []
         errors: list[str] = []
         for topic in topics:
+            if not self.resource_governor.wait_for_background_slot(max_wait_seconds=600):
+                errors.append("Фоновое исследование приостановлено из-за нагрузки компьютера.")
+                break
             try:
                 all_docs.extend(search_and_fetch(
                     topic,
-                    max_results=min(5, int(self.config.get("research_results_limit", 5))),
-                    fetch_pages=min(2, int(self.config.get("research_fetch_pages", 3))),
+                    max_results=min(10, int(self.config.get("research_results_limit", 10))),
+                    fetch_pages=min(5, int(self.config.get("research_fetch_pages", 5))),
                 ))
             except Exception as exc:
                 errors.append(f"{topic}: {exc}")
+            # Do not monopolize the network or memory even while the PC is idle.
+            time.sleep(1.5)
         self.events.put(("research_complete", {"query": "; ".join(topics), "documents": all_docs, "automatic": True, "errors": errors}))
 
     def _schedule_auto_research_next(self) -> None:
@@ -2055,7 +2820,21 @@ class MoyaIshkaApp:
             raise RuntimeError("Заполните адрес Ollama и имя локальной модели в настройках.")
         if not base.startswith("http://") and not base.startswith("https://"):
             raise RuntimeError("Адрес Ollama должен начинаться с http:// или https://")
-        payload = {"model": model, "messages": messages, "stream": False, "options": {"temperature": float(settings.get("temperature", 0.7))}}
+        pressure = bool(settings.get("resource_pressure", False))
+        logical_threads = 2 if pressure else 4
+        context_window = 1536 if pressure else 4096
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": "2m",
+            "options": {
+                "temperature": float(settings.get("temperature", 0.7)),
+                "num_ctx": context_window,
+                "num_thread": logical_threads,
+                "num_predict": 384,
+            },
+        }
         data = post_json(base + "/api/chat", payload, timeout=240)
         try:
             answer = str(data["message"]["content"]).strip()
@@ -2109,6 +2888,8 @@ class MoyaIshkaApp:
                     if self.avatar is not None:
                         self.avatar.set_talking(False)
                     self.busy = False
+                    self.resource_governor.set_foreground_busy(False)
+                    self._schedule_cloud_sync()
                     self.send_button.configure(state="normal", text="Отправить  ↗")
                 elif event == "failure":
                     conversation_id, error_text = payload
@@ -2118,6 +2899,8 @@ class MoyaIshkaApp:
                     if self.avatar is not None:
                         self.avatar.set_talking(False)
                     self.busy = False
+                    self.resource_governor.set_foreground_busy(False)
+                    self._schedule_cloud_sync()
                     self.send_button.configure(state="normal", text="Отправить  ↗")
                 elif event == "tts_voice_progress":
                     voice_id, downloaded, total = payload
@@ -2148,6 +2931,7 @@ class MoyaIshkaApp:
                     messagebox.showerror("Проверка голоса", str(payload))
                 elif event == "voice_text":
                     self.voice_busy = False
+                    self.resource_governor.set_foreground_busy(bool(self.busy))
                     self.voice_stop_button.configure(state="disabled")
                     self.voice_start_button.configure(state="normal" if bool(self.config.get("microphone_enabled", False)) else "disabled")
                     if not bool(self.config.get("microphone_enabled", False)):
@@ -2165,6 +2949,7 @@ class MoyaIshkaApp:
                         self.send_message()
                 elif event == "voice_error":
                     self.voice_busy = False
+                    self.resource_governor.set_foreground_busy(bool(self.busy))
                     self.voice_stop_button.configure(state="disabled")
                     self.voice_start_button.configure(state="normal" if bool(self.config.get("microphone_enabled", False)) else "disabled")
                     self.voice_status_var.set(str(payload))
@@ -2288,6 +3073,7 @@ class MoyaIshkaApp:
                             message += "\nНекоторые темы не удалось обработать: " + "; ".join(errors[:3])
                         self.research_status_var.set(message)
                     self._refresh_research_list()
+                    self._schedule_cloud_sync()
                     self._set_status(f"База знаний обновлена: +{added} источников")
                     if not info.get("automatic"):
                         messagebox.showinfo("Исследование завершено", f"Найдено результатов: {len(docs)}\nНовых источников в базе: {added}")
@@ -2301,6 +3087,106 @@ class MoyaIshkaApp:
                     if not info.get("automatic"):
                         messagebox.showerror("Веб-исследование", str(info.get("error", "Неизвестная ошибка")))
                     self._schedule_auto_research_next()
+                elif event == "google_drive_auth_success":
+                    session_package, remote_payload, remote_revision = payload
+                    self._remember_cloud_package(session_package)
+                    self.google_drive_client_secret_var.set("")
+                    self.google_drive_e2e_password_var.set("")
+                    self.google_drive_status_var.set("Google Drive подключён как основное облако. Папка «Моя ИИшка Cloud» готова.")
+                    if remote_payload is not None:
+                        try:
+                            counts = self._merge_cloud_snapshot(remote_payload)
+                            merged_snapshot = self._build_cloud_snapshot()
+                            self.cloud_sync_busy = True
+                            self.cloud_status_var.set(f"Получены данные из Google Drive: диалоги +{counts[0]}, сообщения +{counts[1]}, источники +{counts[2]}. Объединяю копию…")
+                            threading.Thread(target=self._cloud_upload_worker,
+                                             args=(merged_snapshot, dict(self.google_drive_session), str(remote_revision or "")),
+                                             daemon=True).start()
+                        except Exception as exc:
+                            self.cloud_sync_busy = False
+                            self.google_drive_status_var.set(f"Google Drive подключён, но слияние не выполнено: {exc}")
+                    else:
+                        self.google_drive_status_var.set("Google Drive подключён. Создаю первую зашифрованную копию…")
+                        self._start_cloud_sync(force=True)
+                elif event == "google_drive_auth_error":
+                    self.google_drive_status_var.set(f"Ошибка подключения Google Drive: {payload}")
+                    messagebox.showerror("Google Drive", str(payload))
+                elif event == "cloud_signup_pending":
+                    self.cloud_status_var.set(str(payload))
+                    messagebox.showinfo("Подтверждение почты", str(payload))
+                elif event == "cloud_auth_success":
+                    session_package, remote_payload, remote_revision = payload
+                    self._save_cloud_bundle(session_package, session_package.get("session", {}))
+                    self.cloud_account_password_var.set("")
+                    self.cloud_e2e_password_var.set("")
+                    if remote_payload is not None:
+                        try:
+                            counts = self._merge_cloud_snapshot(remote_payload)
+                            merged_snapshot = self._build_cloud_snapshot()
+                            self.cloud_sync_busy = True
+                            self.cloud_status_var.set(f"Загружены данные из облака: диалогов +{counts[0]}, сообщений +{counts[1]}, источников +{counts[2]}. Объединяю локальную копию…")
+                            threading.Thread(
+                                target=self._cloud_upload_worker,
+                                args=(merged_snapshot, dict(session_package), str(remote_revision or "")),
+                                daemon=True,
+                            ).start()
+                        except Exception as exc:
+                            self.cloud_sync_busy = False
+                            self.cloud_status_var.set(f"Не удалось объединить облачную копию: {exc}")
+                            messagebox.showerror("Облачная синхронизация", str(exc))
+                    else:
+                        self.cloud_status_var.set("Вход выполнен. Создаю первую зашифрованную облачную копию…")
+                        self._start_cloud_sync(force=True)
+                elif event == "cloud_auth_error":
+                    self.cloud_status_var.set(f"Ошибка входа в облако: {payload}")
+                    messagebox.showerror("Облачный аккаунт", str(payload))
+                elif event == "cloud_remote_data":
+                    remote_payload, remote_revision, session_package = payload
+                    try:
+                        counts = self._merge_cloud_snapshot(remote_payload)
+                        merged_snapshot = self._build_cloud_snapshot()
+                        self._remember_cloud_package(session_package)
+                        if snapshot_digest(merged_snapshot) == snapshot_digest(remote_payload) and str(remote_revision) != "__new__":
+                            if str(session_package.get("provider", "supabase")) == "google_drive" and self.cloud_session_ready:
+                                threading.Thread(target=self._finish_google_backup_mirror_worker,
+                                                 args=(merged_snapshot, dict(session_package), counts), daemon=True).start()
+                            else:
+                                self.events.put(("cloud_sync_done", (dict(session_package), f"Облако синхронизировано; новых записей: диалоги +{counts[0]}, сообщения +{counts[1]}, источники +{counts[2]}. Повторная загрузка не нужна.")))
+                        else:
+                            self.cloud_status_var.set(f"Получено из облака: диалогов +{counts[0]}, сообщений +{counts[1]}, источников +{counts[2]}. Сохраняю объединённую копию…")
+                            threading.Thread(
+                                target=self._cloud_upload_worker,
+                                args=(merged_snapshot, dict(session_package), str(remote_revision or "")),
+                                daemon=True,
+                            ).start()
+                    except Exception as exc:
+                        self.cloud_sync_busy = False
+                        self.cloud_status_var.set(f"Не удалось объединить облачные данные: {exc}")
+                        messagebox.showerror("Облачная синхронизация", str(exc))
+                elif event == "cloud_sync_done":
+                    session_package, status_text = payload
+                    self._remember_cloud_package(session_package)
+                    if str(session_package.get("provider", "supabase")) == "google_drive":
+                        self.google_drive_status_var.set("Google Drive синхронизирован · основное облако")
+                    else:
+                        self.cloud_status_var.set("Supabase обновлён · резервное облако")
+                    self.cloud_sync_busy = False
+                    self.config["cloud_last_sync_at"] = now_iso()
+                    atomic_json_save(CONFIG_PATH, self.config)
+                    self.cloud_status_var.set(f"{status_text} · {pretty_time(self.config['cloud_last_sync_at'])}")
+                    if self.cloud_sync_dirty:
+                        self.cloud_sync_dirty = False
+                        self._schedule_cloud_sync()
+                    self._schedule_cloud_sync_periodic()
+                elif event == "cloud_sync_conflict":
+                    session_package, error_text = payload
+                    self._remember_cloud_package(session_package)
+                    self.cloud_sync_busy = False
+                    self.cloud_status_var.set(str(error_text))
+                elif event == "cloud_sync_error":
+                    self.cloud_sync_busy = False
+                    self.cloud_status_var.set(f"Облако временно недоступно: {payload}. Локальные данные сохранены; повтор будет выполнен позже.")
+                    self._schedule_cloud_sync_periodic()
                 elif event == "test_result":
                     title, success, text = payload
                     if success:
@@ -2398,9 +3284,14 @@ class MoyaIshkaApp:
             "update_repo": self.update_repo_var.get().strip() if hasattr(self, "update_repo_var") else str(self.config.get("update_repo", "")),
             "auto_update_check": bool(self.auto_update_var.get()) if hasattr(self, "auto_update_var") else bool(self.config.get("auto_update_check", True)),
             "install_dir": self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else str(self.config.get("install_dir", "")),
+            "cloud_url": self.cloud_url_var.get().strip() if hasattr(self, "cloud_url_var") else str(self.config.get("cloud_url", "")),
+            "cloud_publishable_key": self.cloud_publishable_key_var.get().strip() if hasattr(self, "cloud_publishable_key_var") else str(self.config.get("cloud_publishable_key", "")),
+            "cloud_email": self.cloud_email_var.get().strip() if hasattr(self, "cloud_email_var") else str(self.config.get("cloud_email", "")),
+            "cloud_auto_sync": bool(self.cloud_auto_sync_var.get()) if hasattr(self, "cloud_auto_sync_var") else bool(self.config.get("cloud_auto_sync", False)),
         })
         self.font_family = str(self.config.get("font_family", "Segoe UI"))
         self.plugin_manager.enabled_python = bool(self.config.get("plugins_enabled", False))
+        self.config["cloud_modified_at"] = now_iso()
         atomic_json_save(CONFIG_PATH, self.config)
         self.chat_mode_var.set(self.config["mode"])
         self.chat_title_var.set(self.store.get_conversation(self.current_chat_id)["title"])
@@ -2414,6 +3305,7 @@ class MoyaIshkaApp:
         if show_message:
             messagebox.showinfo("Настройки сохранены", f"Изменения применены.\n\nПапка данных:\n{DATA_DIR}")
         self._set_status("Настройки сохранены")
+        self._schedule_cloud_sync()
         return True
 
     def save_settings(self) -> None:
@@ -2573,6 +3465,7 @@ class MoyaIshkaApp:
             self.voice_status_var.set("Микрофон уже слушает. Нажми «Остановить», чтобы прервать запись.")
             return
         self.voice_busy = True
+        self.resource_governor.set_foreground_busy(True)
         self.voice_cancel_event = threading.Event()
         cancel_event = self.voice_cancel_event
         self.voice_start_button.configure(state="disabled")
@@ -3296,6 +4189,7 @@ class MoyaIshkaApp:
         atomic_json_save(CONFIG_PATH, self.config)
         self.memory_entry_var.set("")
         self._refresh_memory_list()
+        self._schedule_cloud_sync()
         self._set_status("Запись добавлена в память")
 
     def edit_memory(self) -> None:
@@ -3312,6 +4206,7 @@ class MoyaIshkaApp:
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
             self.memory_list.selection_set(index)
+            self._schedule_cloud_sync()
             self._set_status("Запись памяти изменена")
 
     def remove_memory(self) -> None:
@@ -3324,6 +4219,7 @@ class MoyaIshkaApp:
             del items[index]
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
+            self._schedule_cloud_sync()
             self._set_status("Запись удалена из памяти")
 
     def clear_memory(self) -> None:
@@ -3333,6 +4229,7 @@ class MoyaIshkaApp:
             self.config["memory"] = []
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
+            self._schedule_cloud_sync()
             self._set_status("Память очищена")
 
     # ---------- utilities ----------
@@ -3352,6 +4249,7 @@ class MoyaIshkaApp:
 
     def on_close(self) -> None:
         try:
+            self.resource_governor.stop()
             if self.voice_cancel_event is not None:
                 self.voice_cancel_event.set()
             # The current config is saved on each explicit settings/memory update.
@@ -3360,6 +4258,13 @@ class MoyaIshkaApp:
                     self.root.after_cancel(self._auto_research_after_id)
                 except Exception:
                     pass
+            for timer_id in (self.cloud_sync_after_id, self.cloud_sync_periodic_id):
+                if timer_id:
+                    try:
+                        self.root.after_cancel(timer_id)
+                    except Exception:
+                        pass
+            self.resource_governor.stop()
             self.store.close()
             if self.avatar is not None:
                 try:

@@ -126,9 +126,16 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
     def test_microphone_is_off_by_default(self):
         self.assertFalse(DEFAULT_CONFIG["microphone_enabled"])
 
-    def test_periodic_research_is_opt_in(self):
-        self.assertFalse(DEFAULT_CONFIG["research_auto_enabled"])
+    def test_background_research_is_enabled_for_413_profile(self):
+        self.assertTrue(DEFAULT_CONFIG["research_auto_enabled"])
         self.assertTrue(DEFAULT_CONFIG["web_search_enabled"])
+        self.assertIn("Искусственный интеллект", DEFAULT_CONFIG["research_topics"])
+        self.assertEqual(DEFAULT_CONFIG["background_ram_limit_mb"], 5120)
+        self.assertEqual(DEFAULT_CONFIG["background_min_available_ram_mb"], 8192)
+        self.assertEqual(DEFAULT_CONFIG["research_results_limit"], 10)
+        self.assertEqual(DEFAULT_CONFIG["research_fetch_pages"], 5)
+        self.assertEqual(DEFAULT_CONFIG["research_interval_hours"], 3)
+        self.assertTrue(DEFAULT_CONFIG["cloud_auto_sync"])
 
 
 if __name__ == "__main__":

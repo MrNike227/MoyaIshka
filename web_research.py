@@ -6,12 +6,15 @@ untrusted data: callers must never treat their contents as application commands.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import html
 import ipaddress
 import json
 import re
 import socket
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -20,8 +23,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.2"
-SEARCH_URL = "https://html.duckduckgo.com/html/?q="
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.3"
+BING_RSS_URL = "https://www.bing.com/search?format=rss&q="
+DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/?q="
 MAX_QUERY_LENGTH = 400
 MAX_RESULTS = 10
 MAX_PAGE_BYTES = 2_000_000
@@ -188,33 +192,123 @@ class _PageTextParser(HTMLParser):
         return title, text[:MAX_PAGE_TEXT]
 
 
-def search_web(query: str, max_results: int = 5, timeout: int = 15) -> list[dict[str, str]]:
-    query = re.sub(r"\s+", " ", str(query)).strip()
-    if not query:
-        raise ResearchError("Введите поисковый запрос")
-    if len(query) > MAX_QUERY_LENGTH:
-        query = query[:MAX_QUERY_LENGTH]
-    max_results = max(1, min(int(max_results), MAX_RESULTS))
-    url = SEARCH_URL + quote_plus(query)
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
+def _request_search_response(url: str, timeout: int, accept: str) -> tuple[bytes, str, int]:
+    request = Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": accept,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+        "Cache-Control": "no-cache",
+    })
     try:
         with _OPENER.open(request, timeout=max(3, min(int(timeout), 45))) as response:
-            content_type = response.headers.get("Content-Type", "")
-            if "html" not in content_type.lower():
-                raise ResearchError("Поисковая система вернула ответ не в формате HTML")
             raw = _read_limited(response, 1_500_000)
-            encoding = response.headers.get_content_charset() or "utf-8"
-            page = raw.decode(encoding, errors="replace")
+            return raw, response.headers.get("Content-Type", ""), int(getattr(response, "status", 200) or 200)
     except HTTPError as exc:
-        raise ResearchError(f"Поиск вернул HTTP {exc.code}") from exc
+        # Some search frontends return 202 with a bot/challenge page rather than
+        # a conventional error. Preserve the status in the provider diagnostic.
+        raise ResearchError(f"HTTP {exc.code}") from exc
     except URLError as exc:
-        raise ResearchError(f"Не удалось подключиться к поиску: {exc.reason}") from exc
+        raise ResearchError(f"ошибка соединения: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise ResearchError("Поиск не ответил вовремя") from exc
+        raise ResearchError("источник не ответил вовремя") from exc
+    except OSError as exc:
+        raise ResearchError(f"ошибка сети: {exc}") from exc
+
+
+def _clean_feed_text(value: str, limit: int = 1200) -> str:
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:limit]
+
+
+def _local_xml_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _bing_unwrap_url(raw: str) -> str:
+    """Unwrap Bing RSS click-through URLs when the feed returns one."""
+    raw = html.unescape(str(raw or "").strip())
+    if raw.startswith("//"):
+        raw = "https:" + raw
+    parsed = urlparse(raw)
+    if (parsed.hostname or "").lower().endswith("bing.com"):
+        params = parse_qs(parsed.query)
+        direct = params.get("url", [""])[0]
+        if direct.startswith(("http://", "https://")):
+            return direct
+        encoded = params.get("u", [""])[0]
+        if encoded.startswith("a1") and len(encoded) > 2:
+            token = encoded[2:]
+            try:
+                padded = token + "=" * (-len(token) % 4)
+                decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="strict")
+                if decoded.startswith(("http://", "https://")):
+                    return decoded
+            except (ValueError, UnicodeError, binascii.Error):
+                pass
+    return raw
+
+
+def _search_bing_rss(query: str, max_results: int, timeout: int) -> list[dict[str, str]]:
+    """Keyless Bing RSS search. XML is less brittle than scraping a JS/HTML SERP."""
+    url = BING_RSS_URL + quote_plus(query) + "&setlang=ru-RU"
+    raw, content_type, status = _request_search_response(
+        url, timeout, "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5"
+    )
+    if status < 200 or status >= 300:
+        raise ResearchError(f"Bing RSS вернул HTTP {status}")
+    if raw.lstrip().startswith(b"<!DOCTYPE html") or b"<rss" not in raw[:4096].lower():
+        raise ResearchError("Bing RSS вернул не RSS/XML; формат ответа мог измениться")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ResearchError("Bing RSS вернул некорректный XML") from exc
+
+    items: list[dict[str, str]] = []
+    for node in root.iter():
+        if _local_xml_name(node.tag) != "item":
+            continue
+        fields: dict[str, str] = {}
+        for child in list(node):
+            name = _local_xml_name(child.tag)
+            if name in {"title", "link", "description"}:
+                fields[name] = "".join(child.itertext()).strip()
+        title = _clean_feed_text(fields.get("title", ""), 300)
+        link = _bing_unwrap_url(fields.get("link", ""))
+        snippet = _clean_feed_text(fields.get("description", ""), 1200)
+        if not title or not link:
+            continue
+        try:
+            _validate_public_url(link, resolve_host=False)
+        except ResearchError:
+            continue
+        items.append({"title": title, "url": link, "snippet": snippet})
+        if len(items) >= max_results:
+            break
+    if not items:
+        raise ResearchError("Bing RSS не вернул ссылок на результаты")
+    return items
+
+
+def _search_duckduckgo_html(query: str, max_results: int, timeout: int) -> list[dict[str, str]]:
+    """Compatibility fallback for networks where DuckDuckGo is reachable."""
+    url = DUCKDUCKGO_HTML_URL + quote_plus(query)
+    raw, content_type, status = _request_search_response(
+        url, timeout, "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
+    )
+    if status < 200 or status >= 300:
+        raise ResearchError(f"DuckDuckGo вернул HTTP {status}")
+    if "html" not in content_type.lower():
+        raise ResearchError("DuckDuckGo вернул ответ не в формате HTML")
+    encoding_match = re.search(br"<meta[^>]+charset=['\"]?([a-zA-Z0-9._-]+)", raw[:8192], re.I)
+    encoding = encoding_match.group(1).decode("ascii", "ignore") if encoding_match else "utf-8"
+    page = raw.decode(encoding or "utf-8", errors="replace")
     parser = _SearchResultParser()
     parser.feed(page)
     parser.close()
-    unique: list[dict[str, str]] = []
+    results: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in parser.results:
         link = item.get("url", "")
@@ -226,12 +320,48 @@ def search_web(query: str, max_results: int = 5, timeout: int = 15) -> list[dict
         if normalized in seen:
             continue
         seen.add(normalized)
-        unique.append({"title": item.get("title", "Без названия")[:300], "url": normalized, "snippet": item.get("snippet", "")[:1200]})
-        if len(unique) >= max_results:
+        title = _clean_feed_text(item.get("title", ""), 300)
+        if title:
+            results.append({"title": title, "url": normalized, "snippet": _clean_feed_text(item.get("snippet", ""), 1200)})
+        if len(results) >= max_results:
             break
-    if not unique:
-        raise ResearchError("Поисковая система не вернула читаемых результатов. Попробуйте другой запрос или проверьте доступ к DuckDuckGo.")
-    return unique
+    if not results:
+        raise ResearchError("DuckDuckGo не вернул читаемых результатов (возможно, показал антибот-проверку)")
+    return results
+
+
+def search_web(query: str, max_results: int = 5, timeout: int = 15) -> list[dict[str, str]]:
+    """Search without API keys: Bing RSS first, DuckDuckGo HTML as fallback.
+
+    Both backends are public search pages, not guaranteed APIs. If one blocks
+    automated requests or changes its response format, the second is tried.
+    """
+    query = re.sub(r"\s+", " ", str(query)).strip()
+    if not query:
+        raise ResearchError("Введите поисковый запрос")
+    if len(query) > MAX_QUERY_LENGTH:
+        query = query[:MAX_QUERY_LENGTH]
+    max_results = max(1, min(int(max_results), MAX_RESULTS))
+
+    provider_errors: list[str] = []
+    providers = (
+        ("Bing RSS", _search_bing_rss),
+        ("DuckDuckGo", _search_duckduckgo_html),
+    )
+    for provider_name, provider in providers:
+        try:
+            return provider(query, max_results, timeout)
+        except ResearchError as exc:
+            provider_errors.append(f"{provider_name}: {exc}")
+        except Exception as exc:
+            # A malformed provider response must not prevent trying the fallback.
+            provider_errors.append(f"{provider_name}: непредвиденная ошибка ({type(exc).__name__})")
+
+    details = "\n".join(f"• {message}" for message in provider_errors)
+    raise ResearchError(
+        "Не удалось получить результаты ни от одной бесплатной поисковой системы. "
+        "Проверь подключение к интернету, VPN/прокси или попробуй другой запрос.\n\n" + details
+    )
 
 
 def fetch_page(url: str, timeout: int = 15) -> dict[str, str]:
@@ -322,7 +452,7 @@ def search_and_fetch(query: str, max_results: int = 5, fetch_pages: int = 3) -> 
 class ResearchLibrary:
     """Small user-local searchable cache of public research notes."""
 
-    def __init__(self, path: Path, max_items: int = 300) -> None:
+    def __init__(self, path: Path, max_items: int = 1000) -> None:
         self.path = Path(path)
         self.max_items = max(20, min(int(max_items), 1000))
         self.items: list[dict[str, Any]] = []
