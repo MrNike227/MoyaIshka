@@ -39,6 +39,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("waf", source)
         self.assertIn("BOOTLOADER_SOURCE_RELATIVE", source)
         self.assertIn("PYINSTALLER_TAG", source)
+        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('"build_patched_pyinstaller.py"', main_source)
 
     def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
