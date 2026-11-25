@@ -21,7 +21,6 @@ set "PY=py -3.11"
 %PY% --version
 %PY% -c "import struct; assert struct.calcsize('P') * 8 == 64, '64-bit Python is required'"
 if errorlevel 1 goto failed
-if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade -r requirements.txt piper-tts==1.8.0
