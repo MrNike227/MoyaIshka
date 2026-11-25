@@ -21,7 +21,7 @@ VSVersionInfo(
           StringStruct('InternalName', 'MoyaIshka'),
           StringStruct('OriginalFilename', 'MoyaIshka.exe'),
           StringStruct('ProductName', 'Moya Ishka'),
-          StringStruct('ProductVersion', '4.1.8')
+          StringStruct('ProductVersion', '4.1.8.2')
         ]
       )
     ]),

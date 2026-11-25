@@ -160,6 +160,7 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4,1,8,2)", source)
         self.assertIn("prodvers=(4,1,8,2)", source)
+        self.assertIn("FileVersion', '4.1.8.2'", source)
         self.assertIn("ProductVersion', '4.1.8.2'", source)
 
 
