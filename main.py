@@ -2448,7 +2448,7 @@ class MoyaIshkaApp:
         return "break"
 
     def _on_global_mousewheel(self, event: tk.Event, linux_direction: int = 0) -> str | None:
-        """Scroll the nearest scrollable area beneath the pointer."""
+        """Scroll the containing page before an inner text/list widget."""
         try:
             widget = self.root.winfo_containing(event.x_root, event.y_root)
         except tk.TclError:
@@ -2462,12 +2462,29 @@ class MoyaIshkaApp:
             steps = int(-delta / 120)
             if steps == 0:
                 steps = -1 if delta > 0 else 1
-        while widget is not None and widget is not self.root:
+
+        # A Text widget embedded in the Settings page receives the pointer
+        # first and otherwise captures the wheel, preventing its parent
+        # Canvas from scrolling. Prefer the nearest ancestor Canvas so the
+        # whole settings page moves over fields such as "Мои дополнительные
+        # правила". Standalone Text/Listbox widgets keep their own scrolling.
+        ancestor = widget
+        while ancestor is not None and ancestor is not self.root:
             try:
-                if isinstance(widget, (tk.Text, tk.Listbox, tk.Canvas, ttk.Treeview)):
-                    widget.yview_scroll(steps, "units")
+                if isinstance(ancestor, tk.Canvas):
+                    ancestor.yview_scroll(steps, "units")
                     return "break"
-                widget = widget.master
+                ancestor = ancestor.master
+            except (tk.TclError, AttributeError):
+                return None
+
+        ancestor = widget
+        while ancestor is not None and ancestor is not self.root:
+            try:
+                if isinstance(ancestor, (tk.Text, tk.Listbox, ttk.Treeview)):
+                    ancestor.yview_scroll(steps, "units")
+                    return "break"
+                ancestor = ancestor.master
             except (tk.TclError, AttributeError):
                 return None
         return None
