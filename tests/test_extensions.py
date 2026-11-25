@@ -29,12 +29,12 @@ class AutoMemoryTests(unittest.TestCase):
 
 class PatchTests(unittest.TestCase):
     def test_large_source_context_contains_relevant_function_only(self):
-        padding = "".join(f"# padding {index} " + ("x" * 80) + "\\n" for index in range(1400))
+        padding = "".join(f"# padding {index} " + ("x" * 80) + "\n" for index in range(1400))
         source = (
-            "import os\\n\\n"
+            "import os\n\n"
             + padding
-            + "def update_profile():\\n    return 'profile'\\n\\n"
-            + "def erase_secret():\\n    return 'secret'\\n"
+            + "def update_profile():\n    return 'profile'\n\n"
+            + "def erase_secret():\n    return 'secret'\n"
         )
         self.assertGreater(len(source), 90_000)
         context = build_model_source_context(source, "change the profile button")
@@ -44,20 +44,20 @@ class PatchTests(unittest.TestCase):
         self.assertNotIn("return 'secret'", context)
 
     def test_large_source_context_keeps_original_line_numbers_for_diff(self):
-        padding = "".join(f"# padding {index} " + ("x" * 80) + "\\n" for index in range(1400))
-        source = "import os\\n\\n" + padding + "def update_profile():\\n    return 'profile'\\n"
+        padding = "".join(f"# padding {index} " + ("x" * 80) + "\n" for index in range(1400))
+        source = "import os\n\n" + padding + "def update_profile():\n    return 'profile'\n"
         context = build_model_source_context(source, "profile")
         original_line = source.splitlines().index("    return 'profile'") + 1
         patch = (
-            "--- a/main.py\\n+++ b/main.py\\n"
-            + f"@@ -{original_line},1 +{original_line},1 @@\\n"
-            + "-    return 'profile'\\n+    return 'PROFILE'\\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            + f"@@ -{original_line},1 +{original_line},1 @@\n"
+            + "-    return 'profile'\n+    return 'PROFILE'\n"
         )
         updated = apply_unified_diff(source, patch, "main.py")
         self.assertIn("return 'PROFILE'", updated)
 
     def test_small_source_context_is_unchanged(self):
-        source = "def answer():\\n    return 42\\n"
+        source = "def answer():\n    return 42\n"
         self.assertEqual(build_model_source_context(source, "answer"), source)
 
     def test_apply_single_file_diff(self):
