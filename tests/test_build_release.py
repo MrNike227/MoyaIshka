@@ -18,8 +18,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-binary "build_runtime\\python_runtime;."', build)
         self.assertIn("vcruntime140.dll", helper)
         self.assertIn("vcruntime140_1.dll", helper)
+        self.assertIn("ucrtbase.dll", helper)
+        self.assertIn('api-ms-win-crt-*.dll', helper)
 
-    def test_runtime_dll_collector_copies_vc_runtime(self):
+    def test_runtime_dll_collector_copies_vc_runtime_and_ucrt(self):
         from prepare_python_runtime import collect_runtime_dlls
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -28,8 +30,13 @@ class ReleaseBuildTests(unittest.TestCase):
             source.mkdir()
             (source / "vcruntime140.dll").write_bytes(b"runtime")
             (source / "msvcp140.dll").write_bytes(b"cxx")
+            (source / "ucrtbase.dll").write_bytes(b"ucrt")
+            (source / "api-ms-win-crt-runtime-l1-1-0.dll").write_bytes(b"api")
             copied = collect_runtime_dlls([source], destination)
-            self.assertEqual({item.name for item in copied}, {"vcruntime140.dll", "msvcp140.dll"})
+            self.assertEqual(
+                {item.name for item in copied},
+                {"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
+            )
             self.assertEqual((destination / "vcruntime140.dll").read_bytes(), b"runtime")
 
     def test_runtime_dll_collector_fails_when_core_runtime_is_missing(self):
@@ -68,6 +75,12 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("--collect-all cffi", build)
         self.assertIn("--hidden-import=_cffi_backend", build)
 
+    def test_frozen_smoke_test_requires_app_local_runtime_dlls(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('getattr(sys, "frozen", False)', source)
+        self.assertIn('"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll"', source)
+        self.assertIn("sys._MEIPASS", source)
+
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('"--self-test-imports"', source)
@@ -81,6 +94,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
+        self.assertIn("Verify packaged VC runtime DLLs are embedded", workflow)
+        self.assertIn("pyi-archive_viewer -l", workflow)
         self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
         self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
         self.assertIn("$process.ExitCode", workflow)
@@ -130,6 +145,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_publishes_only_after_frozen_exe_smoke_test(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertLess(workflow.index("Verify packaged VC runtime DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
         self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.exe.sha256", workflow)
 
