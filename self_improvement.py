@@ -317,13 +317,13 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
         if not match:
             raise ValueError(f"Непонятный заголовок блока изменений: {line.strip()}")
         old_start = int(match.group(1))
-        target_index = max(0, old_start - 1)
+        old_count = int(match.group(2) or 1)
+        new_count = int(match.group(4) or 1)
+        target_index = old_start if old_count == 0 else max(0, old_start - 1)
         if target_index < source_index:
             raise ValueError("Блоки diff идут не по порядку.")
         output.extend(source_lines[source_index:target_index])
         source_index = target_index
-        old_count = int(match.group(2) or 1)
-        new_count = int(match.group(4) or 1)
         consumed_old = 0
         produced_new = 0
         i += 1
