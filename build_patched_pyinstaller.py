@@ -24,12 +24,10 @@ PYINSTALLER_REPOSITORY = "https://github.com/pyinstaller/pyinstaller.git"
 BOOTLOADER_SOURCE_RELATIVE = Path("bootloader") / "src" / "pyi_dylib_python.c"
 BOOTLOADER_ARCH = "Windows-64bit-intel"
 PATCH_MARKER = "MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3"
-SOURCE_ANCHOR = (
-    "    /* Look for python shared library relative to the top-level application directory.\\n"
-    "     * Assuming that python shared library name contains only ASCII characters,\\n"
-    "     * we can use it directly in the wide-char string formatting function,\\n"
-    "     * without having to explicitly convert it from UTF8 to wide-char. */"
-)
+SOURCE_ANCHOR = """    /* Look for python shared library relative to the top-level application directory.
+     * Assuming that python shared library name contains only ASCII characters,
+     * we can use it directly in the wide-char string formatting function,
+     * without having to explicitly convert it from UTF8 to wide-char. */""";
 
 PRELOAD_C_BLOCK = r'''
     /* MOYA_PRELOAD_VC_RUNTIME_BEFORE_PYTHON_4_1_8_3
