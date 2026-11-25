@@ -63,7 +63,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not inspect the PyInstaller archive.'
           }
-          foreach ($dll in @('vcruntime140.dll', 'msvcp140.dll', 'ucrtbase.dll')) {
+          foreach ($dll in @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'ucrtbase.dll', 'api-ms-win-crt-runtime-l1-1-0.dll')) {
             if ($archiveListing -notmatch [regex]::Escape($dll)) {
               throw "Required app-local runtime DLL is missing from the EXE archive: $dll"
             }
