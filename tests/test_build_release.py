@@ -6,9 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseBuildTests(unittest.TestCase):
-    def test_application_version_is_4151(self):
+    def test_application_version_is_416(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.5.1"', source)
+        self.assertIn('APP_VERSION = "4.1.6"', source)
 
     def test_cryptography_is_explicitly_collected(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -74,11 +74,11 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_4151(self):
+    def test_windows_version_resource_is_416(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,5,1)", source)
-        self.assertIn("prodvers=(4,1,5,1)", source)
-        self.assertIn("ProductVersion', '4.1.5.1'", source)
+        self.assertIn("filevers=(4,1,6,0)", source)
+        self.assertIn("prodvers=(4,1,6,0)", source)
+        self.assertIn("ProductVersion', '4.1.6'", source)
 
 
 
@@ -90,7 +90,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.5.1", workflow)
+        self.assertIn("Build Windows release — verified 4.1.6", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
