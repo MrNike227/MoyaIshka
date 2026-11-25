@@ -217,7 +217,7 @@ def _normalize_diff_path(header: str) -> str:
     value = header.strip().split("\t", 1)[0].strip().strip('"')
     if value.startswith(("a/", "b/")):
         value = value[2:]
-    return value.replace("\\\\", "/")
+    return value.replace("\\", "/")
 
 
 def extract_unified_diff(response: str, expected_path: str) -> str:
@@ -234,7 +234,7 @@ def extract_unified_diff(response: str, expected_path: str) -> str:
     for i in range(start - 1):
         if lines[i].startswith("--- ") and i + 1 < start and lines[i + 1].startswith("+++ "):
             header = i
-    expected = expected_path.replace("\\\\", "/")
+    expected = expected_path.replace("\\", "/")
     if header is not None:
         old_path = _normalize_diff_path(lines[header][4:])
         new_path = _normalize_diff_path(lines[header + 1][4:])
@@ -242,7 +242,7 @@ def extract_unified_diff(response: str, expected_path: str) -> str:
             raise ValueError("Diff пытается изменить другой файл.")
     body = []
     for line in lines[start:]:
-        if hunk_re.match(line) or line.startswith("\\\\ No newline at end of file"):
+        if hunk_re.match(line) or line.startswith("\\ No newline at end of file"):
             body.append(line if line.endswith("\n") else line + "\n")
         elif line and line[0] in " +-":
             body.append(line if line.endswith("\n") else line + "\n")
@@ -316,6 +316,10 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
             raise ValueError("Блоки diff идут не по порядку.")
         output.extend(source_lines[source_index:target_index])
         source_index = target_index
+        old_count = int(match.group(2) or 1)
+        new_count = int(match.group(4) or 1)
+        consumed_old = 0
+        produced_new = 0
         i += 1
         while i < len(patch_lines) and not patch_lines[i].startswith("@@ "):
             item = patch_lines[i]
@@ -328,6 +332,9 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
                 raise ValueError(f"Некорректная строка в diff: {item[:80]!r}")
             marker, content = item[0], item[1:]
             if marker in " -":
+                consumed_old += 1
+                if marker == " ":
+                    produced_new += 1
                 if source_index >= len(source_lines):
                     raise ValueError("Diff не совпадает с текущим файлом (ожидалась строка, но файл закончился).")
                 if _normal(source_lines[source_index]) != _normal(content):
@@ -339,8 +346,14 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
                     output.append(source_lines[source_index])
                 source_index += 1
             elif marker == "+":
+                produced_new += 1
                 output.append(content)
             i += 1
+        if consumed_old != old_count or produced_new != new_count:
+            raise ValueError(
+                "Неполный блок diff: количество строк не совпадает с заголовком @@. "
+                "Повтори генерацию изменений."
+            )
         hunk_count += 1
     if hunk_count == 0:
         raise ValueError("В diff нет применимых изменений.")
