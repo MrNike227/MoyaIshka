@@ -46,6 +46,9 @@ if errorlevel 1 goto failed
 "%PY_EXE%" %PY_ARGS% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.bindings import _rust; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography:', cryptography.__version__, cryptography.__file__); print('Rust binding:', _rust.__file__); print('AES-GCM and Scrypt imports: OK')"
 if errorlevel 1 goto crypto_failed
 
+"%PY_EXE%" %PY_ARGS% -c "import cffi, _cffi_backend; from cffi import FFI; ffi=FFI(); assert ffi.new('int *', 23)[0] == 23; print('cffi:', cffi.__version__, cffi.__file__); print('_cffi_backend:', _cffi_backend.__file__)"
+if errorlevel 1 goto crypto_failed
+
 "%PY_EXE%" %PY_ARGS% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
@@ -91,12 +94,13 @@ if errorlevel 1 goto crypto_failed
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
-  --collect-all cryptography --collect-all psutil ^
+  --collect-all cryptography --collect-all cffi --collect-all psutil ^
   --hidden-import=cryptography.exceptions ^
   --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
   --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^
   --hidden-import=cryptography.hazmat.bindings._rust ^
-  --copy-metadata cryptography ^
+  --hidden-import=cffi --hidden-import=_cffi_backend ^
+  --copy-metadata cryptography --copy-metadata cffi ^
   --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes ^
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
