@@ -22,7 +22,7 @@ permissions:
 jobs:
   build-windows:
     name: Build and verify Windows EXE
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -55,11 +55,7 @@ jobs:
           GITHUB_ACTIONS: 'true'
         run: BUILD_EXE.bat
 
-      - name: Verify custom PyInstaller bootloader is installed
-        shell: pwsh
-        run: python build_patched_pyinstaller.py --verify-installed
-
-      - name: Verify x64 VC runtime and Universal CRT DLLs are embedded
+      - name: Verify app-local VC runtime DLLs are embedded
         shell: pwsh
         run: |
           $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
@@ -67,11 +63,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not inspect the PyInstaller archive.'
           }
-          foreach ($dll in @('python311.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'ucrtbase.dll', 'api-ms-win-crt-runtime-l1-1-0.dll')) {
+          foreach ($dll in @('python311.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')) {
             if ($archiveListing -notmatch [regex]::Escape($dll)) {
               throw "Required app-local runtime DLL is missing from the EXE archive: $dll"
             }
           }
+
+      - name: Audit python311.dll PE dependency tree on Windows
+        shell: pwsh
+        run: python verify_pe_dependencies.py dist/MoyaIshka.exe
 
       - name: Verify EXE starts without Python on PATH
         shell: pwsh

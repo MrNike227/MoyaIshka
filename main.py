@@ -152,7 +152,7 @@ def prepare_source_workspace() -> Path:
             "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
-            "BUILD_EXE.bat", "build_patched_pyinstaller.py", "prepare_python_runtime.py", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
+            "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
             "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
@@ -4846,7 +4846,7 @@ def _packaged_import_self_test() -> int:
         # in the one-file archive: verify the app-local runtime was extracted.
         if getattr(sys, "frozen", False):
             runtime_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-            required_runtime = ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll")
+            required_runtime = ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
             missing_runtime = [name for name in required_runtime if not (runtime_root / name).is_file()]
             if missing_runtime:
                 return 73

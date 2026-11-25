@@ -15,53 +15,25 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.1.8.3"', source)
 
-    def test_custom_bootloader_preloads_vc_runtime_before_python_dll(self):
-        from build_patched_pyinstaller import (
-            PATCH_MARKER, PRELOAD_C_BLOCK, SOURCE_ANCHOR, patch_bootloader_source,
-        )
-        with tempfile.TemporaryDirectory() as temp:
-            source_path = Path(temp) / "pyi_dylib_python.c"
-            source_path.write_text("before\n" + SOURCE_ANCHOR + "\n", encoding="utf-8")
-            self.assertTrue(patch_bootloader_source(source_path))
-            patched = source_path.read_text(encoding="utf-8")
-            self.assertLess(patched.index(PATCH_MARKER), patched.index(SOURCE_ANCHOR))
-            self.assertIn('L"vcruntime140.dll"', patched)
-            self.assertIn('L"vcruntime140_1.dll"', patched)
-            self.assertIn('L"msvcp140.dll"', patched)
-            self.assertLess(patched.index('L"vcruntime140.dll"'), patched.index('L"msvcp140.dll"'))
-            self.assertFalse(patch_bootloader_source(source_path))
-
-    def test_custom_bootloader_builder_uses_utf8_console_and_waf(self):
-        source = (ROOT / "build_patched_pyinstaller.py").read_text(encoding="utf-8")
-        self.assertIn('stream.reconfigure(encoding="utf-8", errors="backslashreplace")', source)
-        self.assertIn('build_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"', source)
-        self.assertIn('build_env["PYTHONUTF8"] = "1"', source)
-        self.assertIn('os.environ.get("RUNNER_TEMP")', source)
-        self.assertIn('tempfile.mkdtemp(prefix="mpyi_", dir=str(temp_parent))', source)
-
-    def test_build_uses_custom_bootloader_builder(self):
-        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
-        source = (ROOT / "build_patched_pyinstaller.py").read_text(encoding="utf-8")
-        self.assertIn("%PY% build_patched_pyinstaller.py", build)
-        self.assertIn('--add-data "build_patched_pyinstaller.py;source_project"', build)
-        self.assertIn("waf", source)
-        self.assertIn("BOOTLOADER_SOURCE_RELATIVE", source)
-        self.assertIn("PYINSTALLER_TAG", source)
-        self.assertIn('marker.get("patch") == PATCH_MARKER', source)
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('"build_patched_pyinstaller.py"', main_source)
-
-    def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
+    def test_python_vc_runtime_is_bundled_without_redundant_windows_ucrt(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         helper = (ROOT / "prepare_python_runtime.py").read_text(encoding="utf-8")
         self.assertIn("%PY% prepare_python_runtime.py", build)
         self.assertIn('--add-binary "build_runtime\\python_runtime;."', build)
         self.assertIn("vcruntime140.dll", helper)
         self.assertIn("vcruntime140_1.dll", helper)
-        self.assertIn("ucrtbase.dll", helper)
-        self.assertIn('api-ms-win-crt-*.dll', helper)
+        self.assertIn('"vcruntime140.dll"', helper)
+        self.assertIn('"vcruntime140_1.dll"', helper)
+        self.assertIn('"msvcp140.dll"', helper)
+        self.assertNotIn('"ucrtbase.dll"', helper)
+        self.assertNotIn('"api-ms-win-crt-*.dll"', helper)
+        audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
+        self.assertIn("CArchiveReader", audit)
+        self.assertIn("DIRECTORY_ENTRY_DELAY_IMPORT", audit)
+        self.assertIn("LoadLibraryExW", audit)
+        self.assertIn("LOAD_LIBRARY_SEARCH_SYSTEM32", audit)
 
-    def test_runtime_dll_collector_copies_vc_runtime_and_ucrt(self):
+    def test_runtime_dll_collector_copies_only_vc_runtime(self):
         from prepare_python_runtime import collect_runtime_dlls
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -79,13 +51,13 @@ class ReleaseBuildTests(unittest.TestCase):
             write_pe(source / "vcruntime140.dll")
             write_pe(source / "vcruntime140_1.dll")
             write_pe(source / "msvcp140.dll")
-            write_pe(source / "ucrtbase.dll")
-            write_pe(source / "api-ms-win-crt-runtime-l1-1-0.dll")
             copied = collect_runtime_dlls([source], destination)
             self.assertEqual(
                 {item.name for item in copied},
-                {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
+                {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"},
             )
+            self.assertFalse((destination / "ucrtbase.dll").exists())
+            self.assertFalse((destination / "api-ms-win-crt-runtime-l1-1-0.dll").exists())
             self.assertEqual((destination / "vcruntime140.dll").read_bytes()[:2], b"MZ")
 
     def test_runtime_dll_collector_rejects_32_bit_runtime_dll(self):
@@ -106,8 +78,6 @@ class ReleaseBuildTests(unittest.TestCase):
             write_pe(source / "vcruntime140.dll", 0x14C)
             write_pe(source / "vcruntime140_1.dll")
             write_pe(source / "msvcp140.dll")
-            write_pe(source / "ucrtbase.dll")
-            write_pe(source / "api-ms-win-crt-runtime-l1-1-0.dll")
             with self.assertRaisesRegex(RuntimeError, "требуется x64"):
                 collect_runtime_dlls([source], root / "bundle")
 
@@ -150,7 +120,8 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_frozen_smoke_test_requires_app_local_runtime_dlls(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('getattr(sys, "frozen", False)', source)
-        self.assertIn('"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"', source)
+        self.assertIn('"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"', source)
+        self.assertNotIn("ucrtbase.dll", source)
         self.assertIn('"_MEIPASS"', source)
 
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
@@ -166,13 +137,27 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
-        self.assertIn("Verify x64 VC runtime and Universal CRT DLLs are embedded", workflow)
+        self.assertIn("Verify app-local VC runtime DLLs are embedded", workflow)
         self.assertIn("pyi-archive_viewer -l", workflow)
         self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
         self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
         self.assertIn("$process.ExitCode", workflow)
         self.assertIn("if ($process.ExitCode -ne 0)", workflow)
-        self.assertIn("Verify custom PyInstaller bootloader is installed", workflow)
+        self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
+        self.assertIn("runs-on: windows-2022", workflow)
+        self.assertNotIn("build_patched_pyinstaller.py", workflow)
+
+    def test_native_dependency_audit_is_required_before_release(self):
+        audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("CArchiveReader", audit)
+        self.assertIn("DIRECTORY_ENTRY_DELAY_IMPORT", audit)
+        self.assertIn("LoadLibraryExW", audit)
+        self.assertIn("LOAD_WITH_ALTERED_SEARCH_PATH", audit)
+        self.assertIn("%PY% verify_pe_dependencies.py", build)
+        self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
+        self.assertIn("python verify_pe_dependencies.py dist/MoyaIshka.exe", workflow)
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
@@ -211,7 +196,9 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("Build Windows release — verified 4.1.8.3", workflow)
-        self.assertIn("Verify custom PyInstaller bootloader is installed", workflow)
+        self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
+        self.assertIn("runs-on: windows-2022", workflow)
+        self.assertNotIn("build_patched_pyinstaller.py", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
