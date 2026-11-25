@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import queue
 from pathlib import Path
 
 os.environ.setdefault("APPDATA", tempfile.mkdtemp(prefix="moya_test_appdata_"))
@@ -9,6 +10,7 @@ os.environ.setdefault("APPDATA", tempfile.mkdtemp(prefix="moya_test_appdata_"))
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import main as main_module
 from main import DEFAULT_CONFIG, MoyaIshkaApp, Store, extract_openai_content, read_attachment
 
 
@@ -93,6 +95,33 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
         result = app._input_return(type("Event", (), {"state": 1})())
         self.assertIsNone(result)
         self.assertEqual(calls, [])
+
+    def test_web_chat_returns_sources_without_api_key_or_ollama(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app.config = {"research_results_limit": 3, "research_fetch_pages": 1}
+        app.events = queue.Queue()
+        app._call_ollama = lambda *_args: (_ for _ in ()).throw(ConnectionError("Ollama недоступна"))
+        original_search = main_module.search_and_fetch
+        main_module.search_and_fetch = lambda *_args, **_kwargs: [{
+            "title": "Проверенная статья",
+            "url": "https://example.com/article",
+            "snippet": "Краткая выдержка из статьи",
+            "content": "Подробный текст статьи для проверки веб-поиска без ключа.",
+        }]
+        try:
+            app._web_chat_worker("тест", "Только онлайн", {"api_key": ""}, [
+                {"role": "user", "content": "поищи тест"}
+            ], "chat-1")
+        finally:
+            main_module.search_and_fetch = original_search
+        events = []
+        while not app.events.empty():
+            events.append(app.events.get_nowait())
+        reply = next(payload for event, payload in events if event == "reply")
+        self.assertEqual(reply[0], "chat-1")
+        self.assertIn("Проверенная статья", reply[1])
+        self.assertIn("https://example.com/article", reply[1])
+        self.assertEqual(reply[2], "интернет · без API-ключа")
 
     def test_microphone_is_off_by_default(self):
         self.assertFalse(DEFAULT_CONFIG["microphone_enabled"])

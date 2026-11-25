@@ -31,12 +31,16 @@ from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
 from self_improvement import editable_project_files, apply_patch_with_backup, apply_unified_diff, project_dir
 from updater import check_latest_release, download_verified_update
+from updater_helper import (
+    ensure_install_dir_writable, install_from_source, launch_windows_replacement,
+    resolve_install_dir, user_install_dir,
+)
 from voice_assistant import listen_once, speak_text
 from windows_control import handle_voice_command, launch_app, open_known_folder
-from web_research import ResearchError, ResearchLibrary, search_and_fetch
+from web_research import ResearchError, ResearchLibrary, format_research_digest, search_and_fetch
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.1"
+APP_VERSION = "4.1.2"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -71,14 +75,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ollama_model": "qwen2.5:3b",
     "temperature": 0.7,
     "theme": "Тёмная",
-    "font_size": 10,
+    "font_family": "Segoe UI",
+    "font_size": 12,
     "memory": [],
     "auto_memory": True,
     "voice_tts": False,
     "microphone_enabled": False,
     "plugins_enabled": False,
-    "update_repo": "",
+    "update_repo": "MrNike227/MoyaIshka_v4.1.1",
     "auto_update_check": True,
+    "install_dir": "",
+    "install_dir_user_selected": False,
     "web_search_enabled": True,
     "auto_search_current": True,
     "use_research_library": True,
@@ -381,6 +388,76 @@ def read_attachment(path: Path) -> str:
     return text
 
 
+class PurpleCheckbox(tk.Frame):
+    """Accessible click/keyboard checkbox with a solid purple square when enabled."""
+
+    def __init__(self, master: tk.Misc, text: str, variable: tk.BooleanVar, command=None, *,
+                 font=None, wraplength: int = 860, background: str = "#17243A",
+                 foreground: str = "#ECF2FC", accent: str = "#4B356F",
+                 border: str = "#8B7AA6") -> None:
+        super().__init__(master, bg=background, bd=0, highlightthickness=0, takefocus=1)
+        self.variable = variable
+        self.command = command
+        self._background = background
+        self._foreground = foreground
+        self._accent = accent
+        self._border = border
+        self.indicator = tk.Canvas(self, width=24, height=24, bg=background, bd=0,
+                                   highlightthickness=0, cursor="hand2")
+        self.indicator.pack(side="left", padx=(0, 8), pady=2)
+        self.caption = tk.Label(self, text=text, bg=background, fg=foreground,
+                                font=font, anchor="w", justify="left",
+                                wraplength=wraplength, cursor="hand2")
+        self.caption.pack(side="left", fill="x", expand=True)
+        for widget in (self, self.indicator, self.caption):
+            widget.bind("<Button-1>", self._toggle)
+            widget.bind("<space>", self._toggle)
+            widget.bind("<Return>", self._toggle)
+        self.bind("<Enter>", self._hover_on)
+        self.bind("<Leave>", self._hover_off)
+        self._trace_id = self.variable.trace_add("write", self._draw)
+        self._draw()
+
+    def _draw(self, *_args) -> None:
+        if not self.winfo_exists():
+            return
+        self.indicator.delete("all")
+        selected = bool(self.variable.get())
+        fill = self._accent if selected else self._background
+        outline = self._accent if selected else self._border
+        # A filled square means YES; an empty outlined square means NO.
+        self.indicator.create_rectangle(4, 4, 19, 19, fill=fill, outline=outline, width=1.5)
+
+    def _toggle(self, _event=None):
+        self.variable.set(not bool(self.variable.get()))
+        self._draw()
+        if callable(self.command):
+            self.command()
+        return "break"
+
+    def _hover_on(self, _event=None) -> None:
+        try:
+            self.caption.configure(fg=self._accent if not bool(self.variable.get()) else self._foreground)
+        except tk.TclError:
+            pass
+
+    def _hover_off(self, _event=None) -> None:
+        try:
+            self.caption.configure(fg=self._foreground)
+        except tk.TclError:
+            pass
+
+    def set_colors(self, background: str, foreground: str, accent: str, border: str) -> None:
+        self._background = background
+        self._foreground = foreground
+        self._accent = accent
+        self._border = border
+        self.configure(bg=background)
+        self.indicator.configure(bg=background)
+        self.caption.configure(bg=background, fg=foreground)
+        self._draw()
+
+
 class MoyaIshkaApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -404,6 +481,29 @@ class MoyaIshkaApp:
         self.config: dict[str, Any] = dict(DEFAULT_CONFIG)
         if isinstance(legacy_config, dict):
             self.config.update(legacy_config)
+        if not str(self.config.get("update_repo", "")).strip():
+            self.config["update_repo"] = DEFAULT_CONFIG["update_repo"]
+        # Improve readability for users upgrading from the former 10pt default.
+        # Keep an explicitly selected font family and any larger custom size.
+        if isinstance(legacy_config, dict) and "font_family" not in legacy_config:
+            self.config["font_family"] = "Segoe UI"
+            if int(self.config.get("font_size", 10) or 10) == 10:
+                self.config["font_size"] = 11
+        try:
+            import tkinter.font as tkfont
+            installed_fonts = set(tkfont.families(self.root))
+        except Exception:
+            installed_fonts = set()
+        preferred_font = str(self.config.get("font_family", "Segoe UI"))
+        if installed_fonts and preferred_font not in installed_fonts:
+            preferred_font = "Segoe UI" if "Segoe UI" in installed_fonts else ("Arial" if "Arial" in installed_fonts else "TkDefaultFont")
+        self.font_family = preferred_font
+        self.config["font_family"] = preferred_font
+        # Make the first-run UI comfortably readable while keeping Segoe UI for broad Windows compatibility.
+        if int(self.config.get("font_size", 12) or 12) < 12:
+            self.config["font_size"] = 12
+        self.colors = self._palette_for_theme()
+        self.purple_checkboxes: list[tuple[PurpleCheckbox, str]] = []
         # Preserve settings from the first release, which used longer mode labels.
         old_mode = str(self.config.get("mode", "Авто"))
         if old_mode.startswith("Только онлайн"):
@@ -412,6 +512,12 @@ class MoyaIshkaApp:
             self.config["mode"] = "Только локально"
         else:
             self.config["mode"] = "Авто"
+
+        # Remember the folder from which a packaged EXE is currently running.
+        # Source/START.bat users get a suggested per-user folder until they choose one.
+        if not str(self.config.get("install_dir", "")).strip():
+            running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
+            self.config["install_dir"] = str(resolve_install_dir(running_exe=running_exe))
 
         self.api_key = unprotect_api_key(self.config)
         self.store = Store(DB_PATH)
@@ -457,42 +563,105 @@ class MoyaIshkaApp:
         self.root.bind_all("<Button-4>", lambda e: self._on_global_mousewheel(e, -1), add="+")
         self.root.bind_all("<Button-5>", lambda e: self._on_global_mousewheel(e, 1), add="+")
         self.root.after(100, self._process_events)
+        self.root.after(250, self._apply_windows_titlebar_theme)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
 
     # ---------- visual shell ----------
+    def _make_checkbox(self, master: tk.Misc, text: str, variable: tk.BooleanVar,
+                       command=None, *, background_key: str = "panel", wraplength: int = 860) -> PurpleCheckbox:
+        palette = self.colors
+        control = PurpleCheckbox(
+            master, text, variable, command, font=(self.font_family, 10), wraplength=wraplength,
+            background=palette.get(background_key, palette["panel"]), foreground=palette["text"],
+            accent=palette["check_accent"], border=palette["check_border"],
+        )
+        self.purple_checkboxes.append((control, background_key))
+        return control
+
+    @staticmethod
+    def _palette_for_name(theme_name: str) -> dict[str, str]:
+        if theme_name != "Светлая":
+            return {
+                "bg": "#0B1220", "sidebar": "#0A1020", "surface": "#111C2F",
+                "panel": "#17243A", "panel2": "#1B2B45", "input": "#0D1729",
+                "text": "#ECF2FC", "muted": "#91A3BE", "accent": "#8B76C5",
+                "accent_hover": "#7660B1", "select": "#302644", "border": "#26364E",
+                "user_bubble": "#243B62", "assistant_bubble": "#18283F",
+                "success": "#56D6A0", "danger": "#FF8585", "hint": "#8795AD",
+                "recent_card": "#111A2B", "recent_hover": "#1B2940",
+                "recent_selected": "#29213D", "recent_border": "#26364E",
+                "recent_selected_border": "#8068B6", "check_accent": "#4B356F",
+                "check_border": "#8A79A5",
+            }
+        return {
+            "bg": "#F3F5FA", "sidebar": "#E9EDF5", "surface": "#FFFFFF",
+            "panel": "#FFFFFF", "panel2": "#F7F8FC", "input": "#FAFBFE",
+            "text": "#20243A", "muted": "#68718A", "accent": "#66508F",
+            "accent_hover": "#554078", "select": "#E9E2F4", "border": "#DCE1EB",
+            "user_bubble": "#E4ECFF", "assistant_bubble": "#F4F7FC",
+            "success": "#168568", "danger": "#C24141", "hint": "#75849A",
+            "recent_card": "#FFFFFF", "recent_hover": "#F4F0FA",
+            "recent_selected": "#EDE7F6", "recent_border": "#DCE1EB",
+            "recent_selected_border": "#8068B6", "check_accent": "#514078",
+            "check_border": "#87779D",
+        }
+
+    def _palette_for_theme(self) -> dict[str, str]:
+        return self._palette_for_name(str(self.config.get("theme", "Тёмная")))
+
     def _build_styles(self) -> None:
         self.style = ttk.Style(self.root)
         try:
             self.style.theme_use("clam")
         except tk.TclError:
             pass
-        self.style.configure("TButton", padding=(12, 9), font=("Segoe UI", 9), relief="flat", borderwidth=0)
-        self.style.configure("Accent.TButton", padding=(16, 11), font=("Segoe UI", 10, "bold"), foreground="#ffffff", background="#5B83F6", borderwidth=0, relief="flat")
+        self.style.configure("TButton", padding=(12, 9), font=(self.font_family, 10), relief="flat", borderwidth=0)
+        self.style.configure("Accent.TButton", padding=(16, 11), font=(self.font_family, 10, "bold"), foreground="#ffffff", background="#5B83F6", borderwidth=0, relief="flat")
         self.style.map("Accent.TButton", background=[("active", "#4C73E8"), ("disabled", "#4B5872")])
-        self.style.configure("Ghost.TButton", padding=(12, 9), font=("Segoe UI", 9), borderwidth=0, relief="flat")
-        self.style.configure("Nav.TButton", padding=(13, 11), anchor="w", font=("Segoe UI", 10), borderwidth=0, relief="flat")
+        self.style.configure("Ghost.TButton", padding=(12, 9), font=(self.font_family, 9), borderwidth=0, relief="flat")
+        self.style.configure("Nav.TButton", padding=(13, 11), anchor="w", font=(self.font_family, 11), borderwidth=0, relief="flat")
         self.style.configure("TNotebook", borderwidth=0)
-        self.style.configure("TCombobox", padding=(8, 7), font=("Segoe UI", 9))
-        self.style.configure("TEntry", padding=(10, 9), font=("Segoe UI", 9))
+        self.style.configure("TCombobox", padding=(8, 7), font=(self.font_family, 10))
+        self.style.configure("TEntry", padding=(10, 9), font=(self.font_family, 10))
         self.style.configure("TScrollbar", gripcount=0, borderwidth=0, arrowsize=10, width=10)
         self.style.configure("TLabelframe", padding=14, borderwidth=1, relief="solid")
-        self.style.configure("TLabelframe.Label", font=("Segoe UI", 10, "bold"))
-        self.style.configure("TCheckbutton", padding=(2, 5), font=("Segoe UI", 9))
-        self.style.configure("TRadiobutton", padding=(2, 5), font=("Segoe UI", 9))
+        self.style.configure("TLabelframe.Label", font=(self.font_family, 11, "bold"))
+        self.style.configure("TCheckbutton", padding=(2, 5), font=(self.font_family, 10))
+        self.style.configure("TRadiobutton", padding=(2, 5), font=(self.font_family, 9))
         self.style.configure("TSeparator", relief="flat")
 
     def _build_layout(self) -> None:
         self.shell = ttk.Frame(self.root)
         self.shell.pack(fill="both", expand=True)
         self.shell.columnconfigure(1, weight=1)
-        self.shell.rowconfigure(0, weight=1)
+        self.shell.rowconfigure(0, weight=0)
+        self.shell.rowconfigure(1, weight=1)
 
-        self.sidebar = ttk.Frame(self.shell, width=268, padding=(16, 18), style="Sidebar.TFrame")
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        # Permanent dark-purple application top bar, independent of the light/dark content theme.
+        self.topbar = tk.Frame(self.shell, bg="#171326", height=48, bd=0, highlightthickness=0)
+        self.topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.topbar.grid_propagate(False)
+        self.topbar.columnconfigure(1, weight=1)
+        self.topbar_logo = tk.Label(self.topbar, text="✦", bg="#171326", fg="#BDA8EF",
+                                    font=("Segoe UI Symbol", 20, "bold"))
+        self.topbar_logo.grid(row=0, column=0, padx=(18, 9), pady=4)
+        self.topbar_name = tk.Label(self.topbar, text="МОЯ ИИШКА", bg="#171326", fg="#F4F0FF",
+                                    font=(self.font_family, 11, "bold"))
+        self.topbar_name.grid(row=0, column=1, sticky="w", pady=4)
+        self.topbar_subtitle = tk.Label(self.topbar, text="ПЕРСОНАЛЬНЫЙ ИИ-ПОМОЩНИК",
+                                        bg="#171326", fg="#A99DBF", font=(self.font_family, 8, "bold"))
+        self.topbar_subtitle.grid(row=0, column=2, sticky="w", padx=(12, 0), pady=4)
+        self.topbar_version = tk.Label(self.topbar, text=f"ВЕРСИЯ {APP_VERSION}",
+                                       bg="#2B2340", fg="#D7C8F5",
+                                       font=(self.font_family, 8, "bold"), padx=12, pady=6)
+        self.topbar_version.grid(row=0, column=3, padx=16, pady=7, sticky="e")
+
+        self.sidebar = ttk.Frame(self.shell, width=336, padding=(16, 16), style="Sidebar.TFrame")
+        self.sidebar.grid(row=1, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
         self.main_area = ttk.Frame(self.shell, padding=(22, 18), style="Main.TFrame")
-        self.main_area.grid(row=0, column=1, sticky="nsew")
+        self.main_area.grid(row=1, column=1, sticky="nsew")
         self.main_area.rowconfigure(0, weight=1)
         self.main_area.columnconfigure(0, weight=1)
 
@@ -539,17 +708,39 @@ class MoyaIshkaApp:
         self.search_entry.configure(takefocus=True)
         self.search_var.trace_add("write", lambda *_: self._refresh_chat_list())
 
-        ttk.Label(self.sidebar, text="НЕДАВНИЕ ДИАЛОГИ", style="Section.TLabel").pack(anchor="w", pady=(9, 7))
-        list_frame = ttk.Frame(self.sidebar)
+        recent_heading = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        recent_heading.pack(fill="x", pady=(10, 8))
+        ttk.Label(recent_heading, text="НЕДАВНИЕ ДИАЛОГИ", style="Section.TLabel").pack(side="left", anchor="w")
+        self.recent_count_var = tk.StringVar(value="0")
+        self.recent_count_label = tk.Label(
+            recent_heading, textvariable=self.recent_count_var,
+            font=(self.font_family, 9, "bold"), padx=10, pady=4,
+            bg="#302644", fg="#D9CBF3", bd=0,
+        )
+        self.recent_count_label.pack(side="right")
+
+        list_frame = tk.Frame(self.sidebar, bg="#0A1020", bd=0, highlightthickness=0)
         list_frame.pack(fill="both", expand=True)
-        self.chat_list = tk.Listbox(list_frame, relief="flat", borderwidth=0, highlightthickness=0, activestyle="none", selectmode="browse", font=("Segoe UI", 9), height=12)
-        chat_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.chat_list.yview)
-        self.chat_list.configure(yscrollcommand=chat_scroll.set)
-        self.chat_list.pack(side="left", fill="both", expand=True)
+        self.chat_list_canvas = tk.Canvas(
+            list_frame, bg="#0A1020", bd=0, highlightthickness=0,
+            relief="flat", yscrollincrement=3,
+        )
+        self.chat_list = self.chat_list_canvas  # Kept as a compatibility alias for wheel scrolling.
+        chat_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.chat_list_canvas.yview)
+        self.chat_list_canvas.configure(yscrollcommand=chat_scroll.set)
+        self.chat_list_canvas.pack(side="left", fill="both", expand=True)
         chat_scroll.pack(side="right", fill="y")
-        self.chat_list.bind("<<ListboxSelect>>", self._on_chat_select)
-        self.chat_list.bind("<Button-3>", self._chat_context_menu)
-        self.chat_list.bind("<Double-Button-1>", lambda _e: self.rename_chat())
+        self.chat_list_inner = tk.Frame(self.chat_list_canvas, bg="#0A1020", bd=0, highlightthickness=0)
+        self.chat_list_window = self.chat_list_canvas.create_window((0, 0), window=self.chat_list_inner, anchor="nw")
+        self.chat_list_inner.bind(
+            "<Configure>",
+            lambda _e: self.chat_list_canvas.configure(scrollregion=self.chat_list_canvas.bbox("all")),
+        )
+        self.chat_list_canvas.bind(
+            "<Configure>",
+            lambda event: self.chat_list_canvas.itemconfigure(self.chat_list_window, width=event.width),
+        )
+        self.chat_cards: dict[str, dict[str, Any]] = {}
 
         ttk.Separator(self.sidebar, style="Sidebar.TSeparator").pack(fill="x", pady=12)
         self.sidebar_footer = ttk.Label(self.sidebar, text=f"●  Готова к работе\nВерсия {APP_VERSION}  ·  Локальное хранение", style="SidebarFooter.TLabel", justify="left")
@@ -580,15 +771,15 @@ class MoyaIshkaApp:
         body.grid(row=1, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
-        self.chat_view = tk.Text(body, wrap="word", state="disabled", relief="flat", borderwidth=0, highlightthickness=0, padx=24, pady=22, font=("Segoe UI", int(self.config.get("font_size", 10))), spacing1=3, spacing3=10, undo=False, selectborderwidth=0)
+        self.chat_view = tk.Text(body, wrap="word", state="disabled", relief="flat", borderwidth=0, highlightthickness=0, padx=24, pady=22, font=(self.font_family, int(self.config.get("font_size", 11))), spacing1=3, spacing3=10, undo=False, selectborderwidth=0)
         chat_scroll = ttk.Scrollbar(body, orient="vertical", command=self.chat_view.yview)
         self.chat_view.configure(yscrollcommand=chat_scroll.set)
         self.chat_view.grid(row=0, column=0, sticky="nsew")
         chat_scroll.grid(row=0, column=1, sticky="ns")
         body.columnconfigure(0, weight=1)
-        self.chat_view.tag_configure("user_name", foreground="#83b6ff", font=("Segoe UI", 10, "bold"))
-        self.chat_view.tag_configure("assistant_name", foreground="#70d7a6", font=("Segoe UI", 10, "bold"))
-        self.chat_view.tag_configure("meta", foreground="#899bb4", font=("Segoe UI", 8, "italic"))
+        self.chat_view.tag_configure("user_name", foreground="#83b6ff", font=(self.font_family, 11, "bold"))
+        self.chat_view.tag_configure("assistant_name", foreground="#70d7a6", font=(self.font_family, 11, "bold"))
+        self.chat_view.tag_configure("meta", foreground="#899bb4", font=(self.font_family, 8, "italic"))
         self.chat_view.tag_configure("body", spacing1=2, spacing3=9)
         self.chat_view.tag_configure("error", foreground="#e26d6d")
 
@@ -597,7 +788,7 @@ class MoyaIshkaApp:
         composer.columnconfigure(0, weight=1)
         self.attachment_label_var = tk.StringVar(value="")
         ttk.Label(composer, textvariable=self.attachment_label_var, style="Muted.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
-        self.input_box = tk.Text(composer, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=1, padx=14, pady=12, font=("Segoe UI", int(self.config.get("font_size", 10))), undo=True)
+        self.input_box = tk.Text(composer, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=1, padx=14, pady=12, font=(self.font_family, int(self.config.get("font_size", 11))), undo=True)
         self.input_box.grid(row=1, column=0, sticky="ew", padx=(0, 12))
         self.input_box.bind("<Return>", self._input_return)
         self.input_box.bind("<Control-Return>", self._send_shortcut)
@@ -639,7 +830,8 @@ class MoyaIshkaApp:
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.temperature_var = tk.DoubleVar(value=float(self.config.get("temperature", 0.7)))
         self.theme_var = tk.StringVar(value=self.config.get("theme", "Тёмная"))
-        self.font_size_var = tk.StringVar(value=str(self.config.get("font_size", 10)))
+        self.font_size_var = tk.StringVar(value=str(self.config.get("font_size", 11)))
+        self.font_family_var = tk.StringVar(value=str(self.config.get("font_family", "Segoe UI")))
 
         identity = ttk.LabelFrame(content, text="Личность и поведение", padding=12)
         identity.pack(fill="x", pady=(0, 10))
@@ -648,7 +840,7 @@ class MoyaIshkaApp:
         self._form_entry(identity, "Характер", self.personality_var)
         self._form_entry(identity, "Стиль ответов", self.style_var)
         ttk.Label(identity, text="Мои дополнительные правила", style="Panel.TLabel").pack(anchor="w", pady=(9, 4))
-        self.instructions_box = tk.Text(identity, height=5, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=("Segoe UI", 10))
+        self.instructions_box = tk.Text(identity, height=5, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 10))
         self.instructions_box.pack(fill="x")
         self.instructions_box.insert("1.0", self.config.get("instructions", ""))
         ttk.Label(identity, text="Температура ответов: ниже — строже и предсказуемее, выше — разнообразнее", style="MutedPanel.TLabel").pack(anchor="w", pady=(10, 4))
@@ -677,11 +869,11 @@ class MoyaIshkaApp:
         self.api_key_entry = ttk.Entry(key_row, textvariable=self.api_key_var, show="●")
         self.api_key_entry.pack(side="left", fill="x", expand=True)
         self.show_key_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(key_row, text="Показать", variable=self.show_key_var, command=self._toggle_key).pack(side="left", padx=(8, 0))
+        self._make_checkbox(key_row, "Показать", self.show_key_var, self._toggle_key, background_key="panel", wraplength=120).pack(side="left", padx=(8, 0))
         key_actions = ttk.Frame(online, style="Panel.TFrame")
         key_actions.pack(fill="x", pady=(8, 0))
         ttk.Button(key_actions, text="Проверить онлайн-подключение", command=self.test_online).pack(side="left")
-        ttk.Label(online, text="API-ключ хранится в Windows DPAPI для текущей учётной записи. Подписка ChatGPT не включает API-запросы автоматически; их стоимость определяет провайдер.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
+        ttk.Label(online, text="API-ключ нужен только для генерации ответов облачной моделью. Для интернет-поиска и чтения общедоступных страниц ключ не требуется. Ключ хранится в Windows DPAPI; подписка ChatGPT не включает API-запросы автоматически, их стоимость определяет провайдер.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
 
         local = ttk.LabelFrame(content, text="Локальная модель · Ollama", padding=12)
         local.pack(fill="x", pady=(0, 10))
@@ -699,8 +891,10 @@ class MoyaIshkaApp:
         appearance_row.pack(fill="x")
         ttk.Label(appearance_row, text="Тема", style="Panel.TLabel").pack(side="left", padx=(0, 8))
         ttk.Combobox(appearance_row, textvariable=self.theme_var, state="readonly", values=["Тёмная", "Светлая"], width=14).pack(side="left")
-        ttk.Label(appearance_row, text="Размер шрифта", style="Panel.TLabel").pack(side="left", padx=(20, 8))
-        ttk.Combobox(appearance_row, textvariable=self.font_size_var, state="readonly", values=["9", "10", "11", "12", "13", "14"], width=6).pack(side="left")
+        ttk.Label(appearance_row, text="Шрифт", style="Panel.TLabel").pack(side="left", padx=(18, 8))
+        ttk.Combobox(appearance_row, textvariable=self.font_family_var, state="readonly", values=["Segoe UI", "Arial", "Verdana"], width=14).pack(side="left")
+        ttk.Label(appearance_row, text="Размер", style="Panel.TLabel").pack(side="left", padx=(18, 8))
+        ttk.Combobox(appearance_row, textvariable=self.font_size_var, state="readonly", values=["10", "11", "12", "13", "14", "15", "16"], width=5).pack(side="left")
 
         bottom = ttk.Frame(content)
         bottom.pack(fill="x", pady=(4, 10))
@@ -722,7 +916,7 @@ class MoyaIshkaApp:
         body.grid(row=2, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
-        self.memory_list = tk.Listbox(body, relief="flat", borderwidth=0, highlightthickness=0, selectbackground="#3979ee", font=("Segoe UI", 10), activestyle="none")
+        self.memory_list = tk.Listbox(body, relief="flat", borderwidth=0, highlightthickness=0, selectbackground="#66508F", font=(self.font_family, 11), activestyle="none")
         self.memory_list.grid(row=0, column=0, sticky="nsew")
         memory_scroll = ttk.Scrollbar(body, orient="vertical", command=self.memory_list.yview)
         memory_scroll.grid(row=0, column=1, sticky="ns")
@@ -741,7 +935,7 @@ class MoyaIshkaApp:
         self.memory_count_var = tk.StringVar(value="0 записей")
         ttk.Label(page, textvariable=self.memory_count_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.auto_memory_var = tk.BooleanVar(value=bool(self.config.get("auto_memory", True)))
-        ttk.Checkbutton(page, text="Автоматически запоминать явные факты и предпочтения из моих сообщений", variable=self.auto_memory_var, command=self._toggle_auto_memory).grid(row=5, column=0, sticky="w", pady=(12, 0))
+        self._make_checkbox(page, "Автоматически запоминать явные факты и предпочтения из моих сообщений", self.auto_memory_var, self._toggle_auto_memory, background_key="bg", wraplength=820).grid(row=5, column=0, sticky="w", pady=(12, 0))
         ttk.Label(page, text="Запоминаются только явно сформулированные и не похожие на секреты сведения. Пароли, ключи, медицинские и другие чувствительные данные фильтруются.", style="Muted.TLabel", wraplength=900).grid(row=6, column=0, sticky="w", pady=(5, 0))
         self._refresh_memory_list()
 
@@ -776,22 +970,26 @@ class MoyaIshkaApp:
         voice.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         voice.columnconfigure(0, weight=1)
         self.voice_status_var = tk.StringVar(value="Микрофон отключён. Разреши доступ в этом окне, когда захочешь говорить с ИИ.")
-        ttk.Label(voice, text="Голосовой ввод и озвучивание управляются прямо здесь. Приложение не слушает постоянно: запись начинается только после нажатия кнопки.", style="Panel.TLabel", wraplength=850).grid(row=0, column=0, sticky="w")
+        ttk.Label(voice, text="Голосовой ввод и озвучивание управляются прямо здесь. Приложение не слушает постоянно: запись начинается только после нажатия кнопки.", style="Panel.TLabel", wraplength=740).grid(row=0, column=0, sticky="w")
         self.microphone_enabled_var = tk.BooleanVar(value=bool(self.config.get("microphone_enabled", False)))
-        ttk.Checkbutton(voice, text="Разрешить приложению использовать микрофон", variable=self.microphone_enabled_var, command=self._toggle_microphone_access).grid(row=1, column=0, sticky="w", pady=(8, 4))
+        self._make_checkbox(voice, "Разрешить приложению использовать микрофон", self.microphone_enabled_var, self._toggle_microphone_access, background_key="panel").grid(row=1, column=0, sticky="w", pady=(8, 4))
         actions = ttk.Frame(voice, style="Panel.TFrame")
         actions.grid(row=2, column=0, sticky="ew", pady=(4, 4))
-        self.voice_start_button = ttk.Button(actions, text="🎙 Начать говорить", style="Accent.TButton", command=self.start_voice_input, state="normal" if self.microphone_enabled_var.get() else "disabled")
-        self.voice_start_button.pack(side="left")
-        self.voice_stop_button = ttk.Button(actions, text="■ Остановить и отключить микрофон", command=self.stop_voice_input, state="disabled")
-        self.voice_stop_button.pack(side="left", padx=8)
-        ttk.Button(actions, text="🔊 Озвучить последний ответ", command=self.speak_last_answer).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Показать / скрыть персонажа", command=self.toggle_avatar).pack(side="left")
+        main_actions = ttk.Frame(actions, style="Panel.TFrame")
+        main_actions.pack(fill="x", pady=(0, 6))
+        self.voice_start_button = ttk.Button(main_actions, text="🎙 Начать говорить", style="Accent.TButton", command=self.start_voice_input, state="normal" if self.microphone_enabled_var.get() else "disabled")
+        self.voice_start_button.pack(side="left", padx=(0, 6))
+        self.voice_stop_button = ttk.Button(main_actions, text="■ Остановить микрофон", command=self.stop_voice_input, state="disabled")
+        self.voice_stop_button.pack(side="left", padx=6)
+        ttk.Button(main_actions, text="🔊 Озвучить ответ", command=self.speak_last_answer).pack(side="left", padx=6)
+        ttk.Button(main_actions, text="Персонаж", command=self.toggle_avatar).pack(side="left", padx=6)
+        secondary_actions = ttk.Frame(actions, style="Panel.TFrame")
+        secondary_actions.pack(fill="x")
         self.voice_tts_var = tk.BooleanVar(value=bool(self.config.get("voice_tts", False)))
-        ttk.Checkbutton(actions, text="Автоматически озвучивать ответы", variable=self.voice_tts_var, command=self._toggle_voice_tts).pack(side="left", padx=10)
-        ttk.Button(actions, text="Настройки микрофона Windows", command=self.open_windows_microphone_privacy).pack(side="right")
-        ttk.Label(voice, textvariable=self.voice_status_var, style="MutedPanel.TLabel").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(page, text="Распознавание речи отправляет аудиофрагмент в сервис Google Speech Recognition через интернет. Озвучивание выполняется локально. Для полной приватности оставляй переключатель микрофона выключенным; также доступ можно запретить Windows в параметрах конфиденциальности.", style="Muted.TLabel", wraplength=900).grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self._make_checkbox(secondary_actions, "Автоматически озвучивать ответы", self.voice_tts_var, self._toggle_voice_tts, background_key="panel", wraplength=280).pack(side="left", padx=(0, 12))
+        ttk.Button(secondary_actions, text="Настройки микрофона Windows", command=self.open_windows_microphone_privacy).pack(side="left")
+        ttk.Label(voice, textvariable=self.voice_status_var, style="MutedPanel.TLabel", wraplength=740).grid(row=3, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(page, text="Распознавание речи отправляет аудиофрагмент в сервис Google Speech Recognition через интернет. Озвучивание выполняется локально. Для полной приватности оставляй переключатель микрофона выключенным; также доступ можно запретить Windows в параметрах конфиденциальности.", style="Muted.TLabel", wraplength=740).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
     def _build_workshop_page(self) -> None:
         page = self.pages["workshop"]
@@ -811,7 +1009,7 @@ class MoyaIshkaApp:
         skills = ttk.LabelFrame(content, text="Мои навыки", padding=12)
         skills.pack(fill="x", pady=(0, 10))
         ttk.Label(skills, text="Навык — это сохранённая инструкция, которую ИИ будет учитывать в будущих ответах.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
-        self.skill_list = tk.Listbox(skills, height=6, relief="flat", borderwidth=0, highlightthickness=0, activestyle="none")
+        self.skill_list = tk.Listbox(skills, height=6, relief="flat", borderwidth=0, highlightthickness=0, activestyle="none", font=(self.font_family, 10))
         self.skill_list.pack(fill="x", pady=(8, 8))
         skill_actions = ttk.Frame(skills, style="Panel.TFrame")
         skill_actions.pack(fill="x")
@@ -824,7 +1022,7 @@ class MoyaIshkaApp:
         plugins.pack(fill="x", pady=(0, 10))
         ttk.Label(plugins, text="Плагины могут добавлять новые команды. Включай только код, который сам написал или внимательно проверил: Python-плагин не изолирован и получает права твоей учётной записи Windows.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
         self.python_plugins_var = tk.BooleanVar(value=bool(self.config.get("plugins_enabled", False)))
-        ttk.Checkbutton(plugins, text="Разрешить выполнение моих Python-плагинов", variable=self.python_plugins_var, command=self._toggle_python_plugins).pack(anchor="w", pady=(8, 4))
+        self._make_checkbox(plugins, "Разрешить выполнение моих Python-плагинов", self.python_plugins_var, self._toggle_python_plugins, background_key="panel").pack(anchor="w", pady=(8, 4))
         plugin_actions = ttk.Frame(plugins, style="Panel.TFrame")
         plugin_actions.pack(fill="x")
         ttk.Button(plugin_actions, text="Создать шаблон плагина", command=self.create_python_plugin).pack(side="left")
@@ -840,7 +1038,7 @@ class MoyaIshkaApp:
         target_row.pack(fill="x", pady=(8, 4))
         ttk.Label(target_row, text="Файл проекта", style="Panel.TLabel").pack(side="left", padx=(0, 8))
         ttk.Combobox(target_row, textvariable=self.improve_target_var, state="readonly", values=editable_project_files(), width=38).pack(side="left")
-        self.improve_prompt_box = tk.Text(self_dev, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=("Segoe UI", 9))
+        self.improve_prompt_box = tk.Text(self_dev, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9))
         self.improve_prompt_box.pack(fill="x", pady=(4, 8))
         self.improve_prompt_box.insert("1.0", "Например: добавь кнопку, которая экспортирует память в JSON.")
         ttk.Button(self_dev, text="Подготовить улучшение с помощью ИИ", style="Accent.TButton", command=self.generate_improvement_patch).pack(anchor="w")
@@ -865,19 +1063,30 @@ class MoyaIshkaApp:
 
         updates = ttk.LabelFrame(content, text="Автоматические обновления", padding=12)
         updates.pack(fill="x", pady=(0, 10))
-        ttk.Label(updates, text="Обновления берутся из GitHub Releases указанного репозитория. Файл EXE проверяется по SHA-256; установка выполняется после подтверждения. Сначала нужно опубликовать релиз через GitHub Actions.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
+        ttk.Label(updates, text="Обновления загружаются из GitHub Releases и проверяются по SHA-256. Один раз выбери папку установки: ИИшка запомнит её и будет устанавливать следующие версии туда же. Временная папка используется только для скачивания.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
         self.update_repo_var = tk.StringVar(value=str(self.config.get("update_repo", "")))
         repo_row = ttk.Frame(updates, style="Panel.TFrame")
         repo_row.pack(fill="x", pady=(8, 4))
         ttk.Label(repo_row, text="GitHub-репозиторий", style="Panel.TLabel").pack(side="left", padx=(0, 8))
         ttk.Entry(repo_row, textvariable=self.update_repo_var, width=38).pack(side="left")
+        install_row = ttk.Frame(updates, style="Panel.TFrame")
+        install_row.pack(fill="x", pady=(8, 2))
+        ttk.Label(install_row, text="Папка установки", style="Panel.TLabel").pack(side="left", padx=(0, 8))
+        initial_install_dir = str(self.config.get("install_dir", "")).strip()
+        if not initial_install_dir:
+            initial_install_dir = str(resolve_install_dir(running_exe=Path(sys.executable) if getattr(sys, "frozen", False) else None))
+        self.update_install_dir_var = tk.StringVar(value=initial_install_dir)
+        ttk.Entry(install_row, textvariable=self.update_install_dir_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(install_row, text="Выбрать папку…", command=self.browse_install_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(install_row, text="Открыть", command=lambda: self._open_local_folder(self._selected_install_dir())).pack(side="left", padx=(6, 0))
         self.auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_update_check", True)))
-        ttk.Checkbutton(updates, text="Проверять наличие обновлений при запуске", variable=self.auto_update_var).pack(anchor="w", pady=4)
+        self._make_checkbox(updates, "Проверять наличие обновлений при запуске", self.auto_update_var, background_key="panel").pack(anchor="w", pady=4)
         update_buttons = ttk.Frame(updates, style="Panel.TFrame")
         update_buttons.pack(fill="x")
         ttk.Button(update_buttons, text="Проверить обновления", command=self.check_for_updates).pack(side="left")
         ttk.Button(update_buttons, text="Сохранить настройки обновлений", command=self.save_update_settings).pack(side="left", padx=8)
-        self.update_status_var = tk.StringVar(value="Репозиторий не задан. Проверка обновлений пока выключена.")
+        ttk.Button(update_buttons, text="Установить текущую версию сюда", command=self.install_current_build_to_selected_folder).pack(side="left", padx=8)
+        self.update_status_var = tk.StringVar(value="Репозиторий не задан. Выбери папку установки и сохрани настройки.")
         ttk.Label(updates, textvariable=self.update_status_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(8, 0))
         self._refresh_skill_list()
 
@@ -900,15 +1109,15 @@ class MoyaIshkaApp:
         intro.pack(fill="x", pady=(0, 10))
         ttk.Label(
             intro,
-            text="ИИшка может искать открытые веб-страницы, читать ограниченное число источников, сохранять заметки локально и использовать их в будущих ответах. Содержимое сайтов считается недоверенными данными: команды и инструкции со страниц не исполняются.",
+            text="Интернет-поиск не требует API-ключа: ИИшка ищет общедоступные страницы, читает ограниченное число источников и сохраняет заметки локально. Если языковая модель не подключена, поиск всё равно покажет выдержки и ссылки. Для генеративного ответа подключи локальную модель Ollama или облачный API. Содержимое сайтов считается недоверенными данными: команды и инструкции со страниц не исполняются.",
             style="Panel.TLabel", wraplength=900, justify="left"
         ).pack(anchor="w")
         self.web_enabled_var = tk.BooleanVar(value=bool(self.config.get("web_search_enabled", True)))
-        ttk.Checkbutton(intro, text="Разрешить поиск и чтение публичных страниц", variable=self.web_enabled_var).pack(anchor="w", pady=(8, 2))
+        self._make_checkbox(intro, "Разрешить поиск и чтение публичных страниц", self.web_enabled_var, background_key="panel").pack(anchor="w", pady=(8, 2))
         self.auto_search_current_var = tk.BooleanVar(value=bool(self.config.get("auto_search_current", False)))
-        ttk.Checkbutton(intro, text="Автоматически искать свежие данные, когда вопрос явно зависит от текущей информации", variable=self.auto_search_current_var).pack(anchor="w", pady=2)
+        self._make_checkbox(intro, "Автоматически искать свежие данные, когда вопрос явно зависит от текущей информации", self.auto_search_current_var, background_key="panel").pack(anchor="w", pady=2)
         self.use_research_library_var = tk.BooleanVar(value=bool(self.config.get("use_research_library", True)))
-        ttk.Checkbutton(intro, text="Использовать сохранённые источники в ответах ИИ", variable=self.use_research_library_var).pack(anchor="w", pady=2)
+        self._make_checkbox(intro, "Использовать сохранённые источники в ответах ИИ", self.use_research_library_var, background_key="panel").pack(anchor="w", pady=2)
 
         search = ttk.LabelFrame(content, text="Поиск по запросу", padding=12)
         search.pack(fill="x", pady=(0, 10))
@@ -931,8 +1140,8 @@ class MoyaIshkaApp:
         auto.pack(fill="x", pady=(0, 10))
         ttk.Label(auto, text="Добавь темы, за которыми ИИшка будет периодически следить. Она сохранит новые источники в локальную библиотеку. Это поиск и извлечение информации, а не переобучение весов нейросети.", style="MutedPanel.TLabel", wraplength=900).pack(anchor="w")
         self.research_auto_var = tk.BooleanVar(value=bool(self.config.get("research_auto_enabled", False)))
-        ttk.Checkbutton(auto, text="Включить периодическое исследование (по умолчанию выключено)", variable=self.research_auto_var).pack(anchor="w", pady=(8, 4))
-        self.research_topics_box = tk.Text(auto, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=("Segoe UI", 9))
+        self._make_checkbox(auto, "Включить периодическое исследование (по умолчанию выключено)", self.research_auto_var, background_key="panel").pack(anchor="w", pady=(8, 4))
+        self.research_topics_box = tk.Text(auto, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9))
         self.research_topics_box.pack(fill="x", pady=(2, 8))
         self.research_topics_box.insert("1.0", str(self.config.get("research_topics", "")))
         auto_row = ttk.Frame(auto, style="Panel.TFrame")
@@ -949,13 +1158,13 @@ class MoyaIshkaApp:
         list_frame.pack(fill="both", expand=True, pady=(8, 8))
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
-        self.research_list = tk.Listbox(list_frame, height=7, relief="flat", borderwidth=0, highlightthickness=0, activestyle="none", font=("Segoe UI", 9))
+        self.research_list = tk.Listbox(list_frame, height=7, relief="flat", borderwidth=0, highlightthickness=0, activestyle="none", font=(self.font_family, 9))
         research_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.research_list.yview)
         self.research_list.configure(yscrollcommand=research_scroll.set)
         self.research_list.grid(row=0, column=0, sticky="nsew")
         research_scroll.grid(row=0, column=1, sticky="ns")
         self.research_list.bind("<<ListboxSelect>>", self._show_selected_research)
-        self.research_preview = tk.Text(library, height=7, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=("Segoe UI", 9), state="disabled")
+        self.research_preview = tk.Text(library, height=7, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9), state="disabled")
         self.research_preview.pack(fill="x", pady=(0, 8))
         library_actions = ttk.Frame(library, style="Panel.TFrame")
         library_actions.pack(fill="x")
@@ -966,27 +1175,10 @@ class MoyaIshkaApp:
         self._refresh_research_list()
 
     def _apply_theme(self) -> None:
-        dark = self.config.get("theme", "Тёмная") != "Светлая"
-        if dark:
-            colors = {
-                "bg": "#0B1220", "sidebar": "#0A1020", "surface": "#111C2F",
-                "panel": "#17243A", "panel2": "#1B2B45", "input": "#0D1729",
-                "text": "#ECF2FC", "muted": "#91A3BE", "accent": "#6D8DFF",
-                "accent_hover": "#5479F4", "select": "#263C60", "border": "#26364E",
-                "user_bubble": "#243B62", "assistant_bubble": "#18283F",
-                "success": "#56D6A0", "danger": "#FF8585", "hint": "#7487A6",
-            }
-        else:
-            colors = {
-                "bg": "#F3F6FB", "sidebar": "#EAF0F8", "surface": "#FFFFFF",
-                "panel": "#FFFFFF", "panel2": "#F7F9FD", "input": "#F8FAFD",
-                "text": "#182338", "muted": "#65758E", "accent": "#426FF5",
-                "accent_hover": "#315DDB", "select": "#DFE9FF", "border": "#DCE4EF",
-                "user_bubble": "#E4ECFF", "assistant_bubble": "#F4F7FC",
-                "success": "#0F9D70", "danger": "#C24141", "hint": "#75849A",
-            }
+        colors = self._palette_for_theme()
         self.colors = colors
         self.root.configure(bg=colors["bg"])
+        self.root.after_idle(self._apply_windows_titlebar_theme)
         self.shell.configure(style="Main.TFrame")
         self.sidebar.configure(style="Sidebar.TFrame")
         self.main_area.configure(style="Main.TFrame")
@@ -998,16 +1190,16 @@ class MoyaIshkaApp:
         self.style.configure("Composer.TFrame", background=colors["panel"], relief="flat", borderwidth=0)
         self.style.configure("TLabelframe", background=colors["panel"], foreground=colors["text"], bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"])
         self.style.configure("TLabelframe.Label", background=colors["panel"], foreground=colors["text"])
-        self.style.configure("TLabel", background=colors["bg"], foreground=colors["text"], font=("Segoe UI", 9))
-        self.style.configure("Muted.TLabel", background=colors["bg"], foreground=colors["muted"], font=("Segoe UI", 9))
-        self.style.configure("MutedPanel.TLabel", background=colors["panel"], foreground=colors["muted"], font=("Segoe UI", 9))
-        self.style.configure("Hint.TLabel", background=colors["panel"], foreground=colors["hint"], font=("Segoe UI", 8))
+        self.style.configure("TLabel", background=colors["bg"], foreground=colors["text"], font=(self.font_family, 11))
+        self.style.configure("Muted.TLabel", background=colors["bg"], foreground=colors["muted"], font=(self.font_family, 10))
+        self.style.configure("MutedPanel.TLabel", background=colors["panel"], foreground=colors["muted"], font=(self.font_family, 10))
+        self.style.configure("Hint.TLabel", background=colors["panel"], foreground=colors["hint"], font=(self.font_family, 9))
         self.style.configure("Panel.TLabel", background=colors["panel"], foreground=colors["text"])
-        self.style.configure("Brand.TLabel", background=colors["sidebar"], foreground=colors["text"], font=("Segoe UI", 14, "bold"))
-        self.style.configure("BrandSub.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=("Segoe UI", 7, "bold"))
-        self.style.configure("SidebarFooter.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=("Segoe UI", 8))
-        self.style.configure("PageTitle.TLabel", background=colors["bg"], foreground=colors["text"], font=("Segoe UI", 21, "bold"))
-        self.style.configure("Section.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=("Segoe UI", 8, "bold"))
+        self.style.configure("Brand.TLabel", background=colors["sidebar"], foreground=colors["text"], font=(self.font_family, 15, "bold"))
+        self.style.configure("BrandSub.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=(self.font_family, 8, "bold"))
+        self.style.configure("SidebarFooter.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=(self.font_family, 9))
+        self.style.configure("PageTitle.TLabel", background=colors["bg"], foreground=colors["text"], font=(self.font_family, 23, "bold"))
+        self.style.configure("Section.TLabel", background=colors["sidebar"], foreground=colors["muted"], font=(self.font_family, 9, "bold"))
         self.style.configure("TEntry", fieldbackground=colors["input"], foreground=colors["text"], insertcolor=colors["text"], borderwidth=1, relief="flat", bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"])
         self.style.map("TEntry", bordercolor=[("focus", colors["accent"])])
         self.style.configure("TScrollbar", background=colors["panel"], troughcolor=colors["bg"], arrowcolor=colors["muted"], bordercolor=colors["bg"], lightcolor=colors["panel"], darkcolor=colors["panel"])
@@ -1018,7 +1210,7 @@ class MoyaIshkaApp:
         self.style.map("TButton", background=[("active", colors["select"]), ("disabled", colors["panel2"])], foreground=[("disabled", colors["muted"])])
         self.style.configure("Ghost.TButton", background=colors["panel2"], foreground=colors["text"], borderwidth=0, focuscolor=colors["panel2"], relief="flat", padding=(12, 9))
         self.style.map("Ghost.TButton", background=[("active", colors["select"])])
-        self.style.configure("Accent.TButton", background=colors["accent"], foreground="#FFFFFF", borderwidth=0, focuscolor=colors["accent"], relief="flat", padding=(16, 11), font=("Segoe UI", 10, "bold"))
+        self.style.configure("Accent.TButton", background=colors["accent"], foreground="#FFFFFF", borderwidth=0, focuscolor=colors["accent"], relief="flat", padding=(16, 11), font=(self.font_family, 10, "bold"))
         self.style.map("Accent.TButton", background=[("active", colors["accent_hover"]), ("disabled", colors["muted"])], foreground=[("disabled", "#FFFFFF")])
         self.style.configure("Nav.TButton", background=colors["sidebar"], foreground=colors["muted"], borderwidth=0, focuscolor=colors["sidebar"], relief="flat", padding=(13, 11))
         self.style.map("Nav.TButton", background=[("pressed", colors["select"]), ("active", colors["panel2"])], foreground=[("pressed", colors["text"]), ("active", colors["text"])])
@@ -1034,24 +1226,62 @@ class MoyaIshkaApp:
                 is_composer = widget is getattr(self, "input_box", None)
                 bg = colors["surface"] if is_chat else (colors["input"] if is_composer else colors["panel2"])
                 widget.configure(bg=bg, fg=colors["text"], insertbackground=colors["text"], selectbackground=colors["select"], selectforeground=colors["text"], highlightbackground=colors["border"], highlightcolor=colors["accent"])
-        for name in ("memory_list", "chat_list", "skill_list", "research_list"):
+        for name in ("memory_list", "skill_list", "research_list"):
             widget = getattr(self, name, None)
             if widget:
-                bg = colors["sidebar"] if name == "chat_list" else colors["panel2"]
-                widget.configure(bg=bg, fg=colors["text"], selectbackground=colors["select"], selectforeground=colors["text"], highlightbackground=colors["border"], highlightcolor=colors["accent"], borderwidth=0)
+                widget.configure(bg=colors["panel2"], fg=colors["text"], selectbackground=colors["select"], selectforeground=colors["text"], highlightbackground=colors["border"], highlightcolor=colors["accent"], borderwidth=0)
+        if hasattr(self, "chat_list_canvas"):
+            self.chat_list_canvas.configure(bg=colors["sidebar"], highlightbackground=colors["sidebar"])
+            self.chat_list_inner.configure(bg=colors["sidebar"])
+            self.recent_count_label.configure(bg=colors["panel2"], fg=colors["muted"])
+            self._restyle_chat_cards()
+        for checkbox, background_key in getattr(self, "purple_checkboxes", []):
+            checkbox.set_colors(colors.get(background_key, colors["panel"]), colors["text"], colors["check_accent"], colors["check_border"])
         self.chat_view.tag_configure("body", foreground=colors["text"], spacing1=3, spacing3=10)
         self.chat_view.tag_configure("user_body", foreground=colors["text"], lmargin1=190, lmargin2=100, rmargin=14, justify="right", spacing1=3, spacing3=18)
         self.chat_view.tag_configure("assistant_body", foreground=colors["text"], lmargin1=8, lmargin2=8, rmargin=170, spacing1=3, spacing3=18)
-        self.chat_view.tag_configure("user_name", foreground=colors["accent"], font=("Segoe UI", 10, "bold"), lmargin1=190, lmargin2=100, rmargin=14, justify="right", spacing1=10)
-        self.chat_view.tag_configure("assistant_name", foreground=colors["success"], font=("Segoe UI", 10, "bold"), lmargin1=8, lmargin2=8, rmargin=170, spacing1=10)
-        self.chat_view.tag_configure("meta", foreground=colors["muted"], font=("Segoe UI", 8, "italic"))
+        self.chat_view.tag_configure("user_name", foreground=colors["accent"], font=(self.font_family, 10, "bold"), lmargin1=190, lmargin2=100, rmargin=14, justify="right", spacing1=10)
+        self.chat_view.tag_configure("assistant_name", foreground=colors["success"], font=(self.font_family, 10, "bold"), lmargin1=8, lmargin2=8, rmargin=170, spacing1=10)
+        self.chat_view.tag_configure("meta", foreground=colors["muted"], font=(self.font_family, 8, "italic"))
         self.chat_view.tag_configure("error", foreground=colors["danger"])
-        self.chat_view.tag_configure("welcome_title", foreground=colors["text"], font=("Segoe UI", 23, "bold"), spacing1=12, spacing3=10)
-        self.chat_view.tag_configure("welcome_subtitle", foreground=colors["muted"], font=("Segoe UI", 10), spacing3=14)
-        self.chat_view.tag_configure("quick_prompt", foreground=colors["accent"], underline=True, font=("Segoe UI", 10, "bold"), spacing1=5, spacing3=6)
+        self.chat_view.tag_configure("welcome_title", foreground=colors["text"], font=(self.font_family, 23, "bold"), spacing1=12, spacing3=10)
+        self.chat_view.tag_configure("welcome_subtitle", foreground=colors["muted"], font=(self.font_family, 10), spacing3=14)
+        self.chat_view.tag_configure("quick_prompt", foreground=colors["accent"], underline=True, font=(self.font_family, 10, "bold"), spacing1=5, spacing3=6)
         self.chat_view.tag_bind("quick_prompt", "<Enter>", lambda _e: self.chat_view.configure(cursor="hand2"))
         self.chat_view.tag_bind("quick_prompt", "<Leave>", lambda _e: self.chat_view.configure(cursor=""))
         self.chat_view.tag_bind("quick_prompt", "<Button-1>", self._quick_prompt_click)
+
+    def _apply_windows_titlebar_theme(self) -> None:
+        """Ask DWM to draw a dark native Windows title bar when supported."""
+        if os.name != "nt":
+            return
+        try:
+            self.root.update_idletasks()
+            user32 = ctypes.windll.user32
+            dwmapi = ctypes.windll.dwmapi
+            hwnd = user32.GetAncestor(self.root.winfo_id(), 2) or self.root.winfo_id()
+            dark = 1 if self.config.get("theme", "Тёмная") != "Светлая" else 0
+            value = ctypes.c_int(dark)
+            size = ctypes.sizeof(value)
+            # Attribute 20 is supported by current Windows 10/11; 19 is the
+            # compatibility identifier used by earlier Windows 10 builds.
+            result = dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), size)
+            if result != 0:
+                dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), size)
+            if dark:
+                caption = ctypes.c_uint(0x0010120B)  # deep navy caption (COLORREF)
+                text_color = ctypes.c_uint(0x00ECF2FC)
+                border = ctypes.c_uint(0x0026364E)
+            else:
+                caption = ctypes.c_uint(0xFFFFFFFF)  # system default
+                text_color = ctypes.c_uint(0xFFFFFFFF)
+                border = ctypes.c_uint(0xFFFFFFFF)
+            dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+            dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(text_color), ctypes.sizeof(text_color))
+            dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), ctypes.sizeof(border))
+        except Exception:
+            # Unsupported DWM attributes must never prevent the app from starting.
+            return
 
     def show_page(self, key: str) -> None:
         self.pages[key].tkraise()
@@ -1066,33 +1296,129 @@ class MoyaIshkaApp:
             self._refresh_research_list()
 
     # ---------- chat navigation ----------
+    def _short_chat_time(self, value: str) -> str:
+        try:
+            stamp = datetime.fromisoformat(value).astimezone()
+            today = datetime.now().astimezone().date()
+            if stamp.date() == today:
+                return stamp.strftime("сегодня · %H:%M")
+            if (today - stamp.date()).days == 1:
+                return stamp.strftime("вчера · %H:%M")
+            if (today - stamp.date()).days < 7:
+                return stamp.strftime("%a · %H:%M")
+            return stamp.strftime("%d.%m.%y")
+        except (ValueError, TypeError):
+            return ""
+
+    def _set_chat_card_visual(self, identifier: str, hovered: bool | None = None) -> None:
+        parts = self.chat_cards.get(identifier)
+        if not parts:
+            return
+        if hovered is not None:
+            parts["hovered"] = hovered
+        selected = identifier == self.current_chat_id
+        is_hovered = bool(parts.get("hovered", False)) and not selected
+        background = self.colors["recent_selected"] if selected else (self.colors["recent_hover"] if is_hovered else self.colors["recent_card"])
+        border = self.colors["recent_selected_border"] if selected else (self.colors["recent_hover"] if is_hovered else self.colors["recent_border"])
+        parts["card"].configure(bg=background, highlightbackground=border, highlightcolor=border, highlightthickness=2 if selected else 1)
+        parts["marker"].configure(bg=self.colors["accent"] if selected else background)
+        parts["body"].configure(bg=background)
+        parts["top"].configure(bg=background)
+        parts["title"].configure(bg=background, fg=self.colors["text"])
+        parts["time"].configure(bg=background, fg=self.colors["accent"] if selected else self.colors["muted"])
+        parts["preview"].configure(bg=background, fg=self.colors["muted"])
+
+    def _restyle_chat_cards(self) -> None:
+        if not hasattr(self, "chat_cards"):
+            return
+        for identifier in list(self.chat_cards):
+            self._set_chat_card_visual(identifier)
+
+    def _bind_chat_card(self, widget: tk.Widget, identifier: str) -> None:
+        widget.bind("<Button-1>", lambda _event, chat_id=identifier: self._select_chat_card(chat_id))
+        widget.bind("<Button-3>", self._chat_context_menu)
+        widget.bind("<Enter>", lambda _event, chat_id=identifier: self._set_chat_card_visual(chat_id, True))
+        widget.bind("<Leave>", lambda _event, chat_id=identifier: self._set_chat_card_visual(chat_id, False))
+        setattr(widget, "_moya_chat_id", identifier)
+
     def _refresh_chat_list(self) -> None:
-        if not hasattr(self, "chat_list"):
+        if not hasattr(self, "chat_list_canvas"):
             return
         rows = self.store.list_conversations(self.search_var.get())
         self.visible_chat_ids = [row["id"] for row in rows]
-        self.chat_list.delete(0, "end")
+        for child in self.chat_list_inner.winfo_children():
+            child.destroy()
+        self.chat_cards = {}
+        if hasattr(self, "recent_count_var"):
+            self.recent_count_var.set(str(len(rows)))
+
+        if not rows:
+            empty = tk.Label(
+                self.chat_list_inner,
+                text="Здесь будут твои диалоги\nСоздай новый разговор, чтобы начать",
+                justify="left", anchor="w", padx=14, pady=22,
+                font=(self.font_family, 11), bg=self.colors["sidebar"], fg=self.colors["muted"],
+            )
+            empty.pack(fill="x", padx=3, pady=5)
+
         for row in rows:
-            title = row["title"] or "Новый диалог"
-            if len(title) > 31:
-                title = title[:29] + "…"
-            self.chat_list.insert("end", title)
-        if self.current_chat_id in self.visible_chat_ids:
-            index = self.visible_chat_ids.index(self.current_chat_id)
-            self.chat_list.selection_set(index)
-            self.chat_list.see(index)
+            identifier = str(row["id"])
+            title_text = str(row["title"] or "Новый диалог").strip()
+            title_text = title_text if len(title_text) <= 48 else title_text[:45].rstrip() + "…"
+            latest = self.store.get_messages(identifier, limit=1)
+            snippet = "Начни новый разговор" if not latest else re.sub(r"\s+", " ", str(latest[0]["content"])).strip()
+            snippet = snippet if len(snippet) <= 96 else snippet[:93].rstrip() + "…"
+            stamp = self._short_chat_time(str(row["updated_at"]))
+
+            selected = identifier == self.current_chat_id
+            bg = self.colors["recent_selected"] if selected else self.colors["recent_card"]
+            border = self.colors["recent_selected_border"] if selected else self.colors["recent_border"]
+            card = tk.Frame(
+                self.chat_list_inner, bg=bg, bd=0, relief="flat",
+                highlightthickness=2 if selected else 1,
+                highlightbackground=border, highlightcolor=border,
+            )
+            card.pack(fill="x", padx=4, pady=6)
+            marker = tk.Frame(card, width=4, bg=self.colors["accent"] if selected else bg, bd=0)
+            marker.pack(side="left", fill="y")
+            body = tk.Frame(card, bg=bg, bd=0)
+            body.pack(side="left", fill="both", expand=True, padx=(13, 11), pady=(12, 12))
+            top = tk.Frame(body, bg=bg, bd=0)
+            top.pack(fill="x")
+            title = tk.Label(
+                top, text=title_text, anchor="w", justify="left", wraplength=232,
+                font=(self.font_family, 12, "bold"), bg=bg, fg=self.colors["text"],
+            )
+            title.pack(fill="x", anchor="w")
+            time_label = tk.Label(
+                body, text=f"◷  {stamp}" if stamp else "", anchor="w", justify="left",
+                font=(self.font_family, 10), bg=bg, fg=self.colors["muted"],
+            )
+            time_label.pack(anchor="w", pady=(4, 0))
+            preview = tk.Label(
+                body, text=snippet, anchor="w", justify="left", wraplength=232,
+                font=(self.font_family, 9), bg=bg, fg=self.colors["muted"],
+            )
+            preview.pack(fill="x", anchor="w", pady=(6, 0))
+
+            parts = {"card": card, "marker": marker, "body": body, "top": top, "title": title, "time": time_label, "preview": preview, "hovered": False}
+            self.chat_cards[identifier] = parts
+            for widget in (card, marker, body, top, title, time_label, preview):
+                self._bind_chat_card(widget, identifier)
+
+        self.chat_list_inner.update_idletasks()
+        self.chat_list_canvas.configure(scrollregion=self.chat_list_canvas.bbox("all"))
+
+    def _select_chat_card(self, identifier: str) -> None:
+        if identifier not in self.visible_chat_ids or identifier == self.current_chat_id:
+            return
+        self.current_chat_id = identifier
+        self._refresh_chat_list()
+        self._render_current_chat()
 
     def _on_chat_select(self, _event: tk.Event | None = None) -> None:
-        selected = self.chat_list.curselection()
-        if not selected:
-            return
-        index = selected[0]
-        if index >= len(self.visible_chat_ids):
-            return
-        identifier = self.visible_chat_ids[index]
-        if identifier != self.current_chat_id:
-            self.current_chat_id = identifier
-            self._render_current_chat()
+        # Compatibility hook retained for older bindings.
+        return
 
     def new_chat(self) -> None:
         if self.busy:
@@ -1136,13 +1462,14 @@ class MoyaIshkaApp:
             self._set_status("Переписка очищена")
 
     def _chat_context_menu(self, event: tk.Event) -> None:
+        widget: Any = event.widget
+        while widget is not None and not hasattr(widget, "_moya_chat_id"):
+            widget = getattr(widget, "master", None)
+        identifier = getattr(widget, "_moya_chat_id", None) if widget is not None else None
+        if identifier:
+            self._select_chat_card(str(identifier))
         menu = tk.Menu(self.root, tearoff=False)
         try:
-            index = self.chat_list.nearest(event.y)
-            if index >= 0:
-                self.chat_list.selection_clear(0, "end")
-                self.chat_list.selection_set(index)
-                self._on_chat_select()
             menu.add_command(label="Новый диалог", command=self.new_chat)
             menu.add_command(label="Переименовать", command=self.rename_chat)
             menu.add_command(label="Экспортировать", command=self.export_chat)
@@ -1404,6 +1731,7 @@ class MoyaIshkaApp:
         return "\n\n".join(parts)[:14_000]
 
     def _web_chat_worker(self, query: str, mode: str, settings: dict[str, Any], messages: list[dict[str, str]], conversation_id: str) -> None:
+        """Search first; a missing LLM/API must never block internet search results."""
         try:
             documents = search_and_fetch(
                 query,
@@ -1413,7 +1741,42 @@ class MoyaIshkaApp:
             self.events.put(("research_store", documents))
             if messages and messages[-1]["role"] == "user":
                 messages[-1]["content"] += "\n\n" + self._format_research_context(query, documents)
-            self._reply_worker(mode, settings, messages, conversation_id)
+
+            # Use a language model for synthesis when one is actually available.
+            # Otherwise return a clear extractive digest with URLs, without asking
+            # the user for an API key just to browse the public web.
+            answer: str | None = None
+            answer_source = ""
+            model_errors: list[str] = []
+            api_key = str(settings.get("api_key", "")).strip()
+
+            if mode != "Только локально" and api_key:
+                try:
+                    answer = self._call_online(settings, messages)
+                    answer_source = "интернет + облачная модель"
+                except Exception as exc:
+                    model_errors.append(f"Облачная модель: {exc}")
+
+            if answer is None and mode != "Только онлайн":
+                try:
+                    answer = self._call_ollama(settings, messages)
+                    answer_source = "интернет + локальная Ollama"
+                except Exception as exc:
+                    model_errors.append(f"Локальная модель: {exc}")
+
+            if answer:
+                self.events.put(("reply", (conversation_id, answer, answer_source)))
+                return
+
+            if not api_key and mode == "Только онлайн":
+                fallback_note = "Облачная модель не настроена: API-ключ не указан. Сам поиск выполнен успешно, поэтому ниже показаны найденные материалы."
+            elif model_errors:
+                fallback_note = "Поиск выполнен, но не удалось подключить языковую модель: " + "; ".join(model_errors[:2])
+            else:
+                fallback_note = "Языковая модель не подключена."
+            digest = format_research_digest(query, documents, note=fallback_note)
+            fallback_source = "интернет · без API-ключа" if not api_key else "интернет · выдержки без модели"
+            self.events.put(("reply", (conversation_id, digest, fallback_source)))
         except Exception as exc:
             self.events.put(("failure", (conversation_id, f"Не удалось выполнить веб-поиск: {exc}")))
 
@@ -1604,7 +1967,7 @@ class MoyaIshkaApp:
         model = str(settings.get("online_model", "")).strip()
         key = str(settings.get("api_key", "")).strip()
         if not key:
-            raise RuntimeError("Не задан API-ключ. Укажите его в настройках.")
+            raise RuntimeError("Для ответов облачной модели нужен API-ключ. Сам интернет-поиск работает без него: используй команду «Поищи в интернете …» или страницу «Интернет и знания».")
         if not url.startswith("https://") and not url.startswith("http://"):
             raise RuntimeError("Адрес API должен начинаться с https:// или http://")
         if not model:
@@ -1736,12 +2099,60 @@ class MoyaIshkaApp:
                 elif event == "update_downloaded":
                     self.staged_update_path = Path(str(payload))
                     self.update_status_var.set(f"Обновление загружено и проверено: {self.staged_update_path.name}")
+                    # Ask for a permanent folder on the first install; afterwards always reuse it.
+                    initial = self._selected_install_dir()
+                    if bool(self.config.get("install_dir_user_selected", False)):
+                        destination_dir = initial
+                    else:
+                        selected = filedialog.askdirectory(
+                            parent=self.root,
+                            title="Выбери постоянную папку установки Моей ИИшки",
+                            initialdir=str(initial),
+                            mustexist=False,
+                        )
+                        if not selected:
+                            messagebox.showinfo(
+                                "Обновление загружено",
+                                f"Установка отменена. Проверенный файл остаётся во временной папке:\n{self.staged_update_path}\n\nПапку установки можно выбрать позже в Настройках → Автоматические обновления.",
+                            )
+                            continue
+                        destination_dir = Path(selected).expanduser().resolve()
+                        self.update_install_dir_var.set(str(destination_dir))
+                        self.save_update_settings(show_message=False)
+
+                    try:
+                        destination_dir = ensure_install_dir_writable(destination_dir)
+                    except Exception as exc:
+                        messagebox.showerror("Папка установки", str(exc))
+                        continue
+                    self.config["install_dir"] = str(destination_dir)
+                    self.config["install_dir_user_selected"] = True
+                    atomic_json_save(CONFIG_PATH, self.config)
+                    target = destination_dir / "MoyaIshka.exe"
                     if getattr(sys, "frozen", False):
-                        if messagebox.askyesno("Установить обновление", "Контрольная сумма проверена. Закрыть приложение и установить обновление сейчас?"):
+                        current_exe = Path(sys.executable).resolve()
+                        if target.resolve() != current_exe:
+                            prompt = (
+                                "Контрольная сумма проверена.\n\nСтарая программа закроется, новая версия будет установлена в выбранную папку и запустится.\n\n"
+                                f"Папка установки:\n{destination_dir}\n\n"
+                                "Старая копия в прежней папке останется. Её можно удалить после проверки новой версии.\n\nПродолжить?"
+                            )
+                        else:
+                            prompt = (
+                                "Контрольная сумма проверена.\n\nТекущая программа закроется, EXE будет безопасно заменён и приложение запустится снова.\n\n"
+                                f"Папка установки:\n{destination_dir}\n\nПродолжить?"
+                            )
+                        if messagebox.askyesno("Установить обновление", prompt):
                             self._apply_staged_update()
                     else:
-                        messagebox.showinfo("Обновление загружено", f"Проверенный EXE сохранён здесь:\n{self.staged_update_path}\n\nЗапустите его вручную после закрытия исходного приложения.")
-                        self._open_local_folder(self.staged_update_path.parent)
+                        if messagebox.askyesno(
+                            "Установить автономную версию",
+                            "Сейчас ИИшка запущена через Python/START.bat. Будет установлена самостоятельная версия EXE.\n\n"
+                            f"Постоянная папка установки:\n{destination_dir}\n\n"
+                            "В дальнейшем обновления будут устанавливаться в эту же папку.\n"
+                            "Текущая программа закроется, а новая версия запустится автоматически.\n\nПродолжить?",
+                        ):
+                            self._install_staged_update_from_source(destination_dir)
                 elif event == "update_error":
                     self.update_status_var.set(str(payload))
                     messagebox.showerror("Обновление", str(payload))
@@ -1862,12 +2273,15 @@ class MoyaIshkaApp:
             "temperature": round(float(self.temperature_var.get()), 2),
             "theme": self.theme_var.get(),
             "font_size": int(self.font_size_var.get()),
+            "font_family": self.font_family_var.get().strip() or "Segoe UI",
             "auto_memory": bool(self.auto_memory_var.get()) if hasattr(self, "auto_memory_var") else bool(self.config.get("auto_memory", True)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
             "plugins_enabled": bool(self.python_plugins_var.get()) if hasattr(self, "python_plugins_var") else bool(self.config.get("plugins_enabled", False)),
             "update_repo": self.update_repo_var.get().strip() if hasattr(self, "update_repo_var") else str(self.config.get("update_repo", "")),
             "auto_update_check": bool(self.auto_update_var.get()) if hasattr(self, "auto_update_var") else bool(self.config.get("auto_update_check", True)),
+            "install_dir": self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else str(self.config.get("install_dir", "")),
         })
+        self.font_family = str(self.config.get("font_family", "Segoe UI"))
         self.plugin_manager.enabled_python = bool(self.config.get("plugins_enabled", False))
         atomic_json_save(CONFIG_PATH, self.config)
         self.chat_mode_var.set(self.config["mode"])
@@ -1875,8 +2289,10 @@ class MoyaIshkaApp:
         self.chat_name_label.configure(text=self.chat_title_var.get())
         self._apply_theme()
         self._render_current_chat()
-        self.chat_view.configure(font=("Segoe UI", int(self.config["font_size"])))
-        self.input_box.configure(font=("Segoe UI", int(self.config["font_size"])))
+        self.chat_view.configure(font=(self.font_family, int(self.config["font_size"])))
+        self.input_box.configure(font=(self.font_family, int(self.config["font_size"])))
+        self.instructions_box.configure(font=(self.font_family, 11))
+        self._refresh_chat_list()
         if show_message:
             messagebox.showinfo("Настройки сохранены", f"Изменения применены.\n\nПапка данных:\n{DATA_DIR}")
         self._set_status("Настройки сохранены")
@@ -1912,6 +2328,7 @@ class MoyaIshkaApp:
         self.temperature_var.set(self.config["temperature"])
         self.theme_var.set(self.config["theme"])
         self.font_size_var.set(str(self.config["font_size"]))
+        self.font_family_var.set(str(self.config.get("font_family", "Segoe UI")))
         self.instructions_box.delete("1.0", "end")
         self.instructions_box.insert("1.0", self.config["instructions"])
         if hasattr(self, "auto_memory_var"):
@@ -2214,7 +2631,7 @@ class MoyaIshkaApp:
                     raise
                 errors.append(f"Онлайн: {exc}")
         if mode == "Только онлайн":
-            raise RuntimeError("Не задан API-ключ онлайн-провайдера.")
+            raise RuntimeError("Для обычного ответа облачной модели нужен API-ключ. Это не требуется для интернет-поиска: запросы «поищи в интернете …» и страница «Интернет и знания» работают без ключа.")
         try:
             return self._call_ollama(settings, messages)
         except Exception as exc:
@@ -2291,11 +2708,84 @@ class MoyaIshkaApp:
             self.improve_status_var.set("Изменение отклонено или восстановлено.")
 
     # Updates are obtained from a user-configured GitHub Releases repository.
-    def save_update_settings(self) -> None:
+    def _selected_install_dir(self) -> Path:
+        raw = self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else str(self.config.get("install_dir", ""))
+        running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
+        return resolve_install_dir(raw, running_exe=running_exe)
+
+    def browse_install_dir(self) -> None:
+        current = self._selected_install_dir()
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            title="Выбери постоянную папку установки Моей ИИшки",
+            initialdir=str(current),
+            mustexist=False,
+        )
+        if selected:
+            self.update_install_dir_var.set(str(Path(selected).resolve()))
+            self.update_status_var.set("Папка выбрана. Нажми «Сохранить настройки обновлений».")
+
+    def save_update_settings(self, show_message: bool = True) -> None:
+        try:
+            install_dir = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+        except Exception as exc:
+            messagebox.showerror("Папка установки", f"Не удалось использовать выбранную папку.\n\n{exc}")
+            return
         self.config["update_repo"] = self.update_repo_var.get().strip()
         self.config["auto_update_check"] = bool(self.auto_update_var.get())
+        self.config["install_dir"] = str(install_dir)
+        self.config["install_dir_user_selected"] = True
+        self.update_install_dir_var.set(str(install_dir))
         atomic_json_save(CONFIG_PATH, self.config)
-        self.update_status_var.set("Настройки обновлений сохранены.")
+        self.update_status_var.set(f"Настройки сохранены. Обновления будут устанавливаться в: {install_dir}")
+        if show_message:
+            messagebox.showinfo("Настройки обновлений", f"Папка установки сохранена:\n{install_dir}")
+
+    def install_current_build_to_selected_folder(self) -> None:
+        """Move the current frozen build to the selected persistent folder.
+
+        A source/START.bat session is converted by the next published standalone EXE;
+        it is never copied as if main.py were an executable.
+        """
+        try:
+            destination_dir = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+            self.config["install_dir"] = str(destination_dir)
+            self.config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+            if not getattr(sys, "frozen", False):
+                self.update_status_var.set(
+                    f"Папка сохранена: {destination_dir}. Текущий запуск идёт через Python; после установки первой EXE-версии она будет размещена здесь."
+                )
+                messagebox.showinfo(
+                    "Папка установки сохранена",
+                    "Сейчас приложение запущено из исходников, поэтому переносить нечего.\n\n"
+                    f"Первая автономная версия будет установлена сюда:\n{destination_dir}",
+                )
+                return
+
+            current_exe = Path(sys.executable).resolve()
+            target = destination_dir / "MoyaIshka.exe"
+            if current_exe == target.resolve():
+                self.update_status_var.set(f"Приложение уже установлено в {destination_dir}")
+                messagebox.showinfo("Установка", "Текущая версия уже находится в выбранной папке.")
+                return
+            if not messagebox.askyesno(
+                "Переместить приложение",
+                f"Будет создана копия приложения в выбранной папке и запущена оттуда.\n\n{destination_dir}\n\n"
+                "Текущее окно закроется. Прежний EXE останется в старой папке, пока ты не проверишь новую копию. Продолжить?",
+            ):
+                return
+            import shutil
+            temporary = destination_dir / "MoyaIshka.installing.exe"
+            shutil.copy2(current_exe, temporary)
+            if temporary.stat().st_size != current_exe.stat().st_size:
+                temporary.unlink(missing_ok=True)
+                raise IOError("Скопированный EXE имеет неверный размер.")
+            os.replace(temporary, target)
+            subprocess.Popen([str(target)], cwd=str(destination_dir), close_fds=True)
+            self.on_close()
+        except Exception as exc:
+            messagebox.showerror("Установка", f"Не удалось установить приложение в выбранную папку.\n\n{exc}")
 
     def _maybe_check_updates(self) -> None:
         if bool(self.config.get("auto_update_check", True)) and str(self.config.get("update_repo", "")).strip():
@@ -2325,22 +2815,60 @@ class MoyaIshkaApp:
         except Exception as exc:
             self.events.put(("update_error", str(exc)))
 
+    def _install_staged_update_from_source(self, install_dir: str | Path | None = None) -> None:
+        """Install a standalone EXE after this Python/START.bat process exits."""
+        if not self.staged_update_path or not self.staged_update_path.exists():
+            messagebox.showerror("Обновление", "Файл обновления не найден. Проверь обновления ещё раз.")
+            return
+        try:
+            destination_dir = ensure_install_dir_writable(install_dir or self._selected_install_dir())
+            self.config["install_dir"] = str(destination_dir)
+            self.config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+            self.update_install_dir_var.set(str(destination_dir))
+            target = destination_dir / "MoyaIshka.exe"
+            launch_windows_replacement(
+                self.staged_update_path,
+                target,
+                os.getpid(),
+                DATA_DIR / "update.log",
+            )
+            self.update_status_var.set(
+                f"Установка подготовлена. После закрытия старого окна новая версия запустится из: {target}"
+            )
+            if self.avatar is not None:
+                self.avatar.hide()
+            self.on_close()
+        except Exception as exc:
+            messagebox.showerror(
+                "Не удалось установить обновление",
+                f"Старая версия оставлена работающей.\n\nПричина: {exc}\n\nПроверенный файл находится здесь:\n{self.staged_update_path}",
+            )
+
     def _apply_staged_update(self) -> None:
         if not self.staged_update_path or not self.staged_update_path.exists():
             messagebox.showerror("Обновление", "Файл обновления не найден.")
             return
         if not getattr(sys, "frozen", False):
-            messagebox.showinfo("Обновление", "Автоустановка доступна в EXE-сборке. В режиме исходников запусти скачанный EXE вручную.")
+            self._install_staged_update_from_source(self._selected_install_dir())
             return
         try:
-            target = Path(sys.executable).resolve()
-            subprocess.Popen([str(sys.executable), "--apply-update", str(self.staged_update_path), str(target), str(os.getpid())], close_fds=True)
+            target_dir = ensure_install_dir_writable(self._selected_install_dir())
+            target = target_dir / "MoyaIshka.exe"
+            self.config["install_dir"] = str(target_dir)
+            if str(self.config.get("install_dir", "")).strip():
+                self.config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+            self.update_install_dir_var.set(str(target_dir))
+
+            log_path = DATA_DIR / "update.log"
+            launch_windows_replacement(self.staged_update_path, target, os.getpid(), log_path)
+            self.update_status_var.set(f"Установка запущена. После закрытия приложение будет обновлено в: {target_dir}")
             if self.avatar is not None:
                 self.avatar.hide()
-            self.store.close()
-            self.root.destroy()
+            self.on_close()
         except Exception as exc:
-            messagebox.showerror("Обновление", str(exc))
+            messagebox.showerror("Обновление", f"Не удалось запустить установку. Текущая версия продолжает работать.\n\n{exc}")
 
     # ---------- memory ----------
     def _refresh_memory_list(self) -> None:
@@ -2438,7 +2966,68 @@ class MoyaIshkaApp:
             self.root.destroy()
 
 
+def migrate_staged_exe_on_first_launch() -> bool:
+    """Move a manually launched AppData-staged updater EXE to a stable location.
+
+    Older builds downloaded the new EXE to %APPDATA%\\MoyaIshka\\update_staging
+    but could not install it. When the user opens that EXE, copy it into the
+    normal per-user Programs directory and relaunch from there.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return False
+    try:
+        running_exe = Path(sys.executable).resolve()
+        if running_exe.parent.name.casefold() != "update_staging":
+            return False
+        saved_config = load_json(CONFIG_PATH, {})
+        configured_dir = saved_config.get("install_dir") if isinstance(saved_config, dict) else None
+        was_user_selected = bool(saved_config.get("install_dir_user_selected", False)) if isinstance(saved_config, dict) else False
+        target_dir = resolve_install_dir(configured=configured_dir)
+        if not was_user_selected:
+            # Legacy updater builds placed EXE in AppData. Ask once for a real install folder.
+            chooser_root = tk.Tk()
+            chooser_root.withdraw()
+            try:
+                selected = filedialog.askdirectory(
+                    parent=chooser_root, title="Выбери постоянную папку установки Моей ИИшки",
+                    initialdir=str(target_dir), mustexist=False,
+                )
+            finally:
+                chooser_root.destroy()
+            if selected:
+                target_dir = Path(selected).expanduser().resolve()
+            else:
+                # Keep running from staging if the user cancels; the settings page can install later.
+                return False
+        target_dir = ensure_install_dir_writable(target_dir)
+        target = target_dir / "MoyaIshka.exe"
+        if isinstance(saved_config, dict):
+            saved_config["install_dir"] = str(target_dir)
+            saved_config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, saved_config)
+        temporary = target_dir / "MoyaIshka.installing.exe"
+        import shutil
+        shutil.copy2(running_exe, temporary)
+        if temporary.stat().st_size != running_exe.stat().st_size:
+            temporary.unlink(missing_ok=True)
+            raise IOError("Не удалось полностью скопировать EXE в папку установки.")
+        os.replace(temporary, target)
+        subprocess.Popen([str(target)], cwd=str(target_dir), close_fds=True)
+        return True
+    except Exception as exc:
+        try:
+            messagebox.showerror(
+                "Установка Моей ИИшки",
+                f"Не удалось перенести приложение из временной папки.\n\n{exc}\n\nЗапустите EXE из папки загрузки ещё раз или скопируйте его в %LOCALAPPDATA%\\Programs\\MoyaIshka.",
+            )
+        except Exception:
+            pass
+        return False
+
+
 def main() -> None:
+    if migrate_staged_exe_on_first_launch():
+        return
     prepare_source_workspace()
     root = tk.Tk()
     MoyaIshkaApp(root)

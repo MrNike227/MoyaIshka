@@ -7,6 +7,7 @@ from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
 from self_improvement import apply_unified_diff
 from updater import version_tuple
+from updater_helper import install_from_source, _powershell_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable
 from windows_control import handle_voice_command
 
 
@@ -67,6 +68,13 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
+    def test_application_release_version_is_412(self):
+        import os
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from main import APP_VERSION
+        self.assertEqual(APP_VERSION, "4.1.2")
+
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
 
@@ -79,6 +87,38 @@ class UtilityTests(unittest.TestCase):
     def test_non_command_is_not_handled(self):
         result = handle_voice_command("Расскажи интересный факт")
         self.assertFalse(result.handled)
+
+
+class UpdaterTests(unittest.TestCase):
+    def test_source_update_installs_to_stable_user_programs_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            staged_dir = Path(temp) / "update_staging"
+            staged_dir.mkdir()
+            staged = staged_dir / "MoyaIshka_update.exe"
+            staged.write_bytes(b"fake exe bytes")
+            install_dir = Path(temp) / "Programs" / "MoyaIshka"
+            installed = install_from_source(staged, install_dir)
+            self.assertEqual(installed, install_dir / "MoyaIshka.exe")
+            self.assertEqual(installed.read_bytes(), b"fake exe bytes")
+            self.assertFalse((install_dir / "MoyaIshka.new.exe").exists())
+
+    def test_windows_updater_waits_then_replaces_and_restarts(self):
+        script = _powershell_script()
+        self.assertIn("WaitForExit(120000)", script)
+        self.assertIn("Get-FileHash", script)
+        self.assertIn("[System.IO.File]::Replace", script)
+        self.assertIn("Start-Process -FilePath $TargetPath", script)
+        self.assertIn("MoyaIshka.previous.exe", script)
+
+    def test_user_install_path_is_named_for_app(self):
+        self.assertEqual(user_install_dir().name, "MoyaIshka")
+
+    def test_explicit_install_folder_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            selected = Path(temp) / "MyApps" / "Ishka"
+            self.assertEqual(resolve_install_dir(configured=selected), selected.resolve())
+            self.assertEqual(ensure_install_dir_writable(selected), selected.resolve())
+            self.assertTrue((selected / ".").exists())
 
 
 if __name__ == "__main__":

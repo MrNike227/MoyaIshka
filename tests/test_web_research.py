@@ -8,6 +8,7 @@ from web_research import (
     _PageTextParser,
     _SearchResultParser,
     _validate_public_url,
+    format_research_digest,
 )
 
 
@@ -46,6 +47,17 @@ class WebParserTests(unittest.TestCase):
 
     def test_accepts_public_url_shape_without_dns_lookup(self):
         self.assertEqual(_validate_public_url("https://example.com/path", resolve_host=False), "https://example.com/path")
+
+    def test_research_digest_works_without_an_api_key(self):
+        digest = format_research_digest("тестовый запрос", [{
+            "title": "Публичный источник",
+            "url": "https://example.com/article",
+            "snippet": "Краткая выдержка без обращения к языковой модели.",
+        }])
+        self.assertIn("Интернет-поиск работает без API-ключа", digest)
+        self.assertIn("Публичный источник", digest)
+        self.assertIn("https://example.com/article", digest)
+        self.assertIn("не сгенерированное мнение нейросети", digest)
 
 
 class ResearchLibraryTests(unittest.TestCase):

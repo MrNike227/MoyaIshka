@@ -4,9 +4,10 @@
 [Setup]
 AppId={{C6DBA092-A00B-4E45-9C02-67B8D543A2A1}
 AppName=Моя ИИшка
-AppVersion=4.1.1
+AppVersion=4.1.2
 AppPublisher=Моя ИИшка
-DefaultDirName={autopf}\Моя ИИшка
+DisableProgramGroupPage=yes
+DefaultDirName={localappdata}\Programs\MoyaIshka
 DefaultGroupName=Моя ИИшка
 OutputDir=installer_output
 OutputBaseFilename=MoyaIshka_Setup

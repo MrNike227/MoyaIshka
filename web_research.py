@@ -20,7 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.1"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.2"
 SEARCH_URL = "https://html.duckduckgo.com/html/?q="
 MAX_QUERY_LENGTH = 400
 MAX_RESULTS = 10
@@ -259,6 +259,39 @@ def fetch_page(url: str, timeout: int = 15) -> dict[str, str]:
         parser.close()
         title, text = parser.result()
     return {"title": title, "url": url, "content": text}
+
+
+def format_research_digest(query: str, documents: list[dict[str, Any]], *, note: str = "") -> str:
+    """Build a useful source digest without requiring an LLM/API provider.
+
+    This is deliberately extractive: it presents short excerpts and source URLs,
+    rather than pretending that a language model generated a synthesized answer.
+    """
+    normalized_query = re.sub(r"\s+", " ", str(query)).strip()[:400]
+    lines = [
+        f"Нашла материалы по запросу: «{normalized_query}». ",
+        "",
+        "Интернет-поиск работает без API-ключа. Ниже — найденные источники и выдержки из них; это подборка материалов, а не сгенерированное мнение нейросети.",
+    ]
+    for index, item in enumerate(documents[:10], 1):
+        title = re.sub(r"\s+", " ", str(item.get("title") or "Источник без названия")).strip()[:180]
+        excerpt = str(item.get("content") or item.get("snippet") or "").strip()
+        excerpt = re.sub(r"\s+", " ", excerpt)
+        if len(excerpt) > 900:
+            excerpt = excerpt[:897].rstrip() + "…"
+        if not excerpt:
+            excerpt = "Краткое описание не предоставлено. Открой источник, чтобы прочитать материал."
+        url = str(item.get("url") or "").strip()
+        lines.extend(["", f"{index}. {title}", excerpt])
+        if url:
+            lines.append(f"Источник: {url}")
+    if note:
+        lines.extend(["", f"Примечание: {note[:600]}"])
+    lines.extend([
+        "",
+        "Чтобы получить связный ответ по найденным материалам, можно подключить бесплатную локальную модель через Ollama. API-ключ нужен только для выбранной облачной модели, а не для самого поиска.",
+    ])
+    return "\n".join(lines).strip()
 
 
 def search_and_fetch(query: str, max_results: int = 5, fetch_pages: int = 3) -> list[dict[str, str]]:

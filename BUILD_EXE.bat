@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.1 single-file Windows application...
+echo Building Moya Ishka 4.1.2 single-file Windows application...
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
 where python >nul 2>nul
@@ -41,7 +41,7 @@ if errorlevel 1 goto failed
   --add-data "LICENSE.txt;source_project" ^
   --add-data "app_icon.ico;source_project" ^
   --add-data "tests;source_project/tests" ^
-  --add-data ".github;.github" ^
+  --add-data ".github;source_project/.github" ^
   --add-data "skills;source_project/skills" ^
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
