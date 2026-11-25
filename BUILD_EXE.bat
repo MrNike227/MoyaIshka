@@ -105,8 +105,8 @@ if errorlevel 1 goto failed
 if not exist "dist\MoyaIshka.exe" goto failed
 
 echo.
-echo Checking the frozen executable crypto imports...
-"dist\MoyaIshka.exe" --self-test-imports
+echo Checking the frozen executable crypto imports (90-second limit)...
+"%PY_EXE%" %PY_ARGS% -c "import subprocess, sys; result = subprocess.run([r'dist\MoyaIshka.exe', '--self-test-imports'], timeout=90); sys.exit(result.returncode)"
 if errorlevel 1 goto crypto_bundle_failed
 
 echo.
