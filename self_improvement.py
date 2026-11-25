@@ -55,6 +55,14 @@ def build_model_source_context(
     }
     terms = set(prompt_words)
     terms.update(word[:5] for word in prompt_words if len(word) >= 5)
+    general_review = any(
+        marker in prompt.casefold()
+        for marker in ("автоматический анализ", "анализ кода", "технический аудит", "code review")
+    )
+    if general_review:
+        # A project-wide review should not collapse to the one function whose
+        # name happens to match a review keyword. Use the bounded symbol index.
+        terms.clear()
     symbol_rows: list[tuple[int, str]] = []
     candidates: list[tuple[int, int, int, str, str]] = []
     ui_request = any(
