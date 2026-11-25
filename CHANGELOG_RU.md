@@ -1,3 +1,11 @@
+## 4.1.5.2 — единая проверенная сборка, исправление cryptography и Node.js Actions
+
+- GitHub Actions переведены на Node.js 24: `actions/checkout@v7` и `actions/setup-python@v7.1.0`; релиз публикуется через встроенный GitHub CLI без action на Node.js 20.
+- Release workflow использует тот же `BUILD_EXE.bat`, что и локальная сборка, и устанавливает зависимости из `requirements.txt`, включая `cryptography`.
+- Перед публикацией выполняются unit-тесты, проверка PyInstaller archive на пакет `cryptography` и Rust binding, а также запуск готового EXE с AES-GCM/Scrypt.
+- Версия синхронизирована в приложении, updater, метаданных Windows и Inno Setup; репозиторий автообновления исправлен на `MrNike227/MoyaIshka`.
+- Добавлены правила LF для исходников и CRLF для BAT/CMD, а также автоматические тесты переносов строк и финального перевода строки.
+
 ## 4.1.5.1 — исправление упаковки и подтверждения сборки
 
 - GitHub Actions workflow получил отдельное имя `Build Windows release — verified 4.1.5.1`, чтобы было видно, что запущена новая конфигурация.

@@ -1,86 +1,97 @@
-import re
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TARGET_VERSION = "4.1.5.2"
 
 
 class ReleaseBuildTests(unittest.TestCase):
-    def test_application_version_is_4151(self):
+    def test_application_version_is_4152(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.5.1"', source)
+        self.assertIn(f'APP_VERSION = "{TARGET_VERSION}"', source)
 
-    def test_cryptography_is_explicitly_collected(self):
+    def test_cryptography_is_a_required_application_dependency(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^cryptography\s*>?=")
+
+    def test_local_build_collects_crypto_package_and_rust_binding(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         self.assertIn("--additional-hooks-dir hooks", build)
         self.assertIn("--collect-all cryptography", build)
-        self.assertIn("--collect-submodules cryptography", build)
-        self.assertIn("--collect-binaries cryptography", build)
-        self.assertIn("--hidden-import=cryptography", build)
         self.assertIn("--hidden-import=cryptography.hazmat.bindings._rust", build)
         self.assertIn("--copy-metadata cryptography", build)
         self.assertIn("--self-test-imports", build)
+        self.assertIn("-m pip install --upgrade -r requirements.txt", build)
 
-    def test_custom_cryptography_hook_collects_package(self):
+    def test_custom_cryptography_hook_collects_native_extension(self):
         hook = ROOT / "hooks" / "hook-cryptography.py"
         self.assertTrue(hook.is_file())
         source = hook.read_text(encoding="utf-8")
         self.assertIn('collect_all("cryptography")', source)
-        self.assertIn('cryptography.hazmat.bindings._rust', source)
+        self.assertIn("cryptography.hazmat.bindings._rust", source)
 
-    def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
+    def test_crypto_runtime_self_test_performs_aes_gcm_and_scrypt(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('"--self-test-imports"', source)
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
 
-    def test_github_actions_use_node24_compatible_action_majors(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("actions/checkout@v7", workflow)
-        self.assertIn("actions/setup-python@v7.1.0", workflow)
-        self.assertNotIn("softprops/action-gh-release@v2", workflow)
-        self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
+    def test_release_and_verify_workflows_use_node24_actions(self):
+        workflow_paths = [
+            ROOT / ".github" / "workflows" / "release.yml",
+            ROOT / ".github" / "workflows" / "verify.yml",
+        ]
+        for path in workflow_paths:
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("actions/checkout@v7", source, path.name)
+            self.assertIn("actions/setup-python@v7.1.0", source, path.name)
+            self.assertNotIn("actions/checkout@v4", source, path.name)
+            self.assertNotIn("actions/setup-python@v5", source, path.name)
+            self.assertNotIn("softprops/action-gh-release@v2", source, path.name)
+            self.assertIn("BUILD_EXE.bat", source, path.name)
+            self.assertIn("Verify frozen EXE imports and encryption round-trip", source, path.name)
 
-    def test_runtime_crypto_self_test_passes_in_build_environment(self):
+    def test_release_is_published_only_after_smoke_test(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertLess(
+            workflow.index("Verify frozen EXE imports and encryption round-trip"),
+            workflow.index("Publish GitHub Release"),
+        )
+        self.assertIn("'v4.1.5.2'", workflow)
+        self.assertIn("gh release create", workflow)
+
+    def test_windows_version_resource_and_installer_match(self):
+        version = (ROOT / "version_info.txt").read_text(encoding="utf-8")
+        installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
+        self.assertIn("filevers=(4,1,5,2)", version)
+        self.assertIn("prodvers=(4,1,5,2)", version)
+        self.assertIn("ProductVersion', '4.1.5.2'", version)
+        self.assertIn("AppVersion=4.1.5.2", installer)
+
+    def test_updater_targets_this_repository(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('"update_repo": "MrNike227/MoyaIshka"', source)
+        self.assertNotIn("MrNike227/MoyaIshka_v4.1.1", source)
+
+    def test_version_references_are_current_in_runtime_modules(self):
+        paths = [
+            "main.py",
+            "cloud_sync.py",
+            "google_drive_sync.py",
+            "updater_helper.py",
+            "voice_manager.py",
+            "web_research.py",
+        ]
+        for relative in paths:
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertNotIn("4.1.5.1", source, relative)
+            self.assertIn("4.1.5.2", source, relative)
+
+    def test_packaged_import_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
         self.assertEqual(_packaged_import_self_test(), 0)
 
-    def test_cryptography_is_declared_as_a_build_dependency(self):
-        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        build_script = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("cryptography", requirements)
-        self.assertIn("cryptography", build_script)
-        self.assertIn("Verify active Python and install dependencies", workflow)
-
-    def test_windows_version_resource_is_4151(self):
-        source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,5,1)", source)
-        self.assertIn("prodvers=(4,1,5,1)", source)
-        self.assertIn("ProductVersion', '4.1.5.1'", source)
-
-
-
-    def test_build_uses_actions_selected_python_interpreter(self):
-        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
-        self.assertIn("if defined MOYA_BUILD_PYTHON", build)
-        self.assertIn("set \"PY=%MOYA_BUILD_PYTHON%\"", build)
-        self.assertIn("-m pip install --upgrade -r requirements.txt", build)
-
-    def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.5.1", workflow)
-        self.assertIn("actions/checkout@v7", workflow)
-        self.assertIn("actions/setup-python@v7.1.0", workflow)
-        self.assertNotIn("actions/checkout@v4", workflow)
-        self.assertNotIn("actions/setup-python@v5", workflow)
-        self.assertNotIn("softprops/action-gh-release@v2", workflow)
-
-    def test_workflow_publishes_only_after_frozen_exe_smoke_test(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
-        self.assertIn("MoyaIshka.exe.sha256", workflow)
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

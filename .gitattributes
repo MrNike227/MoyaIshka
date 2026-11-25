@@ -1,2 +1,4 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize text sources to LF; keep Windows command scripts in CRLF in working trees.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

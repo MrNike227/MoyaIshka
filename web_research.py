@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.5.1"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MoyaIshka/4.1.5.2"
 BING_RSS_URL = "https://www.bing.com/search?format=rss&q="
 DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/?q="
 MAX_QUERY_LENGTH = 400

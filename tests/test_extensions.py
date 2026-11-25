@@ -73,7 +73,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.1.5.1")
+        self.assertEqual(APP_VERSION, "4.1.5.2")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
@@ -135,7 +135,7 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen") as popen:
                 helper = updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.5.1",
+                    staged, target, 1234, log, expected_version="4.1.5.2",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
                 )
             self.assertTrue(helper.is_file())
@@ -144,7 +144,7 @@ class UpdaterTests(unittest.TestCase):
             self.assertIn("-File", args)
             self.assertIn(str(staged.resolve()), args)
             self.assertIn(str(target.resolve()), args)
-            self.assertIn("4.1.5.1", args)
+            self.assertIn("4.1.5.2", args)
 
     def test_staged_exe_first_launch_uses_detached_transactional_installer(self):
         import inspect
@@ -175,11 +175,11 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen"):
                 updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.5.1", platform_name="nt",
+                    staged, target, 1234, log, expected_version="4.1.5.2", platform_name="nt",
                 )
             self.assertTrue(log.is_file())
             content = log.read_text(encoding="utf-8")
-            self.assertIn("Запуск установщика обновления 4.1.5.1", content)
+            self.assertIn("Запуск установщика обновления 4.1.5.2", content)
             self.assertIn(str(target.resolve()), content)
 
     def test_updater_confirmation_requires_version_hash_and_exact_target(self):

@@ -1,14 +1,26 @@
-# Обновление до 4.1.5.1
+# Проверенная сборка «Моя ИИшка» 4.1.5.2
 
-**ОБЯЗАТЕЛЬНО:** замените `.github/workflows/release.yml` в репозитории. Именно старый workflow вызывает предупреждения Node.js 20 и не проверяет готовый EXE. После Commit/Push в Actions должно появиться имя `Build Windows release — verified 4.1.5.1`.
+Текущая опубликованная версия — 4.1.5.1. Цель этой ветки — выпустить 4.1.5.2 с одной канонической сборкой и обязательной проверкой криптографии.
 
-1. Распакуйте патч в корень локальной копии репозитория с заменой файлов.
-2. Проверьте в GitHub → Code, что `.github/workflows/release.yml` содержит имя `Build Windows release — verified 4.1.5.1`.
-3. Сделайте Commit и Push в `main`.
-4. Создайте и отправьте тег `v4.1.5.1` либо запустите новую workflow вручную с `release_tag=v4.1.5.1`.
-5. В Actions дождитесь шага `Verify frozen EXE imports and encryption round-trip`; он должен пройти до публикации релиза.
+## Что исправлено в ветке 4.1.5.2
 
-Если запуск называется просто `Build Windows release` и содержит предупреждение про `checkout@v4`, `setup-python@v5` или `softprops/action-gh-release@v2`, это старый workflow. Не скачивайте EXE из такого запуска.
+- `.github/workflows/release.yml` теперь использует Node.js 24-совместимые `actions/checkout@v7` и `actions/setup-python@v7.1.0`. Node.js 20 actions удалены.
+- Релиз публикуется встроенным GitHub CLI; дополнительное action, работающее на Node.js 20, не используется.
+- GitHub Actions и локальная сборка используют один файл `BUILD_EXE.bat`. Он устанавливает зависимости из `requirements.txt` и явно проверяет `cryptography` и Rust binding.
+- Перед публикацией тестируется сам собранный EXE: проверяются наличие пакета и `_rust` в PyInstaller archive, импорт криптографических модулей, Scrypt и AES-GCM round-trip.
+- Версия 4.1.5.2 синхронизирована в приложении, updater, Windows version resource и Inno Setup.
+- Добавлены проверки переносов строк, BOM и финального перевода строки.
 
+## Порядок выпуска
 
-Если распаковщик пропускает скрытые папки, скачайте `release.yml` отдельно и создайте в GitHub файл `.github/workflows/release.yml`, заменив его содержимое целиком. После загрузки откройте GitHub → Code и убедитесь, что первая строка файла `name: Build Windows release — verified 4.1.5.1`.
+1. Проверьте ветку `fix/4.1.5.2-verified-build` и Pull Request в `main`.
+2. Убедитесь, что workflow **Verify Windows build — 4.1.5.2** завершился успешно: unit-тесты, сборка и smoke-test EXE должны пройти.
+3. После слияния ветки в `main` создайте и отправьте тег `v4.1.5.2`.
+4. В GitHub Actions должен запуститься **Build Windows release — verified 4.1.5.2**.
+5. Скачивайте `MoyaIshka.exe` и `MoyaIshka.exe.sha256` только после успешного шага **Verify frozen EXE imports and encryption round-trip** и успешной публикации.
+
+## Как распознать старый workflow
+
+Если в журнале сборки появляется предупреждение, перечисляющее `actions/checkout@v4`, `actions/setup-python@v5` или `softprops/action-gh-release@v2`, запущена старая конфигурация. Не используйте EXE из такого запуска.
+
+Node.js нужен только внутри GitHub Actions для запуска actions. Устанавливать Node.js на пользовательский компьютер для работы автономного EXE не требуется.

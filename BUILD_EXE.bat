@@ -2,33 +2,51 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.5.1 single-file Windows application...
+
+echo Building Moya Ishka 4.1.5.2 standalone Windows application...
+
 if defined MOYA_BUILD_PYTHON (
-  set "PY=%MOYA_BUILD_PYTHON%"
+  set "PY_EXE=%MOYA_BUILD_PYTHON%"
+  set "PY_ARGS="
   goto have_python
 )
+
 where python >nul 2>nul
 if not errorlevel 1 (
-  set "PY=python"
+  set "PY_EXE=python"
+  set "PY_ARGS="
   goto have_python
 )
+
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
+
 goto no_python
+
 :use_py
-set "PY=py -3.11"
+set "PY_EXE=py"
+set "PY_ARGS=-3.11"
+
 :have_python
-%PY% --version
+"%PY_EXE%" %PY_ARGS% --version
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade pip
+
+"%PY_EXE%" %PY_ARGS% -c "import sys, struct; assert sys.version_info[:2] == (3, 11), f'Python 3.11 required, got {sys.version}'; assert struct.calcsize('P') == 8, '64-bit Python required'; print('Build interpreter:', sys.executable)"
+if errorlevel 1 goto python_version_failed
+
+"%PY_EXE%" %PY_ARGS% -m pip install --upgrade pip
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade -r requirements.txt piper-tts==1.8.0
+
+"%PY_EXE%" %PY_ARGS% -m pip install --upgrade -r requirements.txt
 if errorlevel 1 goto failed
-%PY% -c "import sys, cryptography; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('Build Python:', sys.executable); print('cryptography:', cryptography.__version__, cryptography.__file__)"
+
+"%PY_EXE%" %PY_ARGS% -m pip check
 if errorlevel 1 goto failed
-%PY% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
+
+"%PY_EXE%" %PY_ARGS% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.bindings import _rust; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography:', cryptography.__version__, cryptography.__file__); print('Rust binding:', _rust.__file__); print('AES-GCM and Scrypt imports: OK')"
 if errorlevel 1 goto crypto_failed
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
+
+"%PY_EXE%" %PY_ARGS% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
@@ -73,8 +91,8 @@ if errorlevel 1 goto crypto_failed
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
-  --collect-all cryptography --collect-submodules cryptography --collect-binaries cryptography --collect-data cryptography --collect-all psutil ^
-  --hidden-import=cryptography --hidden-import=cryptography.exceptions ^
+  --collect-all cryptography --collect-all psutil ^
+  --hidden-import=cryptography.exceptions ^
   --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
   --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^
   --hidden-import=cryptography.hazmat.bindings._rust ^
@@ -83,30 +101,44 @@ if errorlevel 1 goto crypto_failed
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
+
 if not exist "dist\MoyaIshka.exe" goto failed
+
+echo.
+echo Checking the frozen executable crypto imports...
 "dist\MoyaIshka.exe" --self-test-imports
 if errorlevel 1 goto crypto_bundle_failed
+
 echo.
 echo BUILD COMPLETE: dist\MoyaIshka.exe
-echo This EXE includes Python, Windows SAPI and Piper voice engines; download a voice pack from the app. A model/API is still needed for AI replies.
+echo The standalone EXE includes Python and cryptography. No Python or Node.js installation is required on the user's PC.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 0
-:failed
+
+:python_version_failed
 echo.
-echo EXE build failed. Use 64-bit Python 3.11 and check internet access.
-if not defined GITHUB_ACTIONS pause
-endlocal & exit /b 1
+echo Python 3.11 x64 is required for this reproducible build.
+goto failed_exit
+
 :crypto_failed
 echo.
-echo CRYPTOGRAPHY PREFLIGHT FAILED. Verify that cryptography is installed in the Python 3.11 build environment.
-if not defined GITHUB_ACTIONS pause
-endlocal & exit /b 1
+echo CRYPTOGRAPHY PREFLIGHT FAILED. The build cannot continue.
+goto failed_exit
+
 :crypto_bundle_failed
 echo.
-echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE is not safe to publish.
-if not defined GITHUB_ACTIONS pause
-endlocal & exit /b 1
+echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE must not be distributed.
+goto failed_exit
+
 :no_python
-echo Python 3.11 x64 was not found. Install it on the build computer only.
+echo.
+echo Python 3.11 x64 was not found on this build computer.
+goto failed_exit
+
+:failed
+echo.
+echo EXE build failed. Check the first error above and confirm internet access.
+
+:failed_exit
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1

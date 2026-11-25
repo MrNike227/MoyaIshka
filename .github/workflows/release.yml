@@ -1,9 +1,10 @@
-name: Build Windows release
+name: Build Windows release — verified 4.1.5.2
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v4.1.5.2'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,53 +14,41 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.11 x64
+        id: setup-python
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
           architecture: 'x64'
 
-      - name: Install build dependencies
+      - name: Verify version, dependencies and tests
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32
+          python -m pip install --upgrade -r requirements.txt
+          python -m pip check
+          $version = python -c "import main; print(main.APP_VERSION)"
+          if ($version -ne '4.1.5.2') { throw "Expected application version 4.1.5.2, got '$version'" }
+          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne 'v4.1.5.2') {
+            throw "Refusing to publish an unexpected release tag: $env:GITHUB_REF_NAME"
+          }
+          python -m unittest discover -s tests -v
 
-      - name: Build standalone EXE
+      - name: Build standalone EXE using canonical build script
         shell: cmd
-        run: >-
-          python -m PyInstaller --noconfirm --clean --onefile --windowed
-          --name "MoyaIshka" --icon app_icon.ico
-          --add-data "app_icon.ico;."
-          --add-data "main.py;source_project"
-          --add-data "windows_control.py;source_project"
-          --add-data "voice_assistant.py;source_project"
-          --add-data "auto_memory.py;source_project"
-          --add-data "avatar_widget.py;source_project"
-          --add-data "plugin_manager.py;source_project"
-          --add-data "self_improvement.py;source_project"
-          --add-data "updater.py;source_project"
-          --add-data "updater_helper.py;source_project"
-          --add-data "web_research.py;source_project"
-          --add-data "requirements.txt;source_project"
-          --add-data "requirements_voice.txt;source_project"
-          --add-data "START.bat;source_project"
-          --add-data "BUILD_EXE.bat;source_project"
-          --add-data "INSTALL_OPTIONAL_DOCS.bat;source_project"
-          --add-data "INSTALL_VOICE.bat;source_project"
-          --add-data "INSTALLER.iss;source_project"
-          --add-data "README_RU.md;source_project"
-          --add-data "LICENSE.txt;source_project"
-          --add-data "app_icon.ico;source_project"
-          --add-data "tests;source_project/tests"
-          --add-data ".github;source_project/.github"
-          --add-data "skills;source_project/skills"
-          --collect-all pypdf --collect-all docx --collect-all speech_recognition
-          --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes
-          --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes
-          --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5
-          main.py
+        run: call BUILD_EXE.bat
+        env:
+          MOYA_BUILD_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+
+      - name: Verify frozen EXE imports and encryption round-trip
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'dist/MoyaIshka.exe'
+          & $exe --self-test-imports
+          if ($LASTEXITCODE -ne 0) { throw "Frozen EXE cryptography self-test failed: $LASTEXITCODE" }
+          python -c "from PyInstaller.archive.readers import CArchiveReader; a=CArchiveReader(r'dist/MoyaIshka.exe'); n=[str(x).lower() for x in a.toc]; assert any('cryptography' in x for x in n), 'cryptography package missing from EXE'; assert any('cryptography' in x and '_rust' in x for x in n), 'cryptography Rust binding missing from EXE'; print('Verified cryptography archive entries:', sum('cryptography' in x for x in n))"
 
       - name: Create SHA-256 checksum
         shell: pwsh
@@ -68,11 +57,14 @@ jobs:
           "$hash  MoyaIshka.exe" | Set-Content -Path 'dist/MoyaIshka.exe.sha256' -Encoding ascii
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Моя ИИшка ${{ github.ref_name }}
-          generate_release_notes: true
-          files: |
-            dist/MoyaIshka.exe
-            dist/MoyaIshka.exe.sha256
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            'dist/MoyaIshka.exe' `
+            'dist/MoyaIshka.exe.sha256' `
+            --title "Моя ИИшка $env:GITHUB_REF_NAME" `
+            --generate-notes `
+            --verify-tag

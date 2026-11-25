@@ -58,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.5.1"
+APP_VERSION = "4.1.5.2"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -105,7 +105,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tts_rate": 175,
     "microphone_enabled": False,
     "plugins_enabled": False,
-    "update_repo": "MrNike227/MoyaIshka_v4.1.1",
+    "update_repo": "MrNike227/MoyaIshka",
     "auto_update_check": True,
     "install_dir": "",
     "install_dir_user_selected": False,
@@ -155,8 +155,8 @@ def prepare_source_workspace() -> Path:
             "BUILD_EXE.bat", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
-            "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_line_endings.py",
+            "hooks/hook-cryptography.py", ".github/workflows/release.yml", ".github/workflows/verify.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
             src = resource_path(f"source_project/{relative}")
@@ -4498,8 +4498,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.5.1-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.5.1-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.5.2-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.5.2-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
