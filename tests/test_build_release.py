@@ -1,4 +1,5 @@
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,36 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_application_version_is_417(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.1.7"', source)
+
+    def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        helper = (ROOT / "prepare_python_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("%PY% prepare_python_runtime.py", build)
+        self.assertIn('--add-binary "build\\python_runtime;."', build)
+        self.assertIn("vcruntime140.dll", helper)
+        self.assertIn("vcruntime140_1.dll", helper)
+
+    def test_runtime_dll_collector_copies_vc_runtime(self):
+        from prepare_python_runtime import collect_runtime_dlls
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "python"
+            destination = root / "bundle"
+            source.mkdir()
+            (source / "vcruntime140.dll").write_bytes(b"runtime")
+            (source / "msvcp140.dll").write_bytes(b"cxx")
+            copied = collect_runtime_dlls([source], destination)
+            self.assertEqual({item.name for item in copied}, {"vcruntime140.dll", "msvcp140.dll"})
+            self.assertEqual((destination / "vcruntime140.dll").read_bytes(), b"runtime")
+
+    def test_runtime_dll_collector_fails_when_core_runtime_is_missing(self):
+        from prepare_python_runtime import collect_runtime_dlls
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "python"
+            source.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "vcruntime140.dll"):
+                collect_runtime_dlls([source], root / "bundle")
 
     def test_cryptography_is_explicitly_collected(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
