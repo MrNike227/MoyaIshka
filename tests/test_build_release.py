@@ -147,6 +147,20 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
 
+    def test_windows_and_voice_page_has_mousewheel_scroll_container(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        page_start = source.index("    def _build_windows_page(self) -> None:")
+        page_end = source.index("    def _build_workshop_page(self) -> None:", page_start)
+        windows_page = source[page_start:page_end]
+        self.assertIn("scroll_canvas = tk.Canvas(page", windows_page)
+        self.assertIn('ttk.Scrollbar(page, orient="vertical", command=scroll_canvas.yview)', windows_page)
+        self.assertIn("body = ttk.Frame(scroll_canvas)", windows_page)
+        self.assertIn("scroll_canvas.create_window", windows_page)
+        self.assertIn('"<Configure>"', windows_page)
+        self.assertIn("self.windows_page_canvas = scroll_canvas", windows_page)
+        self.assertIn("if isinstance(ancestor, tk.Canvas):", source)
+        self.assertIn("ancestor.yview_scroll(steps, \"units\")", source)
+
     def test_native_dependency_audit_is_required_before_release(self):
         audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")

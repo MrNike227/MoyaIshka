@@ -1780,8 +1780,25 @@ class MoyaIshkaApp:
         ttk.Label(page, text="Управление Windows и голос", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Label(page, text="Ишка может открыть выбранные приложения и стандартные папки. Произвольные команды PowerShell/CMD не выполняются.", style="Muted.TLabel", wraplength=900).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
-        body = ttk.Frame(page)
-        body.grid(row=2, column=0, sticky="nsew")
+        # This page contains more controls than fit in a typical laptop window.
+        # Put the whole Windows/voice content in a Canvas so the global wheel
+        # handler can find the nearest Canvas ancestor for every child widget.
+        scroll_canvas = tk.Canvas(page, highlightthickness=0, borderwidth=0, takefocus=0)
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=scroll_canvas.yview)
+        scroll_canvas.configure(yscrollcommand=scrollbar.set)
+        scroll_canvas.grid(row=2, column=0, sticky="nsew")
+        scrollbar.grid(row=2, column=1, sticky="ns")
+        body = ttk.Frame(scroll_canvas)
+        body_window = scroll_canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind(
+            "<Configure>",
+            lambda _event: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")),
+        )
+        scroll_canvas.bind(
+            "<Configure>",
+            lambda event: scroll_canvas.itemconfigure(body_window, width=event.width),
+        )
+        self.windows_page_canvas = scroll_canvas
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         apps = ttk.LabelFrame(body, text="Запуск приложений", padding=12)
