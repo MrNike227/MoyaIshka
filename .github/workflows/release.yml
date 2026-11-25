@@ -39,7 +39,7 @@ jobs:
 
       - name: Run release configuration tests
         shell: pwsh
-        run: python -m unittest discover -s tests -p "test_build_release.py"
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Build standalone EXE
         shell: cmd
