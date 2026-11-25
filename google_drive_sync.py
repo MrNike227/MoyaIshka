@@ -26,7 +26,7 @@ DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 APP_FOLDER_NAME = "Moya Ishka Cloud"
 VAULT_FILENAME = "moyaishka-vault.enc"
-APP_UA = "MoyaIshka/4.1.4 (Google Drive vault)"
+APP_UA = "MoyaIshka/4.1.5 (Google Drive vault)"
 
 
 class GoogleDriveError(RuntimeError):

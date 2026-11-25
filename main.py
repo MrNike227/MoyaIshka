@@ -43,6 +43,13 @@ from voice_manager import (
 )
 from windows_control import handle_voice_command, launch_app, open_known_folder
 from web_research import ResearchError, ResearchLibrary, format_research_digest, search_and_fetch
+# Cloud vault encryption is a core application dependency. Keep these imports explicit
+# so PyInstaller's static analysis sees the exact cryptography modules used at runtime.
+from cryptography import __version__ as CRYPTOGRAPHY_VERSION
+from cryptography.exceptions import InvalidTag as _CryptoInvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _CryptoAESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt as _CryptoScrypt
+
 from cloud_sync import (
     CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
     load_protected_session, save_protected_session, delete_protected_session,
@@ -51,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.4"
+APP_VERSION = "4.1.5"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -148,8 +155,8 @@ def prepare_source_workspace() -> Path:
             "BUILD_EXE.bat", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py",
-            ".github/workflows/release.yml", "sql/supabase_setup.sql",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
+            "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
             src = resource_path(f"source_project/{relative}")
@@ -4484,6 +4491,22 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
         root.after(1200, show_failure)
 
 
+def _packaged_import_self_test() -> int:
+    """Fast, no-GUI smoke test used by CI to verify frozen crypto imports."""
+    try:
+        salt = b"MoyaIshka-test-salt"
+        key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
+        cipher = _CryptoAESGCM(key)
+        nonce = b"\x01" * 12
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.5-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.5-smoke")
+        if plaintext != b"MoyaIshka cryptography bundle OK":
+            return 71
+        return 0
+    except Exception:
+        return 72
+
+
 def main() -> None:
     if os.name == "nt":
         try:
@@ -4502,6 +4525,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--self-test-imports":
+        raise SystemExit(_packaged_import_self_test())
     if len(sys.argv) >= 4 and sys.argv[1] == "--apply-update":
         from updater_helper import apply_update
         raise SystemExit(apply_update(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "0"))

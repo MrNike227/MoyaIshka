@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.4 single-file Windows application...
+echo Building Moya Ishka 4.1.5 single-file Windows application...
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
 where python >nul 2>nul
@@ -16,9 +16,11 @@ set "PY=py -3.11"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0 cryptography psutil
+%PY% -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0 cryptography psutil
 if errorlevel 1 goto failed
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt ^
+%PY% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
+if errorlevel 1 goto crypto_failed
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
@@ -57,16 +59,25 @@ if errorlevel 1 goto failed
   --add-data "licenses/GPL-3.0.txt;source_project/licenses" ^
   --add-data "app_icon.ico;source_project" ^
   --add-data "tests;source_project/tests" ^
+  --add-data "hooks;source_project/hooks" ^
   --add-data ".github;source_project/.github" ^
   --add-data "skills;source_project/skills" ^
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
   --collect-all cryptography --collect-all psutil ^
+  --hidden-import=cryptography --hidden-import=cryptography.exceptions ^
+  --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
+  --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^
+  --hidden-import=cryptography.hazmat.bindings._rust ^
+  --copy-metadata cryptography ^
   --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes ^
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
+if not exist "dist\MoyaIshka.exe" goto failed
+"dist\MoyaIshka.exe" --self-test-imports
+if errorlevel 1 goto crypto_bundle_failed
 echo.
 echo BUILD COMPLETE: dist\MoyaIshka.exe
 echo This EXE includes Python, Windows SAPI and Piper voice engines; download a voice pack from the app. A model/API is still needed for AI replies.
@@ -75,6 +86,16 @@ endlocal & exit /b 0
 :failed
 echo.
 echo EXE build failed. Use 64-bit Python 3.11 and check internet access.
+if not defined GITHUB_ACTIONS pause
+endlocal & exit /b 1
+:crypto_failed
+echo.
+echo CRYPTOGRAPHY PREFLIGHT FAILED. Verify that cryptography is installed in the Python 3.11 build environment.
+if not defined GITHUB_ACTIONS pause
+endlocal & exit /b 1
+:crypto_bundle_failed
+echo.
+echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE is not safe to publish.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
 :no_python
