@@ -31,6 +31,12 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertLess(patched.index('L"vcruntime140.dll"'), patched.index('L"msvcp140.dll"'))
             self.assertFalse(patch_bootloader_source(source_path))
 
+    def test_custom_bootloader_builder_uses_utf8_console_and_waf(self):
+        source = (ROOT / "build_patched_pyinstaller.py").read_text(encoding="utf-8")
+        self.assertIn('stream.reconfigure(encoding="utf-8", errors="backslashreplace")', source)
+        self.assertIn('build_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"', source)
+        self.assertIn('build_env["PYTHONUTF8"] = "1"', source)
+
     def test_build_uses_custom_bootloader_builder(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         source = (ROOT / "build_patched_pyinstaller.py").read_text(encoding="utf-8")

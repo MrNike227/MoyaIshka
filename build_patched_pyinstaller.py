@@ -174,7 +174,15 @@ def build_patched_bootloader() -> None:
         patch_bootloader_source(source_file)
 
         print("Компиляция Windows x64 bootloader с предварительной загрузкой VC runtime...")
-        subprocess.run([sys.executable, "waf", "all"], cwd=source_root / "bootloader", check=True)
+        build_env = dict(__import__("os").environ)
+        build_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
+        build_env["PYTHONUTF8"] = "1"
+        subprocess.run(
+            [sys.executable, "waf", "all"],
+            cwd=source_root / "bootloader",
+            check=True,
+            env=build_env,
+        )
 
         build_output = source_root / "PyInstaller" / "bootloader" / BOOTLOADER_ARCH
         destination = installed_bootloader_dir()
@@ -206,7 +214,15 @@ def build_patched_bootloader() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def configure_console_encoding() -> None:
+    """Keep Russian diagnostics printable on Windows runners using cp1252."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> int:
+    configure_console_encoding()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--verify-installed",
