@@ -76,8 +76,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_windows_version_resource_is_417(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,6,0)", source)
-        self.assertIn("prodvers=(4,1,6,0)", source)
+        self.assertIn("filevers=(4,1,7,0)", source)
+        self.assertIn("prodvers=(4,1,7,0)", source)
         self.assertIn("ProductVersion', '4.1.7'", source)
 
 
