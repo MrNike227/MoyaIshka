@@ -1,0 +1,7 @@
+# Dependencies bundled into the single-file Windows EXE by BUILD_EXE.bat
+pypdf>=4.0
+python-docx>=1.1
+SpeechRecognition>=3.10
+pyttsx3>=2.90
+PyAudio>=0.2.14
+pyinstaller>=6.0

@@ -1,0 +1,106 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("APPDATA", tempfile.mkdtemp(prefix="moya_test_appdata_"))
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from main import DEFAULT_CONFIG, MoyaIshkaApp, Store, extract_openai_content, read_attachment
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp.name) / "test.db"
+        self.store = Store(self.db_path)
+
+    def tearDown(self):
+        self.store.close()
+        self.temp.cleanup()
+
+    def test_create_message_and_title(self):
+        chat_id = self.store.create_conversation()
+        self.store.add_message(chat_id, "user", "Привет, Ишка")
+        self.store.add_message(chat_id, "assistant", "Привет!")
+        self.assertEqual(self.store.get_conversation(chat_id)["title"], "Привет, Ишка")
+        self.assertEqual(len(self.store.get_messages(chat_id)), 2)
+
+    def test_export_markdown(self):
+        chat_id = self.store.create_conversation("Проверка")
+        self.store.add_message(chat_id, "user", "Вопрос")
+        self.store.add_message(chat_id, "assistant", "Ответ")
+        markdown = self.store.export_markdown(chat_id)
+        self.assertIn("# Проверка", markdown)
+        self.assertIn("## Вы", markdown)
+        self.assertIn("Ответ", markdown)
+
+    def test_clear_and_delete(self):
+        chat_id = self.store.create_conversation()
+        self.store.add_message(chat_id, "user", "Удаляемое сообщение")
+        self.store.clear_messages(chat_id)
+        self.assertEqual(self.store.get_messages(chat_id), [])
+        self.store.delete_conversation(chat_id)
+        self.assertIsNone(self.store.get_conversation(chat_id))
+
+    def test_import_legacy_history(self):
+        history_path = Path(self.temp.name) / "history.json"
+        history_path.write_text(json.dumps([
+            {"role": "user", "content": "Старый вопрос"},
+            {"role": "assistant", "content": "Старый ответ"},
+        ], ensure_ascii=False), encoding="utf-8")
+        self.store.import_legacy_history(history_path)
+        chats = self.store.list_conversations()
+        self.assertEqual(len(chats), 1)
+        self.assertEqual(len(self.store.get_messages(chats[0]["id"])), 2)
+
+
+class ParsingTests(unittest.TestCase):
+    def test_extract_openai_content(self):
+        self.assertEqual(extract_openai_content({"choices": [{"message": {"content": " Готово "}}]}), "Готово")
+
+    def test_read_text_attachment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "note.txt"
+            path.write_text("Тестовый текст", encoding="utf-8")
+            self.assertEqual(read_attachment(path), "Тестовый текст")
+
+    def test_attachment_size_is_limited(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "large.txt"
+            path.write_text("я" * 45000, encoding="utf-8")
+            text = read_attachment(path)
+            self.assertLess(len(text), 45000)
+            self.assertIn("Текст сокращён", text)
+
+
+class KeyboardAndPrivacyTests(unittest.TestCase):
+    def test_enter_sends_message(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        calls = []
+        app.send_message = lambda: calls.append("sent")
+        result = app._input_return(type("Event", (), {"state": 0})())
+        self.assertEqual(result, "break")
+        self.assertEqual(calls, ["sent"])
+
+    def test_shift_enter_keeps_text_widget_newline(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        calls = []
+        app.send_message = lambda: calls.append("sent")
+        result = app._input_return(type("Event", (), {"state": 1})())
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+
+    def test_microphone_is_off_by_default(self):
+        self.assertFalse(DEFAULT_CONFIG["microphone_enabled"])
+
+    def test_periodic_research_is_opt_in(self):
+        self.assertFalse(DEFAULT_CONFIG["research_auto_enabled"])
+        self.assertTrue(DEFAULT_CONFIG["web_search_enabled"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -1,0 +1,64 @@
+@echo off
+setlocal EnableExtensions
+chcp 65001 >nul
+cd /d "%~dp0"
+echo Building Moya Ishka 4.1.1 single-file Windows application...
+where py >nul 2>nul
+if not errorlevel 1 goto use_py
+where python >nul 2>nul
+if errorlevel 1 goto no_python
+set "PY=python"
+goto have_python
+:use_py
+set "PY=py -3.11"
+:have_python
+%PY% --version
+if errorlevel 1 goto failed
+%PY% -m pip install --upgrade pip
+if errorlevel 1 goto failed
+%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32
+if errorlevel 1 goto failed
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico ^
+  --add-data "app_icon.ico;." ^
+  --add-data "main.py;source_project" ^
+  --add-data "windows_control.py;source_project" ^
+  --add-data "voice_assistant.py;source_project" ^
+  --add-data "auto_memory.py;source_project" ^
+  --add-data "avatar_widget.py;source_project" ^
+  --add-data "plugin_manager.py;source_project" ^
+  --add-data "self_improvement.py;source_project" ^
+  --add-data "updater.py;source_project" ^
+  --add-data "updater_helper.py;source_project" ^
+  --add-data "web_research.py;source_project" ^
+  --add-data "requirements.txt;source_project" ^
+  --add-data "requirements_voice.txt;source_project" ^
+  --add-data "START.bat;source_project" ^
+  --add-data "BUILD_EXE.bat;source_project" ^
+  --add-data "INSTALL_OPTIONAL_DOCS.bat;source_project" ^
+  --add-data "INSTALL_VOICE.bat;source_project" ^
+  --add-data "INSTALLER.iss;source_project" ^
+  --add-data "README_RU.md;source_project" ^
+  --add-data "LICENSE.txt;source_project" ^
+  --add-data "app_icon.ico;source_project" ^
+  --add-data "tests;source_project/tests" ^
+  --add-data ".github;.github" ^
+  --add-data "skills;source_project/skills" ^
+  --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
+  --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
+  --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes ^
+  --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 main.py
+if errorlevel 1 goto failed
+echo.
+echo BUILD COMPLETE: dist\MoyaIshka.exe
+echo This EXE includes Python and voice dependencies. A model/API is still needed for AI replies.
+pause
+endlocal & exit /b 0
+:failed
+echo.
+echo EXE build failed. Use 64-bit Python 3.11 and check internet access.
+pause
+endlocal & exit /b 1
+:no_python
+echo Python 3.11 x64 was not found. Install it on the build computer only.
+pause
+endlocal & exit /b 1

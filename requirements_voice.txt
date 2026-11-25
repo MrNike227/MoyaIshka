@@ -1,0 +1,4 @@
+# Voice dependencies are now included by the main EXE build.
+SpeechRecognition>=3.10
+pyttsx3>=2.90
+PyAudio>=0.2.14
