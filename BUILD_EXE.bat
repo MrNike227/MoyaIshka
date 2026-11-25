@@ -28,6 +28,8 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 %PY% -c "import cryptography, cffi, _cffi_backend; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
 if errorlevel 1 goto crypto_failed
+%PY% prepare_python_runtime.py
+if errorlevel 1 goto runtime_failed
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
@@ -53,6 +55,8 @@ if errorlevel 1 goto crypto_failed
   --add-data "sql;source_project/sql" ^
   --add-data "requirements.txt;source_project" ^
   --add-data "requirements_voice.txt;source_project" ^
+  --add-data "prepare_python_runtime.py;source_project" ^
+  --add-binary "build\python_runtime;." ^
   --add-data "START.bat;source_project" ^
   --add-data "BUILD_EXE.bat;source_project" ^
   --add-data "INSTALL_OPTIONAL_DOCS.bat;source_project" ^
@@ -105,6 +109,11 @@ endlocal & exit /b 1
 :crypto_bundle_failed
 echo.
 echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE is not safe to publish.
+if not defined GITHUB_ACTIONS pause
+endlocal & exit /b 1
+:runtime_failed
+echo.
+echo Python DLL runtime preparation failed. Check the Microsoft Visual C++ runtime files from the build Python installation.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
 :no_python
