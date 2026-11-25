@@ -3094,6 +3094,27 @@ class MoyaIshkaApp:
                     self.voice_start_button.configure(state="normal" if bool(self.config.get("microphone_enabled", False)) else "disabled")
                     self.voice_status_var.set(str(payload))
                     self._set_status("Голосовой ввод остановлен или не выполнен")
+                elif event == "improvement_analysis":
+                    suggestions, automatic = payload
+                    self.improvement_suggestions = list(suggestions)
+                    self.improvement_listbox.delete(0, "end")
+                    for index, item in enumerate(self.improvement_suggestions, 1):
+                        self.improvement_listbox.insert("end", f"{index}. {item['title']}")
+                    if self.improvement_suggestions:
+                        self.improvement_listbox.selection_set(0)
+                        self._show_selected_improvement()
+                        self.improve_status_var.set(f"Автоанализ: найдено предложений — {len(self.improvement_suggestions)}.")
+                    else:
+                        self.improve_status_var.set("Автоанализ завершён: существенных улучшений не найдено.")
+                        self.improvement_preview.configure(state="normal")
+                        self.improvement_preview.delete("1.0", "end")
+                        self.improvement_preview.insert("1.0", "Существенных улучшений не найдено.")
+                        self.improvement_preview.configure(state="disabled")
+                elif event == "improvement_analysis_error":
+                    automatic, error_text = payload
+                    self.improve_status_var.set(str(error_text))
+                    if not automatic:
+                        messagebox.showerror("Саморазвитие", str(error_text))
                 elif event == "patch_generated":
                     self.pending_patch_text = str(payload)
                     self.patch_preview.delete("1.0", "end")
@@ -4555,6 +4576,11 @@ class MoyaIshkaApp:
             if self.voice_cancel_event is not None:
                 self.voice_cancel_event.set()
             # The current config is saved on each explicit settings/memory update.
+            if self._auto_improvement_after_id:
+                try:
+                    self.root.after_cancel(self._auto_improvement_after_id)
+                except Exception:
+                    pass
             if self._auto_research_after_id:
                 try:
                     self.root.after_cancel(self._auto_research_after_id)
