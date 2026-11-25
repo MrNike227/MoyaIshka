@@ -4091,11 +4091,9 @@ class MoyaIshkaApp:
         def worker() -> None:
             try:
                 response = self._current_model_call(messages)
-                diff_start = response.find("--- a/")
-                diff = response[diff_start:].strip() if diff_start >= 0 else response.strip()
+                diff = extract_unified_diff(response, relative)
                 # Validate before showing a patch as usable.
-                from self_improvement import apply_unified_diff as apply_diff
-                apply_diff(source, diff, relative)
+                apply_unified_diff(source, diff, relative)
                 self.events.put(("patch_generated", diff))
             except Exception as exc:
                 self.events.put(("patch_error", str(exc)))
