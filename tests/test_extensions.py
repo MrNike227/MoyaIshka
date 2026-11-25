@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff, build_model_source_context
+from self_improvement import apply_unified_diff, build_model_source_context, extract_unified_diff, parse_improvement_suggestions
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -60,6 +60,57 @@ class PatchTests(unittest.TestCase):
         source = "def answer():\n    return 42\n"
         self.assertEqual(build_model_source_context(source, "answer"), source)
 
+    def test_extract_unified_diff_from_markdown_and_prose(self):
+        original = "def answer():\n    return 1\n"
+        fence = chr(96) * 3
+        response = (
+            "Изменение подготовлено:\n\n" + fence + "diff\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+            + fence + "\n"
+        )
+        patch = extract_unified_diff(response, "main.py")
+        self.assertEqual(apply_unified_diff(original, patch, "main.py"), "def answer():\n    return 2\n")
+
+    def test_extract_unified_diff_adds_missing_file_headers(self):
+        original = "value = 1\n"
+        response = "@@ -1 +1 @@\n-value = 1\n+value = 2\n"
+        patch = extract_unified_diff(response, "module.py")
+        self.assertEqual(apply_unified_diff(original, patch, "module.py"), "value = 2\n")
+
+    def test_extract_unified_diff_rejects_other_file(self):
+        response = "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-a\n+b\n"
+        with self.assertRaises(ValueError):
+            extract_unified_diff(response, "main.py")
+
+    def test_extract_unified_diff_rejects_missing_hunk(self):
+        with self.assertRaises(ValueError):
+            extract_unified_diff("--- a/main.py\n+++ b/main.py\nизменений нет", "main.py")
+
+    def test_apply_insertion_hunk_after_first_line(self):
+        original = "one\ntwo\n"
+        patch = "--- a/main.py\n+++ b/main.py\n@@ -1,0 +2 @@\n+inserted\n"
+        self.assertEqual(apply_unified_diff(original, patch, "main.py"), "one\ninserted\ntwo\n")
+
+    def test_patch_rejects_hunk_line_count_mismatch(self):
+        patch = "--- a/main.py\n+++ b/main.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
+        with self.assertRaises(ValueError):
+            apply_unified_diff("old\n", patch, "main.py")
+
+    def test_parse_improvement_suggestions(self):
+        response = (
+            '{"suggestions":[{"title":"Обработка ошибок","problem":"Ошибка теряется",'
+            '"current":"except: pass","proposed":"except OSError as exc: log(exc)",'
+            '"benefit":"Проще найти причину"}]}'
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(len(items), 1)
+        self.assertIn("Обработка ошибок", items[0]["title"])
+        self.assertIn("log", items[0]["proposed"])
+
+    def test_parse_empty_improvement_suggestions(self):
+        self.assertEqual(parse_improvement_suggestions('{"suggestions":[]}'), [])
+
     def test_apply_single_file_diff(self):
         original = "first\nsecond\nthird\n"
         patch = """--- a/main.py
@@ -105,7 +156,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.1.6")
+        self.assertEqual(APP_VERSION, "4.1.7")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
@@ -144,6 +195,9 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("MoyaIshka.previous.exe", script)
         self.assertIn("Выполняется откат", script)
         self.assertIn("ПОДТВЕРЖДЕНО", script)
+        self.assertIn("$env:MOYA_UPDATE_RECEIPT", script)
+        self.assertIn("Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -WindowStyle Normal -PassThru -ErrorAction Stop", script)
+        self.assertNotIn("-ArgumentList $argList", script)
 
     def test_updater_script_is_written_with_windows_crlf_and_bom(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -167,7 +221,7 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen") as popen:
                 helper = updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.6",
+                    staged, target, 1234, log, expected_version="4.1.7",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
                 )
             self.assertTrue(helper.is_file())
@@ -176,7 +230,7 @@ class UpdaterTests(unittest.TestCase):
             self.assertIn("-File", args)
             self.assertIn(str(staged.resolve()), args)
             self.assertIn(str(target.resolve()), args)
-            self.assertIn("4.1.6", args)
+            self.assertIn("4.1.7", args)
             self.assertEqual(
                 popen.call_args.kwargs["creationflags"],
                 getattr(updater_helper.subprocess, "CREATE_NO_WINDOW", 0),
@@ -200,7 +254,7 @@ class UpdaterTests(unittest.TestCase):
                 patch.object(updater_helper.subprocess, "Popen", side_effect=[denied, process]) as popen,
             ):
                 updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.6",
+                    staged, target, 1234, log, expected_version="4.1.7",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
                 )
             self.assertEqual(popen.call_count, 2)
@@ -237,11 +291,11 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen"):
                 updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.6", platform_name="nt",
+                    staged, target, 1234, log, expected_version="4.1.7", platform_name="nt",
                 )
             self.assertTrue(log.is_file())
             content = log.read_text(encoding="utf-8")
-            self.assertIn("Запуск установщика обновления 4.1.6", content)
+            self.assertIn("Запуск установщика обновления 4.1.7", content)
             self.assertIn(str(target.resolve()), content)
 
     def test_updater_confirmation_requires_version_hash_and_exact_target(self):
