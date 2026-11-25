@@ -58,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.7"
+APP_VERSION = "4.1.8"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
