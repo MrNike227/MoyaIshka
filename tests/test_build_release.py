@@ -92,6 +92,21 @@ class ReleaseBuildTests(unittest.TestCase):
         from main import _packaged_import_self_test
         self.assertEqual(_packaged_import_self_test(), 0)
 
+    def test_legacy_updater_repository_is_migrated(self):
+        from main import DEFAULT_CONFIG, migrate_legacy_update_repository
+
+        config = {"update_repo": "MrNike227/MoyaIshka_v4.1.1"}
+        self.assertTrue(migrate_legacy_update_repository(config))
+        self.assertEqual(config["update_repo"], DEFAULT_CONFIG["update_repo"])
+
+    def test_custom_updater_repository_is_preserved(self):
+        from main import migrate_legacy_update_repository
+
+        custom_repo = "ExampleOwner/CustomAssistant"
+        config = {"update_repo": custom_repo}
+        self.assertFalse(migrate_legacy_update_repository(config))
+        self.assertEqual(config["update_repo"], custom_repo)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
