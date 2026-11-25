@@ -244,6 +244,20 @@ class SupabaseCloudClient:
             detail = self._error_message(exc.read(4000))
             if exc.code == 401 and auth and self._refresh_session():
                 return self._request(method, path, payload, auth=auth, extra_headers=extra_headers)
+            # Supabase deliberately returns the same generic response for several
+            # password-login failures. Translate it into safe, actionable guidance.
+            if (
+                exc.code == 400
+                and path.startswith("/auth/v1/token?grant_type=password")
+                and "invalid login credentials" in detail.casefold()
+            ):
+                raise CloudSyncError(
+                    "Не удалось войти в Supabase: неверная почта или пароль, аккаунт "
+                    "не создан в этом проекте либо почта ещё не подтверждена. "
+                    "Проверь URL проекта и адрес почты; для нового аккаунта нажми "
+                    "«Создать резервный аккаунт», затем подтверди почту из письма. "
+                    "Пароль шифрования здесь ни при чём — он проверяется отдельно."
+                ) from exc
             raise CloudSyncError(f"Supabase HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise CloudSyncError(f"Нет соединения с Supabase: {exc.reason}") from exc
