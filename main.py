@@ -4798,8 +4798,17 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
 
 
 def _packaged_import_self_test() -> int:
-    """Fast, no-GUI smoke test used by CI to verify frozen crypto imports."""
+    """Fast, no-GUI smoke test for bundled native runtime and crypto imports."""
     try:
+        # Do not let the CI runner's installed VC++ runtime mask missing files
+        # in the one-file archive: verify the app-local runtime was extracted.
+        if getattr(sys, "frozen", False):
+            runtime_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+            required_runtime = ("vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll")
+            missing_runtime = [name for name in required_runtime if not (runtime_root / name).is_file()]
+            if missing_runtime:
+                return 73
+
         # Force PyInstaller to include CFFI's native backend. Some runtime
         # dependencies load it dynamically, so static analysis can miss it.
         import cffi as _cffi  # noqa: F401
