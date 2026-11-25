@@ -303,6 +303,7 @@ try {
     if (-not $newProcess) {
         throw ("Не удалось автоматически запустить установленный EXE после трёх попыток: " + ($launchErrors -join "; "))
     }
+    $launchAttempt = 1
     Write-UpdateLog "Новая программа запущена (PID $($newProcess.Id)); ожидаю подтверждение версии и пути."
 
     # Do not claim success until the new application verifies itself after its GUI starts.
@@ -326,7 +327,14 @@ try {
         }
         if ($newProcess.HasExited) {
             $newProcess.Refresh()
-            throw "Новая версия закрылась до подтверждения запуска (код $($newProcess.ExitCode))."
+            if ($launchAttempt -ge 3) {
+                throw "Новая версия закрылась до подтверждения запуска после трёх попыток (код $($newProcess.ExitCode))."
+            }
+            $launchAttempt++
+            Write-UpdateLog "Новая версия завершилась до подтверждения. Повторный запуск $launchAttempt/3."
+            Start-Sleep -Seconds 2
+            $newProcess = Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -WindowStyle Normal -PassThru -ErrorAction Stop
+            continue
         }
         Start-Sleep -Milliseconds 400
     }
