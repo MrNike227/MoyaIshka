@@ -27,6 +27,8 @@ Name: "desktopicon"; Description: "Создать значок на рабоче
 
 [Files]
 Source: "dist\MoyaIshka.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\GPL-3.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Моя ИИшка"; Filename: "{app}\MoyaIshka.exe"

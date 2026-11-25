@@ -1,11 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Voice I/O with cancellable microphone capture and local speech synthesis."""
+"""Voice I/O: cancellable microphone capture, Windows SAPI and local Piper TTS."""
 from __future__ import annotations
 
 import array
 import math
+import os
+import tempfile
 import threading
 import time
+import wave
+from pathlib import Path
+
+_SPEECH_LOCK = threading.RLock()
+_PIPER_CACHE: dict[str, object] = {}
+_PIPER_CACHE_LOCK = threading.RLock()
 
 
 def _pcm_rms(data: bytes, sample_width: int) -> float:
@@ -28,9 +36,8 @@ def listen_once(
 ) -> str:
     """Listen only while requested; stop_event closes the microphone promptly.
 
-    Speech recognition is sent to Google's recognition endpoint by the
-    SpeechRecognition package. The microphone stream itself is always closed
-    before the network request begins.
+    Speech recognition is sent to Google's recognition endpoint. The microphone
+    stream is closed before the network request begins.
     """
     try:
         import speech_recognition as sr  # type: ignore
@@ -98,13 +105,75 @@ def listen_once(
         raise RuntimeError(f"Сервис распознавания речи недоступен: {exc}") from exc
 
 
-def speak_text(text: str, rate: int = 175) -> None:
+def _load_piper_voice(model_path: Path):
     try:
-        import pyttsx3  # type: ignore
+        from piper import PiperVoice  # type: ignore
     except ImportError as exc:
-        raise RuntimeError("Модуль озвучивания отсутствует. Используй собранный EXE.") from exc
-    engine = pyttsx3.init()
-    engine.setProperty("rate", max(120, min(230, int(rate))))
-    engine.say(text[:5000])
-    engine.runAndWait()
-    engine.stop()
+        raise RuntimeError(
+            "Локальный движок Piper отсутствует в этой сборке. Скачай готовый EXE версии 4.1.2 с GitHub Releases."
+        ) from exc
+    key = str(model_path.resolve())
+    with _PIPER_CACHE_LOCK:
+        voice = _PIPER_CACHE.get(key)
+        if voice is None:
+            if not model_path.is_file():
+                raise FileNotFoundError(f"Файл голосовой модели не найден: {model_path}")
+            voice = PiperVoice.load(str(model_path))
+            _PIPER_CACHE[key] = voice
+        return voice
+
+
+def unload_piper_voice(model_path: str | Path) -> None:
+    """Release a cached voice model before its files are removed or replaced."""
+    key = str(Path(model_path).resolve())
+    # Use the same speech lock as synthesis so a model is never unloaded while
+    # Piper is actively generating or playing a phrase.
+    with _SPEECH_LOCK:
+        with _PIPER_CACHE_LOCK:
+            _PIPER_CACHE.pop(key, None)
+
+
+def _speak_with_piper(text: str, model_path: Path) -> None:
+    if os.name != "nt":
+        raise RuntimeError("Воспроизведение загруженного голоса сейчас поддерживается в Windows 10/11.")
+    try:
+        import winsound
+    except ImportError as exc:
+        raise RuntimeError("В Windows не найден встроенный модуль воспроизведения звука.") from exc
+    voice = _load_piper_voice(model_path)
+    with tempfile.TemporaryDirectory(prefix="MoyaIshka_TTS_") as temp_dir:
+        output_path = Path(temp_dir) / "speech.wav"
+        with wave.open(str(output_path), "wb") as wav_file:
+            voice.synthesize_wav(text[:5000], wav_file)
+        winsound.PlaySound(str(output_path), winsound.SND_FILENAME)
+
+
+def speak_text(
+    text: str,
+    rate: int = 175,
+    *,
+    engine: str = "system",
+    model_path: str | Path | None = None,
+) -> None:
+    """Speak text through a downloaded Piper voice or a Windows system voice."""
+    phrase = str(text or "").strip()[:5000]
+    if not phrase:
+        return
+    with _SPEECH_LOCK:
+        if engine == "piper":
+            if not model_path:
+                raise RuntimeError("Не выбран загруженный голос Piper. Открой «Windows и голос» и скачай голос.")
+            _speak_with_piper(phrase, Path(model_path))
+            return
+
+        try:
+            import pyttsx3  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("Модуль системного озвучивания отсутствует. Используй собранный EXE.") from exc
+        engine_obj = pyttsx3.init()
+        try:
+            engine_obj.setProperty("rate", max(120, min(230, int(rate))))
+            engine_obj.say(phrase)
+            engine_obj.runAndWait()
+        finally:
+            engine_obj.stop()

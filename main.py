@@ -33,9 +33,13 @@ from self_improvement import editable_project_files, apply_patch_with_backup, ap
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement,
-    resolve_install_dir, user_install_dir,
+    resolve_install_dir, user_install_dir, scan_application_copies, delete_application_copy,
 )
-from voice_assistant import listen_once, speak_text
+from voice_assistant import listen_once, speak_text, unload_piper_voice
+from voice_manager import (
+    VOICE_CATALOG, delete_voice, download_voice, installed_voice_ids, is_voice_installed,
+    voice_label, voice_paths,
+)
 from windows_control import handle_voice_command, launch_app, open_known_folder
 from web_research import ResearchError, ResearchLibrary, format_research_digest, search_and_fetch
 
@@ -80,6 +84,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "memory": [],
     "auto_memory": True,
     "voice_tts": False,
+    "voice_engine": "system",
+    "tts_voice_id": "",
+    "tts_rate": 175,
     "microphone_enabled": False,
     "plugins_enabled": False,
     "update_repo": "MrNike227/MoyaIshka_v4.1.1",
@@ -112,12 +119,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "auto_memory.py",
+            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "LICENSE.txt", "app_icon.ico",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py",
+            "INSTALLER.iss", "README_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py",
             ".github/workflows/release.yml",
         ]
         for relative in bundled_files:
@@ -466,6 +474,18 @@ class MoyaIshkaApp:
             self.root.iconbitmap(str(resource_path("app_icon.ico")))
         except Exception:
             pass
+        # Give Tk multiple raster sizes so Windows does not upscale a tiny icon
+        # for a high-DPI taskbar or Alt+Tab preview. Keep references alive.
+        self._window_icon_photos = []
+        try:
+            for icon_name in ("app_icon_256.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png"):
+                icon_file = resource_path(icon_name)
+                if icon_file.is_file():
+                    self._window_icon_photos.append(tk.PhotoImage(file=str(icon_file)))
+            if self._window_icon_photos:
+                self.root.iconphoto(True, *self._window_icon_photos)
+        except Exception:
+            self._window_icon_photos = []
         # Choose a roomy default without opening larger than the current display.
         screen_w = max(960, self.root.winfo_screenwidth())
         screen_h = max(700, self.root.winfo_screenheight())
@@ -542,6 +562,8 @@ class MoyaIshkaApp:
         self.busy = False
         self.voice_busy = False
         self.voice_cancel_event: threading.Event | None = None
+        self.voice_download_busy = False
+        self.voice_download_progress_value = 0
         self.research_busy = False
         self._auto_research_after_id: str | None = None
         self.pending_attachment: tuple[str, str] | None = None
@@ -564,6 +586,7 @@ class MoyaIshkaApp:
         self.root.bind_all("<Button-5>", lambda e: self._on_global_mousewheel(e, 1), add="+")
         self.root.after(100, self._process_events)
         self.root.after(250, self._apply_windows_titlebar_theme)
+        self.root.after(450, self._apply_high_dpi_windows_icon)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
 
@@ -988,8 +1011,30 @@ class MoyaIshkaApp:
         self.voice_tts_var = tk.BooleanVar(value=bool(self.config.get("voice_tts", False)))
         self._make_checkbox(secondary_actions, "Автоматически озвучивать ответы", self.voice_tts_var, self._toggle_voice_tts, background_key="panel", wraplength=280).pack(side="left", padx=(0, 12))
         ttk.Button(secondary_actions, text="Настройки микрофона Windows", command=self.open_windows_microphone_privacy).pack(side="left")
-        ttk.Label(voice, textvariable=self.voice_status_var, style="MutedPanel.TLabel", wraplength=740).grid(row=3, column=0, sticky="w", pady=(7, 0))
-        ttk.Label(page, text="Распознавание речи отправляет аудиофрагмент в сервис Google Speech Recognition через интернет. Озвучивание выполняется локально. Для полной приватности оставляй переключатель микрофона выключенным; также доступ можно запретить Windows в параметрах конфиденциальности.", style="Muted.TLabel", wraplength=740).grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        voice_library = ttk.LabelFrame(voice, text="Голоса озвучивания ответов", padding=10)
+        voice_library.grid(row=3, column=0, sticky="ew", pady=(10, 4))
+        voice_library.columnconfigure(1, weight=1)
+        ttk.Label(voice_library, text="Выбери голос. Скачанный голос хранится на этом компьютере и работает без отправки текста в интернет.", style="MutedPanel.TLabel", wraplength=720).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        ttk.Label(voice_library, text="Русский голос Piper", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 10))
+        self.tts_voice_var = tk.StringVar(value="")
+        self.tts_voice_combo = ttk.Combobox(voice_library, textvariable=self.tts_voice_var, state="readonly", width=42)
+        self.tts_voice_combo.grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        self.tts_voice_combo.bind("<<ComboboxSelected>>", self._on_tts_voice_selected)
+        ttk.Button(voice_library, text="Загрузить голос", style="Accent.TButton", command=self.download_selected_tts_voice).grid(row=1, column=2, sticky="ew", padx=(0, 6))
+        ttk.Button(voice_library, text="Удалить голос", command=self.delete_selected_tts_voice).grid(row=1, column=3, sticky="ew")
+        voice_actions = ttk.Frame(voice_library, style="Panel.TFrame")
+        voice_actions.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        ttk.Button(voice_actions, text="Использовать системный голос Windows", command=self.use_system_tts_voice).pack(side="left")
+        ttk.Button(voice_actions, text="Прослушать пример", command=self.preview_selected_tts_voice).pack(side="left", padx=(8, 0))
+        self.tts_voice_progress = ttk.Progressbar(voice_library, orient="horizontal", mode="determinate", maximum=100)
+        self.tts_voice_progress.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(10, 4))
+        self.tts_voice_status_var = tk.StringVar(value="Системный голос Windows. Можно скачать локальный русский голос Piper (около 60 МБ).")
+        ttk.Label(voice_library, textvariable=self.tts_voice_status_var, style="MutedPanel.TLabel", wraplength=740).grid(row=4, column=0, columnspan=4, sticky="w")
+        self._refresh_tts_voice_controls()
+
+        ttk.Label(voice, textvariable=self.voice_status_var, style="MutedPanel.TLabel", wraplength=740).grid(row=4, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(page, text="Распознавание речи отправляет аудиофрагмент в сервис Google Speech Recognition через интернет. Голоса Piper скачиваются один раз и озвучивают ответы локально. Системный голос Windows не требует загрузки. Микрофон остаётся выключенным, пока ты явно не разрешишь доступ.", style="Muted.TLabel", wraplength=740).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
     def _build_workshop_page(self) -> None:
         page = self.pages["workshop"]
@@ -1086,6 +1131,7 @@ class MoyaIshkaApp:
         ttk.Button(update_buttons, text="Проверить обновления", command=self.check_for_updates).pack(side="left")
         ttk.Button(update_buttons, text="Сохранить настройки обновлений", command=self.save_update_settings).pack(side="left", padx=8)
         ttk.Button(update_buttons, text="Установить текущую версию сюда", command=self.install_current_build_to_selected_folder).pack(side="left", padx=8)
+        ttk.Button(update_buttons, text="Поиск устаревших версий", command=self.search_old_versions).pack(side="left", padx=8)
         self.update_status_var = tk.StringVar(value="Репозиторий не задан. Выбери папку установки и сохрани настройки.")
         ttk.Label(updates, textvariable=self.update_status_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(8, 0))
         self._refresh_skill_list()
@@ -1250,6 +1296,28 @@ class MoyaIshkaApp:
         self.chat_view.tag_bind("quick_prompt", "<Enter>", lambda _e: self.chat_view.configure(cursor="hand2"))
         self.chat_view.tag_bind("quick_prompt", "<Leave>", lambda _e: self.chat_view.configure(cursor=""))
         self.chat_view.tag_bind("quick_prompt", "<Button-1>", self._quick_prompt_click)
+
+    def _apply_high_dpi_windows_icon(self) -> None:
+        """Set explicit large/small Win32 icons for crisp taskbar and Alt+Tab rendering."""
+        if os.name != "nt":
+            return
+        try:
+            icon_path = str(resource_path("app_icon.ico"))
+            user32 = ctypes.windll.user32
+            user32.LoadImageW.restype = ctypes.c_void_p
+            user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+            load_from_file = 0x0010
+            image_icon = 1
+            hwnd = ctypes.c_void_p(self.root.winfo_id())
+            for metric, icon_type in ((11, 1), (49, 0)):
+                size = int(user32.GetSystemMetrics(metric)) or (32 if icon_type else 16)
+                handle = user32.LoadImageW(None, icon_path, image_icon, size, size, load_from_file)
+                if handle:
+                    user32.SendMessageW(hwnd, 0x0080, ctypes.c_void_p(icon_type), ctypes.c_void_p(handle))
+                    self._win32_icon_handles = getattr(self, "_win32_icon_handles", []) + [handle]
+        except Exception:
+            pass
 
     def _apply_windows_titlebar_theme(self) -> None:
         """Ask DWM to draw a dark native Windows title bar when supported."""
@@ -2051,6 +2119,33 @@ class MoyaIshkaApp:
                         self.avatar.set_talking(False)
                     self.busy = False
                     self.send_button.configure(state="normal", text="Отправить  ↗")
+                elif event == "tts_voice_progress":
+                    voice_id, downloaded, total = payload
+                    percent = max(0, min(100, int(downloaded * 100 / max(1, total))))
+                    self.tts_voice_progress.configure(value=percent)
+                    size_mb = downloaded / (1024 * 1024)
+                    total_mb = total / (1024 * 1024)
+                    self.tts_voice_status_var.set(f"Загрузка {VOICE_CATALOG[voice_id]['name']}: {percent}% · {size_mb:.1f} из {total_mb:.1f} МБ")
+                elif event == "tts_voice_download_complete":
+                    voice_id = str(payload)
+                    self.voice_download_busy = False
+                    self.tts_voice_progress.configure(value=100)
+                    self.config["tts_voice_id"] = voice_id
+                    self.config["voice_engine"] = "piper"
+                    atomic_json_save(CONFIG_PATH, self.config)
+                    self._refresh_tts_voice_controls()
+                    self.tts_voice_status_var.set(f"Голос «{VOICE_CATALOG[voice_id]['name']}» загружен, проверен и выбран. Озвучивание работает локально.")
+                    self.voice_status_var.set("Загруженный голос готов к озвучиванию.")
+                elif event == "tts_voice_download_error":
+                    self.voice_download_busy = False
+                    self.tts_voice_progress.configure(value=0)
+                    self.tts_voice_status_var.set("Не удалось загрузить голос.")
+                    messagebox.showerror("Загрузка голоса", str(payload))
+                elif event == "tts_voice_preview_complete":
+                    self.tts_voice_status_var.set("Пример озвучивания завершён.")
+                elif event == "tts_voice_preview_error":
+                    self.tts_voice_status_var.set("Не удалось воспроизвести выбранный голос.")
+                    messagebox.showerror("Проверка голоса", str(payload))
                 elif event == "voice_text":
                     self.voice_busy = False
                     self.voice_stop_button.configure(state="disabled")
@@ -2153,6 +2248,27 @@ class MoyaIshkaApp:
                             "Текущая программа закроется, а новая версия запустится автоматически.\n\nПродолжить?",
                         ):
                             self._install_staged_update_from_source(destination_dir)
+                elif event == "old_versions_scan_complete":
+                    self._show_old_versions_window(payload)
+                elif event == "old_versions_scan_error":
+                    self.update_status_var.set(f"Не удалось выполнить поиск старых версий: {payload}")
+                    messagebox.showerror("Поиск устаревших версий", str(payload))
+                elif event == "old_versions_rescan_complete":
+                    dialog, fill_rows, items = payload
+                    try:
+                        if dialog.winfo_exists():
+                            dialog.configure(cursor="")
+                            fill_rows(items)
+                    except tk.TclError:
+                        pass
+                elif event == "old_versions_rescan_error":
+                    dialog, error_text = payload
+                    try:
+                        if dialog.winfo_exists():
+                            dialog.configure(cursor="")
+                            messagebox.showerror("Поиск устаревших версий", error_text, parent=dialog)
+                    except tk.TclError:
+                        pass
                 elif event == "update_error":
                     self.update_status_var.set(str(payload))
                     messagebox.showerror("Обновление", str(payload))
@@ -2276,6 +2392,8 @@ class MoyaIshkaApp:
             "font_family": self.font_family_var.get().strip() or "Segoe UI",
             "auto_memory": bool(self.auto_memory_var.get()) if hasattr(self, "auto_memory_var") else bool(self.config.get("auto_memory", True)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
+            "voice_engine": str(self.config.get("voice_engine", "system")),
+            "tts_voice_id": str(self.config.get("tts_voice_id", "")),
             "plugins_enabled": bool(self.python_plugins_var.get()) if hasattr(self, "python_plugins_var") else bool(self.config.get("plugins_enabled", False)),
             "update_repo": self.update_repo_var.get().strip() if hasattr(self, "update_repo_var") else str(self.config.get("update_repo", "")),
             "auto_update_check": bool(self.auto_update_var.get()) if hasattr(self, "auto_update_var") else bool(self.config.get("auto_update_check", True)),
@@ -2335,6 +2453,8 @@ class MoyaIshkaApp:
             self.auto_memory_var.set(bool(self.config.get("auto_memory", True)))
         if hasattr(self, "voice_tts_var"):
             self.voice_tts_var.set(bool(self.config.get("voice_tts", False)))
+        if hasattr(self, "tts_voice_combo"):
+            self._refresh_tts_voice_controls()
         if hasattr(self, "python_plugins_var"):
             self.python_plugins_var.set(bool(self.config.get("plugins_enabled", False)))
             self.plugin_manager.enabled_python = bool(self.config.get("plugins_enabled", False))
@@ -2477,7 +2597,14 @@ class MoyaIshkaApp:
             except Exception:
                 pass
         try:
-            speak_text(text)
+            engine_name = str(self.config.get("voice_engine", "system"))
+            model_path = None
+            if engine_name == "piper":
+                voice_id = str(self.config.get("tts_voice_id", ""))
+                if not voice_id or not is_voice_installed(DATA_DIR, voice_id):
+                    raise RuntimeError("Выбранный голос не скачан. Открой «Windows и голос» и загрузи голос Piper либо выбери системный голос Windows.")
+                model_path = voice_paths(DATA_DIR, voice_id)[0]
+            speak_text(text, rate=int(self.config.get("tts_rate", 175)), engine=engine_name, model_path=model_path)
         except Exception as exc:
             self.events.put(("voice_error", str(exc)))
         finally:
@@ -2511,6 +2638,123 @@ class MoyaIshkaApp:
         self.config["voice_tts"] = bool(self.voice_tts_var.get())
         atomic_json_save(CONFIG_PATH, self.config)
         self.voice_status_var.set("Автоозвучивание включено." if self.config["voice_tts"] else "Автоозвучивание выключено.")
+
+    def _selected_tts_voice_id(self) -> str:
+        selected = self.tts_voice_var.get() if hasattr(self, "tts_voice_var") else ""
+        return str(getattr(self, "_tts_voice_display_to_id", {}).get(selected, ""))
+
+    def _refresh_tts_voice_controls(self) -> None:
+        if not hasattr(self, "tts_voice_combo"):
+            return
+        installed = set(installed_voice_ids(DATA_DIR))
+        display_to_id: dict[str, str] = {}
+        for voice_id, item in VOICE_CATALOG.items():
+            label = voice_label(voice_id)
+            if voice_id in installed:
+                label += "  ✓ скачан"
+            display_to_id[label] = voice_id
+        self._tts_voice_display_to_id = display_to_id
+        self.tts_voice_combo.configure(values=list(display_to_id.keys()))
+        current_id = str(self.config.get("tts_voice_id", ""))
+        current_label = next((label for label, voice_id in display_to_id.items() if voice_id == current_id), "")
+        if not self.tts_voice_var.get() or self.tts_voice_var.get() not in display_to_id:
+            preferred = current_label or next(iter(display_to_id), "")
+            self.tts_voice_var.set(preferred)
+        engine = str(self.config.get("voice_engine", "system"))
+        if engine == "piper" and current_id in installed:
+            self.tts_voice_status_var.set(f"Используется локальный голос: {VOICE_CATALOG[current_id]['name']}.")
+        elif engine == "piper":
+            self.config["voice_engine"] = "system"
+            self.tts_voice_status_var.set("Ранее выбранный голос не найден. Временно используется системный голос Windows.")
+            atomic_json_save(CONFIG_PATH, self.config)
+        else:
+            self.tts_voice_status_var.set("Используется системный голос Windows. Выбери голос и нажми «Загрузить голос», чтобы добавить локальную озвучку.")
+
+    def _on_tts_voice_selected(self, _event=None) -> None:
+        voice_id = self._selected_tts_voice_id()
+        if not voice_id:
+            return
+        item = VOICE_CATALOG[voice_id]
+        if is_voice_installed(DATA_DIR, voice_id):
+            self.tts_voice_status_var.set(f"Голос «{item['name']}» уже скачан. Нажми «Прослушать пример» или «Загрузить голос» не требуется.")
+        else:
+            self.tts_voice_status_var.set(f"Голос «{item['name']}» ещё не скачан. Размер около 60 МБ; загрузка выполняется один раз.")
+
+    def download_selected_tts_voice(self) -> None:
+        if self.voice_download_busy:
+            return
+        voice_id = self._selected_tts_voice_id()
+        if not voice_id:
+            messagebox.showinfo("Голос озвучивания", "Сначала выбери голос из списка.")
+            return
+        if is_voice_installed(DATA_DIR, voice_id):
+            self.config["tts_voice_id"] = voice_id
+            self.config["voice_engine"] = "piper"
+            atomic_json_save(CONFIG_PATH, self.config)
+            self._refresh_tts_voice_controls()
+            return
+        item = VOICE_CATALOG[voice_id]
+        if not messagebox.askyesno(
+            "Загрузить голос",
+            f"Загрузить голос «{item['name']}»?\n\nРазмер модели — около 60 МБ. После загрузки голос будет работать локально, без передачи текста в интернет. Продолжить?",
+            parent=self.root,
+        ):
+            return
+        self.voice_download_busy = True
+        self.tts_voice_progress.configure(value=0)
+        self.tts_voice_status_var.set(f"Подготовка загрузки голоса «{item['name']}»…")
+        threading.Thread(target=self._download_tts_voice_worker, args=(voice_id,), daemon=True).start()
+
+    def _download_tts_voice_worker(self, voice_id: str) -> None:
+        def on_progress(downloaded: int, total: int) -> None:
+            self.events.put(("tts_voice_progress", (voice_id, downloaded, total)))
+        try:
+            download_voice(DATA_DIR, voice_id, progress=on_progress)
+            self.events.put(("tts_voice_download_complete", voice_id))
+        except Exception as exc:
+            self.events.put(("tts_voice_download_error", str(exc)))
+
+    def use_system_tts_voice(self) -> None:
+        self.config["voice_engine"] = "system"
+        atomic_json_save(CONFIG_PATH, self.config)
+        self._refresh_tts_voice_controls()
+        self.voice_status_var.set("Выбран системный голос Windows.")
+
+    def delete_selected_tts_voice(self) -> None:
+        voice_id = self._selected_tts_voice_id()
+        if not voice_id or not is_voice_installed(DATA_DIR, voice_id):
+            messagebox.showinfo("Удаление голоса", "Выбранный голос ещё не загружен.")
+            return
+        name = VOICE_CATALOG[voice_id]["name"]
+        if not messagebox.askyesno("Удалить голос", f"Удалить скачанную модель «{name}»?\n\nЭто освободит около 60 МБ. Системный голос Windows останется доступен.", parent=self.root):
+            return
+        try:
+            model_path = voice_paths(DATA_DIR, voice_id)[0]
+            unload_piper_voice(model_path)
+            delete_voice(DATA_DIR, voice_id)
+            if str(self.config.get("tts_voice_id", "")) == voice_id:
+                self.config["tts_voice_id"] = ""
+                self.config["voice_engine"] = "system"
+            atomic_json_save(CONFIG_PATH, self.config)
+            self._refresh_tts_voice_controls()
+            self.voice_status_var.set(f"Голос «{name}» удалён. Используется системный голос Windows.")
+        except Exception as exc:
+            messagebox.showerror("Удаление голоса", str(exc))
+
+    def preview_selected_tts_voice(self) -> None:
+        voice_id = self._selected_tts_voice_id()
+        if not voice_id or not is_voice_installed(DATA_DIR, voice_id):
+            messagebox.showinfo("Пример голоса", "Сначала скачай выбранный голос кнопкой «Загрузить голос».")
+            return
+        model_path = voice_paths(DATA_DIR, voice_id)[0]
+        self.tts_voice_status_var.set("Готовлю короткий пример озвучивания…")
+        def worker() -> None:
+            try:
+                speak_text("Привет! Это пример моего голоса. Рада тебя слышать!", engine="piper", model_path=model_path)
+                self.events.put(("tts_voice_preview_complete", None))
+            except Exception as exc:
+                self.events.put(("tts_voice_preview_error", str(exc)))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _toggle_auto_memory(self) -> None:
         self.config["auto_memory"] = bool(self.auto_memory_var.get())
@@ -2787,6 +3031,166 @@ class MoyaIshkaApp:
         except Exception as exc:
             messagebox.showerror("Установка", f"Не удалось установить приложение в выбранную папку.\n\n{exc}")
 
+    def search_old_versions(self) -> None:
+        """Scan common user folders for obsolete/staged MoyaIshka executables."""
+        self.update_status_var.set("Ищу старые копии в папках установки, Загрузки и Рабочего стола…")
+
+        def worker() -> None:
+            try:
+                running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
+                results = scan_application_copies(
+                    configured_install_dir=self.config.get("install_dir") or self._selected_install_dir(),
+                    current_exe=running_exe,
+                    data_dir=DATA_DIR,
+                )
+                self.events.put(("old_versions_scan_complete", results))
+            except Exception as exc:
+                self.events.put(("old_versions_scan_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_old_versions_window(self, results: list[dict[str, Any]]) -> None:
+        """Show detected copies and require explicit selection before deletion."""
+        window = tk.Toplevel(self.root)
+        window.title("Поиск устаревших версий Моей ИИшки")
+        window.geometry("940x500")
+        window.minsize(760, 380)
+        window.transient(self.root)
+        window.configure(bg=self.colors.get("bg", "#101827"))
+
+        outer = ttk.Frame(window, padding=16)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(
+            outer,
+            text="Найденные копии приложения",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            outer,
+            text="Текущая запущенная копия исключена. Выбери файлы, которые больше не нужны. Поиск выполняется только в известных папках пользователя, а не по всему диску.",
+            style="MutedPanel.TLabel",
+            wraplength=880,
+        ).pack(anchor="w", pady=(4, 12))
+
+        columns = ("version", "category", "size", "modified")
+        tree = ttk.Treeview(outer, columns=columns, show="headings", selectmode="extended", height=11)
+        tree.heading("version", text="Версия по имени папки")
+        tree.heading("category", text="Расположение")
+        tree.heading("size", text="Размер")
+        tree.heading("modified", text="Изменён")
+        tree.column("version", width=145, anchor="w")
+        tree.column("category", width=230, anchor="w")
+        tree.column("size", width=100, anchor="e")
+        tree.column("modified", width=145, anchor="center")
+        tree.pack(fill="both", expand=True)
+        path_var = tk.StringVar(value="Выбери строку, чтобы увидеть полный путь.")
+        path_entry = ttk.Entry(outer, textvariable=path_var, state="readonly")
+        path_entry.pack(fill="x", pady=(9, 8))
+        item_map: dict[str, dict[str, Any]] = {}
+
+        def fill_rows(items: list[dict[str, Any]]) -> None:
+            tree.delete(*tree.get_children())
+            item_map.clear()
+            for index, item in enumerate(items):
+                iid = str(index)
+                size = int(item.get("size", 0))
+                size_text = f"{size / (1024 * 1024):.1f} МБ" if size >= 1024 * 1024 else f"{size / 1024:.0f} КБ"
+                tree.insert("", "end", iid=iid, values=(item.get("version", "Не определена"), item.get("category", "Копия"), size_text, item.get("modified", "")))
+                item_map[iid] = item
+            if not items:
+                path_var.set("Старые копии не найдены. Текущая программа не отображается в результатах.")
+            else:
+                path_var.set(f"Найдено копий: {len(items)}. Выбери одну или несколько строк.")
+
+        def on_select(_event=None) -> None:
+            selected = tree.selection()
+            if len(selected) == 1:
+                path_var.set(str(item_map[selected[0]].get("path", "")))
+            elif selected:
+                path_var.set(f"Выбрано файлов: {len(selected)}")
+            elif results:
+                path_var.set(f"Найдено копий: {len(results)}. Выбери одну или несколько строк.")
+
+        def open_selected() -> None:
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("Открыть расположение", "Сначала выбери файл.", parent=window)
+                return
+            path = Path(str(item_map[selected[0]]["path"]))
+            try:
+                if os.name == "nt":
+                    subprocess.Popen(["explorer", f"/select,{path}"])
+                else:
+                    self._open_local_folder(path.parent)
+            except Exception as exc:
+                messagebox.showerror("Открыть расположение", str(exc), parent=window)
+
+        def delete_selected() -> None:
+            selected = list(tree.selection())
+            if not selected:
+                messagebox.showinfo("Удаление копий", "Сначала выбери файлы для удаления.", parent=window)
+                return
+            paths = [str(item_map[iid]["path"]) for iid in selected]
+            preview = "\n".join(paths[:8])
+            if len(paths) > 8:
+                preview += f"\n… и ещё {len(paths) - 8} файлов"
+            if not messagebox.askyesno(
+                "Подтверждение удаления",
+                "Удалить выбранные копии Моей ИИшки? Это удалит только отмеченные EXE-файлы, папки с настройками и историю чатов останутся нетронутыми.\n\n" + preview,
+                parent=window,
+            ):
+                return
+            removed = 0
+            errors: list[str] = []
+            active_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
+            for path in paths:
+                try:
+                    delete_application_copy(path, current_exe=active_exe)
+                    removed += 1
+                except Exception as exc:
+                    errors.append(f"{path}: {exc}")
+            fresh = scan_application_copies(
+                configured_install_dir=self.config.get("install_dir") or self._selected_install_dir(),
+                current_exe=active_exe,
+                data_dir=DATA_DIR,
+            )
+            fill_rows(fresh)
+            if errors:
+                messagebox.showwarning(
+                    "Результат удаления",
+                    f"Удалено файлов: {removed}. Не удалось удалить: {len(errors)}.\n\n" + "\n".join(errors[:5]),
+                    parent=window,
+                )
+            else:
+                messagebox.showinfo("Результат удаления", f"Удалено файлов: {removed}.", parent=window)
+            self.update_status_var.set(f"Поиск завершён. Удалено старых копий: {removed}.")
+
+        tree.bind("<<TreeviewSelect>>", on_select)
+        tree.bind("<Double-1>", lambda _e: open_selected())
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(4, 0))
+        ttk.Button(buttons, text="Открыть расположение", command=open_selected).pack(side="left")
+        ttk.Button(buttons, text="Удалить выбранные", command=delete_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Повторить поиск", command=lambda: self._rescan_old_versions_in_window(window, fill_rows)).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Закрыть", command=window.destroy).pack(side="right")
+        fill_rows(results)
+        window.grab_set()
+
+    def _rescan_old_versions_in_window(self, window: tk.Toplevel, fill_rows) -> None:
+        window.configure(cursor="watch")
+        def worker() -> None:
+            try:
+                running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
+                items = scan_application_copies(
+                    configured_install_dir=self.config.get("install_dir") or self._selected_install_dir(),
+                    current_exe=running_exe,
+                    data_dir=DATA_DIR,
+                )
+                self.events.put(("old_versions_rescan_complete", (window, fill_rows, items)))
+            except Exception as exc:
+                self.events.put(("old_versions_rescan_error", (window, str(exc))))
+        threading.Thread(target=worker, daemon=True).start()
+
     def _maybe_check_updates(self) -> None:
         if bool(self.config.get("auto_update_check", True)) and str(self.config.get("update_repo", "")).strip():
             self.check_for_updates(silent=True)
@@ -3026,6 +3430,13 @@ def migrate_staged_exe_on_first_launch() -> bool:
 
 
 def main() -> None:
+    if os.name == "nt":
+        try:
+            # A stable AppUserModelID helps Windows associate the high-resolution
+            # executable/window icon with the same taskbar application across updates.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MrNike227.MoyaIshka.Desktop")
+        except Exception:
+            pass
     if migrate_staged_exe_on_first_launch():
         return
     prepare_source_workspace()

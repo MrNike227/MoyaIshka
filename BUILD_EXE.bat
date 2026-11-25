@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
@@ -16,13 +16,19 @@ set "PY=py -3.11"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32
+%PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0
 if errorlevel 1 goto failed
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico ^
   --add-data "app_icon.ico;." ^
+  --add-data "app_icon_256.png;." ^
+  --add-data "app_icon_128.png;." ^
+  --add-data "app_icon_64.png;." ^
+  --add-data "app_icon_32.png;." ^
+  --add-data "app_icon_16.png;." ^
   --add-data "main.py;source_project" ^
   --add-data "windows_control.py;source_project" ^
   --add-data "voice_assistant.py;source_project" ^
+  --add-data "voice_manager.py;source_project" ^
   --add-data "auto_memory.py;source_project" ^
   --add-data "avatar_widget.py;source_project" ^
   --add-data "plugin_manager.py;source_project" ^
@@ -39,18 +45,22 @@ if errorlevel 1 goto failed
   --add-data "INSTALLER.iss;source_project" ^
   --add-data "README_RU.md;source_project" ^
   --add-data "LICENSE.txt;source_project" ^
+  --add-data "THIRD_PARTY_NOTICES.md;source_project" ^
+  --add-data "licenses/GPL-3.0.txt;source_project/licenses" ^
   --add-data "app_icon.ico;source_project" ^
   --add-data "tests;source_project/tests" ^
   --add-data ".github;source_project/.github" ^
   --add-data "skills;source_project/skills" ^
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
+  --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
   --hidden-import=pyaudio --hidden-import=pythoncom --hidden-import=pywintypes ^
-  --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 main.py
+  --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
+  --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
 echo.
 echo BUILD COMPLETE: dist\MoyaIshka.exe
-echo This EXE includes Python and voice dependencies. A model/API is still needed for AI replies.
+echo This EXE includes Python, Windows SAPI and Piper voice engines; download a voice pack from the app. A model/API is still needed for AI replies.
 pause
 endlocal & exit /b 0
 :failed

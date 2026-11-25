@@ -5,3 +5,4 @@ SpeechRecognition>=3.10
 pyttsx3>=2.90
 PyAudio>=0.2.14
 pyinstaller>=6.0
+piper-tts==1.8.0
