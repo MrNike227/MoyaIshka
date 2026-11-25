@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 35
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -47,9 +48,9 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path 'dist/MoyaIshka.exe'
-          & $exe --self-test-imports
-          if ($LASTEXITCODE -ne 0) { throw "Frozen EXE cryptography self-test failed: $LASTEXITCODE" }
-          python -c "from PyInstaller.archive.readers import CArchiveReader; a=CArchiveReader(r'dist/MoyaIshka.exe'); n=[str(x).lower() for x in a.toc]; assert any('cryptography' in x for x in n), 'cryptography package missing from EXE'; assert any('cryptography' in x and '_rust' in x for x in n), 'cryptography Rust binding missing from EXE'; print('Verified cryptography archive entries:', sum('cryptography' in x for x in n))"
+          python -c "import subprocess, sys; result = subprocess.run([r'dist\MoyaIshka.exe', '--self-test-imports'], timeout=90); sys.exit(result.returncode)"
+          if ($LASTEXITCODE -ne 0) { throw "Frozen EXE crypto/CFFI self-test failed or timed out: $LASTEXITCODE" }
+          python -c "from PyInstaller.archive.readers import CArchiveReader; a=CArchiveReader(r'dist/MoyaIshka.exe'); n=[str(x).lower() for x in a.toc]; assert any('cryptography' in x for x in n), 'cryptography package missing from EXE'; assert any('cryptography' in x and '_rust' in x for x in n), 'cryptography Rust binding missing from EXE'; assert any('_cffi_backend' in x for x in n), '_cffi_backend missing from EXE'; assert any(x.startswith('cffi.') or x == 'cffi' for x in n), 'cffi package missing from EXE'; print('Verified crypto/CFFI archive entries:', sum('cryptography' in x or 'cffi' in x for x in n))"
 
       - name: Create SHA-256 checksum
         shell: pwsh
