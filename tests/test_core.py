@@ -48,6 +48,11 @@ class StoreTests(unittest.TestCase):
         self.store.delete_conversation(chat_id)
         self.assertIsNone(self.store.get_conversation(chat_id))
 
+    def test_conversation_ids_reads_sqlite_rows_by_column(self):
+        first_id = self.store.create_conversation("Первый")
+        second_id = self.store.create_conversation("Второй")
+        self.assertEqual(self.store.conversation_ids(), {first_id, second_id})
+
     def test_import_legacy_history(self):
         history_path = Path(self.temp.name) / "history.json"
         history_path.write_text(json.dumps([
@@ -61,6 +66,11 @@ class StoreTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_cloud_merge_uses_sqlite_safe_conversation_id_helper(self):
+        source = Path(main_module.__file__).read_text(encoding="utf-8")
+        self.assertIn("self.store.conversation_ids()", source)
+        self.assertNotIn('str(c.get("id")) for c in self.store.list_conversations()', source)
+
     def test_extract_openai_content(self):
         self.assertEqual(extract_openai_content({"choices": [{"message": {"content": " Готово "}}]}), "Готово")
 

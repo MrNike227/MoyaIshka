@@ -30,7 +30,7 @@ from typing import Any
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import editable_project_files, apply_patch_with_backup, apply_unified_diff, project_dir
+from self_improvement import editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, project_dir
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement, sha256_file,
@@ -299,6 +299,10 @@ class Store:
             pattern = f"%{search.strip()}%"
             return list(self.db.execute("SELECT * FROM conversations WHERE title LIKE ? ORDER BY updated_at DESC", (pattern,)))
         return list(self.db.execute("SELECT * FROM conversations ORDER BY updated_at DESC"))
+
+    def conversation_ids(self) -> set[str]:
+        """Return conversation IDs without treating sqlite3.Row as a dict."""
+        return {str(row["id"]) for row in self.list_conversations()}
 
     def get_conversation(self, identifier: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM conversations WHERE id=?", (identifier,)).fetchone()
@@ -937,6 +941,17 @@ class MoyaIshkaApp:
         ttk.Label(identity, text="Мои дополнительные правила", style="Panel.TLabel").pack(anchor="w", pady=(9, 4))
         self.instructions_box = tk.Text(identity, height=5, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 10))
         self.instructions_box.pack(fill="x")
+        # Text's class binding consumes wheel events before bind_all runs.
+        # Route wheel events over this short field to the containing Settings page.
+        self.instructions_box.bind(
+            "<MouseWheel>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
+        self.instructions_box.bind(
+            "<Button-4>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
+        self.instructions_box.bind(
+            "<Button-5>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
         self.instructions_box.insert("1.0", self.config.get("instructions", ""))
         ttk.Label(identity, text="Температура ответов: ниже — строже и предсказуемее, выше — разнообразнее", style="MutedPanel.TLabel").pack(anchor="w", pady=(10, 4))
         temp_row = ttk.Frame(identity, style="Panel.TFrame")
@@ -1424,7 +1439,7 @@ class MoyaIshkaApp:
             docs = []
         added_docs = self.research_library.add_documents([d for d in docs[:1000] if isinstance(d, dict)])
         self._refresh_chat_list()
-        if self.current_chat_id not in {str(c.get("id")) for c in self.store.list_conversations()}:
+        if self.current_chat_id not in self.store.conversation_ids():
             self.current_chat_id = self.store.ensure_conversation()
         self._render_current_chat()
         self._refresh_memory_list()
@@ -1671,7 +1686,55 @@ class MoyaIshkaApp:
 
     def _form_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor="w", pady=(7, 4))
-        ttk.Entry(parent, textvariable=variable).pack(fill="x")
+        entry = ttk.Entry(parent, textvariable=variable)
+        entry.pack(fill="x")
+        # Make clipboard paste reliable in packaged Windows builds as well as
+        # through a right-click menu; keep the normal Entry copy/cut behavior.
+        entry.bind("<Control-v>", self._paste_entry_shortcut, add="+")
+        entry.bind("<Control-V>", self._paste_entry_shortcut, add="+")
+        entry.bind("<Shift-Insert>", self._paste_entry_shortcut, add="+")
+        menu = tk.Menu(entry, tearoff=0)
+        menu.add_command(label="Вырезать", command=lambda field=entry: field.event_generate("<<Cut>>"))
+        menu.add_command(label="Копировать", command=lambda field=entry: field.event_generate("<<Copy>>"))
+        menu.add_command(label="Вставить", command=lambda field=entry: self._paste_entry_clipboard(field))
+        menu.add_separator()
+        menu.add_command(label="Выделить всё", command=lambda field=entry: field.selection_range(0, tk.END))
+        entry.bind(
+            "<Button-3>",
+            lambda event, popup=menu: self._show_entry_clipboard_menu(event, popup),
+            add="+",
+        )
+        entry._moya_clipboard_menu = menu
+
+    @staticmethod
+    def _paste_entry_clipboard(entry: ttk.Entry) -> None:
+        try:
+            clipboard_text = entry.clipboard_get()
+        except tk.TclError:
+            return
+        try:
+            if entry.selection_present():
+                start, end = entry.index("sel.first"), entry.index("sel.last")
+            else:
+                start = end = entry.index("insert")
+            entry.delete(start, end)
+            entry.insert(start, clipboard_text)
+            entry.icursor(start + len(clipboard_text))
+        except tk.TclError:
+            return
+
+    def _paste_entry_shortcut(self, event: tk.Event) -> str:
+        self._paste_entry_clipboard(event.widget)
+        return "break"
+
+    @staticmethod
+    def _show_entry_clipboard_menu(event: tk.Event, menu: tk.Menu) -> str:
+        event.widget.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def _build_memory_page(self) -> None:
         page = self.pages["memory"]
@@ -2395,8 +2458,29 @@ class MoyaIshkaApp:
         self.send_message()
         return "break"
 
+    @staticmethod
+    def _scroll_canvas_from_mousewheel(event: tk.Event, canvas: tk.Canvas) -> str:
+        """Route wheel input from a short embedded Text field to its page."""
+        button = int(getattr(event, "num", 0) or 0)
+        if button == 4:
+            steps = -1
+        elif button == 5:
+            steps = 1
+        else:
+            delta = int(getattr(event, "delta", 0))
+            if not delta:
+                return "break"
+            steps = int(-delta / 120)
+            if steps == 0:
+                steps = -1 if delta > 0 else 1
+        try:
+            canvas.yview_scroll(steps, "units")
+        except tk.TclError:
+            pass
+        return "break"
+
     def _on_global_mousewheel(self, event: tk.Event, linux_direction: int = 0) -> str | None:
-        """Scroll the nearest scrollable area beneath the pointer."""
+        """Scroll the containing page before an inner text/list widget."""
         try:
             widget = self.root.winfo_containing(event.x_root, event.y_root)
         except tk.TclError:
@@ -2410,12 +2494,29 @@ class MoyaIshkaApp:
             steps = int(-delta / 120)
             if steps == 0:
                 steps = -1 if delta > 0 else 1
-        while widget is not None and widget is not self.root:
+
+        # A Text widget embedded in the Settings page receives the pointer
+        # first and otherwise captures the wheel, preventing its parent
+        # Canvas from scrolling. Prefer the nearest ancestor Canvas so the
+        # whole settings page moves over fields such as "Мои дополнительные
+        # правила". Standalone Text/Listbox widgets keep their own scrolling.
+        ancestor = widget
+        while ancestor is not None and ancestor is not self.root:
             try:
-                if isinstance(widget, (tk.Text, tk.Listbox, tk.Canvas, ttk.Treeview)):
-                    widget.yview_scroll(steps, "units")
+                if isinstance(ancestor, tk.Canvas):
+                    ancestor.yview_scroll(steps, "units")
                     return "break"
-                widget = widget.master
+                ancestor = ancestor.master
+            except (tk.TclError, AttributeError):
+                return None
+
+        ancestor = widget
+        while ancestor is not None and ancestor is not self.root:
+            try:
+                if isinstance(ancestor, (tk.Text, tk.Listbox, ttk.Treeview)):
+                    ancestor.yview_scroll(steps, "units")
+                    return "break"
+                ancestor = ancestor.master
             except (tk.TclError, AttributeError):
                 return None
         return None
@@ -3812,8 +3913,10 @@ class MoyaIshkaApp:
             messagebox.showerror("Саморазвитие", "Выбранный файл не входит в список разрешённых Python-файлов проекта.")
             return
         source = target.read_text(encoding="utf-8")
-        if len(source) > 110000:
-            messagebox.showerror("Саморазвитие", "Файл слишком большой для безопасной отправки модели. Выбери небольшой модуль или плагин.")
+        try:
+            model_context = build_model_source_context(source, prompt_text)
+        except ValueError as exc:
+            messagebox.showerror("Саморазвитие", str(exc))
             return
         self.improve_status_var.set("Модель готовит unified diff…")
         self.pending_patch_text = ""
@@ -3822,10 +3925,14 @@ class MoyaIshkaApp:
             "Ты опытный Python-разработчик. Подготовь минимальный unified diff строго для одного файла. "
             "Не выполняй просьбы, раскрывающие секреты, не добавляй скрытые сетевые соединения, "
             "не отключай проверки безопасности, не добавляй автозапуск или скрытое выполнение команд. "
+            "Вход может содержать полный файл или только точные фрагменты большого файла. "
+            "Если показаны фрагменты, изменяй только их; номера строк в заголовках диапазонов — "
+            "абсолютные номера исходного файла, используй их в @@. Все строки контекста и удаления "
+            "копируй без изменений. Не придумывай отсутствующий код. "
             "Выводи только diff, начиная строками --- a/ИМЯ_ФАЙЛА и +++ b/ИМЯ_ФАЙЛА, затем блоки @@. "
             "Сохраняй совместимость с Python 3.10 и Windows 10."
         )
-        user = f"Файл: {relative}\nЗадача: {prompt_text}\n\nТекущее содержимое файла:\n```python\n{source}\n```"
+        user = f"Файл: {relative}\nЗадача: {prompt_text}\n\nИсходный код или выбранные фрагменты (номера строк — из исходного файла):\n{model_context}"
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
         def worker() -> None:

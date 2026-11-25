@@ -1,5 +1,7 @@
 import json
 import unittest
+from io import BytesIO
+from urllib.error import HTTPError
 from unittest import mock
 
 from cloud_sync import (
@@ -69,6 +71,19 @@ class SupabaseClientTests(unittest.TestCase):
             SupabaseCloudClient("https://project.supabase.co.evil.example", "public-key")
         with self.assertRaises(CloudSyncError):
             SupabaseCloudClient("https://user@project.supabase.co", "public-key")
+
+    def test_invalid_supabase_password_login_has_actionable_russian_message(self):
+        client = SupabaseCloudClient("https://project.supabase.co", "public-key")
+        response = HTTPError(
+            "https://project.supabase.co/auth/v1/token?grant_type=password",
+            400,
+            "Bad Request",
+            {},
+            BytesIO(b'{"code":"invalid_credentials","msg":"Invalid login credentials"}'),
+        )
+        with mock.patch("cloud_sync.urlopen", side_effect=response):
+            with self.assertRaisesRegex(CloudSyncError, "неверная почта или пароль"):
+                client.sign_in("user@example.com", "wrong-password")
 
     def test_create_vault_uses_public_key_and_user_jwt_not_service_role(self):
         client = SupabaseCloudClient(
