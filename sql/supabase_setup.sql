@@ -1,4 +1,4 @@
--- Моя ИИшка 4.1.5: E2E-encrypted cloud vault for Supabase.
+-- Моя ИИшка 4.1.5.1: E2E-encrypted cloud vault for Supabase.
 -- Run this entire script in Supabase Dashboard -> SQL Editor -> New query.
 -- Do NOT create or paste a service_role/secret key into the desktop application.
 

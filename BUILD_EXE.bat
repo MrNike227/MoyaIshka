@@ -2,13 +2,19 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.5 single-file Windows application...
+echo Building Moya Ishka 4.1.5.1 single-file Windows application...
+if defined MOYA_BUILD_PYTHON (
+  set "PY=%MOYA_BUILD_PYTHON%"
+  goto have_python
+)
+where python >nul 2>nul
+if not errorlevel 1 (
+  set "PY=python"
+  goto have_python
+)
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
-where python >nul 2>nul
-if errorlevel 1 goto no_python
-set "PY=python"
-goto have_python
+goto no_python
 :use_py
 set "PY=py -3.11"
 :have_python
@@ -16,7 +22,9 @@ set "PY=py -3.11"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
-%PY% -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0 cryptography psutil
+%PY% -m pip install --upgrade -r requirements.txt piper-tts==1.8.0
+if errorlevel 1 goto failed
+%PY% -c "import sys, cryptography; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('Build Python:', sys.executable); print('cryptography:', cryptography.__version__, cryptography.__file__)"
 if errorlevel 1 goto failed
 %PY% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
 if errorlevel 1 goto crypto_failed
@@ -65,7 +73,7 @@ if errorlevel 1 goto crypto_failed
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
-  --collect-all cryptography --collect-all psutil ^
+  --collect-all cryptography --collect-submodules cryptography --collect-binaries cryptography --collect-data cryptography --collect-all psutil ^
   --hidden-import=cryptography --hidden-import=cryptography.exceptions ^
   --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
   --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^

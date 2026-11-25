@@ -26,7 +26,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-APP_UA = "MoyaIshka/4.1.5-cloud"
+APP_UA = "MoyaIshka/4.1.5.1-cloud"
 VAULT_TABLE = "moyaishka_vault"
 VAULT_SCHEMA_VERSION = 1
 AAD = b"MoyaIshka encrypted cloud vault v1"

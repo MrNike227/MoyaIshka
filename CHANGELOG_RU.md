@@ -1,12 +1,20 @@
+## 4.1.5.1 — исправление упаковки и подтверждения сборки
+
+- GitHub Actions workflow получил отдельное имя `Build Windows release — verified 4.1.5.1`, чтобы было видно, что запущена новая конфигурация.
+- Используются Node.js 24-совместимые `actions/checkout@v7` и `actions/setup-python@v7.1.0`; старое `softprops/action-gh-release@v2` удалено.
+- Сборка принудительно использует Python, установленный `actions/setup-python`, вместо другого Python Launcher.
+- `cryptography` устанавливается из `requirements.txt`, собирается через collect-all/submodules/binaries и проверяется внутри готового EXE.
+- Релиз публикуется только после smoke-test frozen EXE с AES-GCM/Scrypt.
+
 # История изменений «Моей ИИшки»
 
-## 4.1.5 — исправление упаковки криптографии и обновление GitHub Actions
+## 4.1.5.1 — исправление упаковки криптографии и обновление GitHub Actions
 
 - Исправлена упаковка `cryptography` в Windows EXE: добавлен собственный PyInstaller hook, явные hidden imports для AES-GCM, Scrypt и Rust bindings, сбор нативных бинарников и metadata.
 - В `BUILD_EXE.bat` добавлена предварительная проверка установленной библиотеки `cryptography` и обязательный запуск собранного EXE с `--self-test-imports`. Сборка завершается ошибкой, если криптографические импорты отсутствуют.
 - GitHub Actions теперь использует `actions/checkout@v7.0.1` и `actions/setup-python@v7.1.0`, совместимые с Node.js 24. Релиз публикуется через встроенный GitHub CLI; зависимость от старого `softprops/action-gh-release@v2` удалена. Node.js нужен только среде GitHub Actions — устанавливать его на пользовательский ПК не требуется.
 - Добавлена проверка криптографических импортов уже внутри замороженного EXE до публикации релиза.
-- Номер приложения и Windows FileVersion/ProductVersion обновлён до 4.1.5.
+- Номер приложения и Windows FileVersion/ProductVersion обновлён до 4.1.5.1.
 
 ## 4.1.4 — исправление установщика (hotfix)
 - Отсутствие Windows FileVersion/ProductVersion больше не блокирует обновление: решающая проверка версии, пути и SHA-256 выполняется самим запущенным приложением через подтверждение запуска. Если метаданные есть, но версия в них другая, установка по-прежнему отклоняется.

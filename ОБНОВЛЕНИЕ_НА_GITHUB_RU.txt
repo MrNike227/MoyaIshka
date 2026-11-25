@@ -1,14 +1,10 @@
-ОБНОВЛЕНИЕ «МОЯ ИИШКА» ДО ВЕРСИИ 4.1.5
+ОБНОВЛЕНИЕ «МОЯ ИИШКА» ДО ВЕРСИИ 4.1.5.1
 
-1. Распакуйте ZIP-патч 4.1.5 в корень локального репозитория и согласитесь на замену файлов.
-2. Убедитесь, что добавлены hooks/hook-cryptography.py и tests/test_build_release.py.
-3. Не удаляйте .git и скрытую папку .github.
-4. Сделайте Commit и Push в main.
-5. Откройте Actions → Build Windows release → Run workflow.
-6. В release_tag укажите v4.1.5.
-7. Дождитесь успешных тестов, сборки и шага Verify frozen EXE crypto imports.
-8. В Releases проверьте MoyaIshka.exe и MoyaIshka.exe.sha256.
+1. Распакуйте GitHub patch 4.1.5.1 в корень локального репозитория с заменой файлов.
+2. ОБЯЗАТЕЛЬНО замените .github/workflows/release.yml.
+3. Выполните Commit и Push в main.
+4. Создайте тег v4.1.5.1 либо запустите обновлённый workflow вручную с release_tag=v4.1.5.1.
+5. Убедитесь, что workflow называется Build Windows release — verified 4.1.5.1.
+6. Не скачивайте релиз, если EXE smoke-test не прошёл.
 
-В версии 4.1.5 исправлена упаковка cryptography (AES-GCM/Scrypt/Rust bindings) и добавлен smoke-test готового EXE. GitHub Actions обновлены до checkout@v7.0.1 и setup-python@v7.1.0 (Node.js 24 runtime).
-
-Node.js на пользовательском компьютере не нужен. Самостоятельный EXE собирается на Windows runner GitHub Actions.
+В 4.1.5.1 сборка использует активный Python из setup-python, явно включает cryptography и проверяет импорт/шифрование внутри готового Windows EXE.

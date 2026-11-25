@@ -58,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.5"
+APP_VERSION = "4.1.5.1"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -4498,8 +4498,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.5-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.5-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.5.1-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.5.1-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
