@@ -36,7 +36,7 @@ class ReleaseBuildTests(unittest.TestCase):
             copied = collect_runtime_dlls([source], destination)
             self.assertEqual(
                 {item.name for item in copied},
-                {"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
+                {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
             )
             self.assertEqual((destination / "vcruntime140.dll").read_bytes(), b"runtime")
 
