@@ -203,7 +203,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.1.7")
+        self.assertEqual(APP_VERSION, "4.1.8")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
@@ -268,7 +268,7 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen") as popen:
                 helper = updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.7",
+                    staged, target, 1234, log, expected_version="4.1.8",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
                 )
             self.assertTrue(helper.is_file())
@@ -277,7 +277,7 @@ class UpdaterTests(unittest.TestCase):
             self.assertIn("-File", args)
             self.assertIn(str(staged.resolve()), args)
             self.assertIn(str(target.resolve()), args)
-            self.assertIn("4.1.7", args)
+            self.assertIn("4.1.8", args)
             self.assertEqual(
                 popen.call_args.kwargs["creationflags"],
                 getattr(updater_helper.subprocess, "CREATE_NO_WINDOW", 0),
@@ -301,7 +301,7 @@ class UpdaterTests(unittest.TestCase):
                 patch.object(updater_helper.subprocess, "Popen", side_effect=[denied, process]) as popen,
             ):
                 updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.7",
+                    staged, target, 1234, log, expected_version="4.1.8",
                     receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
                 )
             self.assertEqual(popen.call_count, 2)
@@ -338,11 +338,11 @@ class UpdaterTests(unittest.TestCase):
             with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
                  patch.object(updater_helper.subprocess, "Popen"):
                 updater_helper.launch_windows_replacement(
-                    staged, target, 1234, log, expected_version="4.1.7", platform_name="nt",
+                    staged, target, 1234, log, expected_version="4.1.8", platform_name="nt",
                 )
             self.assertTrue(log.is_file())
             content = log.read_text(encoding="utf-8")
-            self.assertIn("Запуск установщика обновления 4.1.7", content)
+            self.assertIn("Запуск установщика обновления 4.1.8", content)
             self.assertIn(str(target.resolve()), content)
 
     def test_updater_confirmation_requires_version_hash_and_exact_target(self):
