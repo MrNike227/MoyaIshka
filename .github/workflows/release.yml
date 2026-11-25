@@ -1,4 +1,4 @@
-name: Build Windows release — verified 4.1.8.2
+name: Build Windows release — verified 4.1.8.3
 
 on:
   push:
@@ -54,6 +54,10 @@ jobs:
           MOYA_BUILD_PYTHON: python
           GITHUB_ACTIONS: 'true'
         run: BUILD_EXE.bat
+
+      - name: Verify custom PyInstaller bootloader is installed
+        shell: pwsh
+        run: python build_patched_pyinstaller.py --verify-installed
 
       - name: Verify x64 VC runtime and Universal CRT DLLs are embedded
         shell: pwsh

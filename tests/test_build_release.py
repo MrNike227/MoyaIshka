@@ -11,9 +11,34 @@ class ReleaseBuildTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyinstaller==6.22.3", requirements)
 
-    def test_application_version_is_4182(self):
+    def test_application_version_is_4183(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.8.2"', source)
+        self.assertIn('APP_VERSION = "4.1.8.3"', source)
+
+    def test_custom_bootloader_preloads_vc_runtime_before_python_dll(self):
+        from build_patched_pyinstaller import (
+            PATCH_MARKER, PRELOAD_C_BLOCK, SOURCE_ANCHOR, patch_bootloader_source,
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            source_path = Path(temp) / "pyi_dylib_python.c"
+            source_path.write_text("before\n" + SOURCE_ANCHOR + "\n", encoding="utf-8")
+            self.assertTrue(patch_bootloader_source(source_path))
+            patched = source_path.read_text(encoding="utf-8")
+            self.assertLess(patched.index(PATCH_MARKER), patched.index(SOURCE_ANCHOR))
+            self.assertIn('L"vcruntime140.dll"', patched)
+            self.assertIn('L"vcruntime140_1.dll"', patched)
+            self.assertIn('L"msvcp140.dll"', patched)
+            self.assertLess(patched.index('L"vcruntime140.dll"'), patched.index('L"msvcp140.dll"'))
+            self.assertFalse(patch_bootloader_source(source_path))
+
+    def test_build_uses_custom_bootloader_builder(self):
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        source = (ROOT / "build_patched_pyinstaller.py").read_text(encoding="utf-8")
+        self.assertIn("%PY% build_patched_pyinstaller.py", build)
+        self.assertIn('--add-data "build_patched_pyinstaller.py;source_project"', build)
+        self.assertIn("waf", source)
+        self.assertIn("BOOTLOADER_SOURCE_RELATIVE", source)
+        self.assertIn("PYINSTALLER_TAG", source)
 
     def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -136,6 +161,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
         self.assertIn("$process.ExitCode", workflow)
         self.assertIn("if ($process.ExitCode -ne 0)", workflow)
+        self.assertIn("Verify custom PyInstaller bootloader is installed", workflow)
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
@@ -158,10 +184,10 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_windows_version_resource_is_418(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,8,2)", source)
-        self.assertIn("prodvers=(4,1,8,2)", source)
-        self.assertIn("FileVersion', '4.1.8.2'", source)
-        self.assertIn("ProductVersion', '4.1.8.2'", source)
+        self.assertIn("filevers=(4,1,8,3)", source)
+        self.assertIn("prodvers=(4,1,8,3)", source)
+        self.assertIn("FileVersion', '4.1.8.3'", source)
+        self.assertIn("ProductVersion', '4.1.8.3'", source)
 
 
 
@@ -173,7 +199,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.8.2", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8.3", workflow)
+        self.assertIn("Verify custom PyInstaller bootloader is installed", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
