@@ -54,6 +54,12 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("cryptography", build_script)
         self.assertIn("Verify active Python and install dependencies", workflow)
 
+    def test_source_launcher_bootstraps_missing_cryptography(self):
+        launcher = (ROOT / "START.bat").read_text(encoding="utf-8-sig")
+        self.assertIn('import cryptography', launcher)
+        self.assertIn('pip install --upgrade "cryptography>=42.0"', launcher)
+        self.assertIn(":crypto_install_failed", launcher)
+
     def test_windows_version_resource_is_4151(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4,1,5,1)", source)
