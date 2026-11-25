@@ -2945,12 +2945,31 @@ class MoyaIshkaApp:
             raise RuntimeError("Адрес API должен начинаться с https:// или http://")
         if not model:
             raise RuntimeError("Не указано название онлайн-модели.")
-        payload = {"model": model, "messages": messages, "temperature": float(settings.get("temperature", 0.7))}
-        data = post_json(url, payload, {"Authorization": f"Bearer {key}"})
-        answer = extract_openai_content(data)
-        if not answer:
-            raise RuntimeError("Онлайн-модель вернула пустой ответ.")
-        return answer
+        pressure = bool(settings.get("resource_pressure", False))
+        max_tokens = 1024 if pressure else 2048
+        conversation = [dict(message) for message in messages]
+        parts: list[str] = []
+        for attempt in range(3):
+            payload = {
+                "model": model,
+                "messages": conversation,
+                "temperature": float(settings.get("temperature", 0.7)),
+                "max_tokens": max_tokens,
+            }
+            data = post_json(url, payload, {"Authorization": f"Bearer {key}"})
+            piece = extract_openai_content(data)
+            if not piece:
+                raise RuntimeError("Онлайн-модель вернула пустой ответ.")
+            parts.append(piece)
+            choices = data.get("choices")
+            finish_reason = choices[0].get("finish_reason") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+            if finish_reason != "length" or attempt == 2:
+                break
+            conversation.extend([
+                {"role": "assistant", "content": piece},
+                {"role": "user", "content": "Продолжи ответ с места остановки. Не повторяй написанное и заверши мысль."},
+            ])
+        return "".join(parts).strip()
 
     @staticmethod
     def _call_ollama(settings: dict[str, Any], messages: list[dict[str, str]]) -> str:
@@ -2962,27 +2981,38 @@ class MoyaIshkaApp:
             raise RuntimeError("Адрес Ollama должен начинаться с http:// или https://")
         pressure = bool(settings.get("resource_pressure", False))
         logical_threads = 2 if pressure else 4
-        context_window = 1536 if pressure else 4096
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "keep_alive": "2m",
-            "options": {
-                "temperature": float(settings.get("temperature", 0.7)),
-                "num_ctx": context_window,
-                "num_thread": logical_threads,
-                "num_predict": 384,
-            },
-        }
-        data = post_json(base + "/api/chat", payload, timeout=240)
-        try:
-            answer = str(data["message"]["content"]).strip()
-        except (KeyError, TypeError) as exc:
-            raise RuntimeError("Ollama вернула неожиданный ответ. Проверьте имя модели.") from exc
-        if not answer:
-            raise RuntimeError("Локальная модель вернула пустой ответ.")
-        return answer
+        context_window = 4096 if pressure else 6144
+        max_tokens = 1024 if pressure else 2048
+        conversation = [dict(message) for message in messages]
+        parts: list[str] = []
+        for attempt in range(3):
+            payload = {
+                "model": model,
+                "messages": conversation,
+                "stream": False,
+                "keep_alive": "2m",
+                "options": {
+                    "temperature": float(settings.get("temperature", 0.7)),
+                    "num_ctx": context_window,
+                    "num_thread": logical_threads,
+                    "num_predict": max_tokens,
+                },
+            }
+            data = post_json(base + "/api/chat", payload, timeout=240)
+            try:
+                piece = str(data["message"]["content"]).strip()
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError("Ollama вернула неожиданный ответ. Проверьте имя модели.") from exc
+            if not piece:
+                raise RuntimeError("Локальная модель вернула пустой ответ.")
+            parts.append(piece)
+            if data.get("done_reason") not in {"length", "max_tokens"} or attempt == 2:
+                break
+            conversation.extend([
+                {"role": "assistant", "content": piece},
+                {"role": "user", "content": "Продолжи ответ с места остановки. Не повторяй написанное и заверши мысль."},
+            ])
+        return "".join(parts).strip()
 
     def _reply_worker(self, mode: str, settings: dict[str, Any], messages: list[dict[str, str]], conversation_id: str) -> None:
         errors: list[str] = []
