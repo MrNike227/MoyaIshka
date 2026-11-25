@@ -78,7 +78,7 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_frozen_smoke_test_requires_app_local_runtime_dlls(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('getattr(sys, "frozen", False)', source)
-        self.assertIn('"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll"', source)
+        self.assertIn('"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"', source)
         self.assertIn("sys._MEIPASS", source)
 
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
