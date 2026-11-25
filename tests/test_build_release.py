@@ -252,6 +252,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("- name: Update v4.1.8.3 tag to validated root source", workflow)
         self.assertIn("git push --force origin refs/tags/v4.1.8.3", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
+        self.assertIn('git config user.name "github-actions[bot]"', workflow)
+        self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
         self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.3 tag to validated root source"))
 if __name__ == "__main__":
     unittest.main()

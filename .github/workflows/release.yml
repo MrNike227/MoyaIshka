@@ -135,5 +135,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh auth setup-git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag --force --annotate --message "MoyaIshka 4.1.8.3 — validated Python DLL load fix" v4.1.8.3 $env:GITHUB_SHA
           git push --force origin refs/tags/v4.1.8.3
