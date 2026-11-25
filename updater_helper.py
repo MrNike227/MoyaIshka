@@ -111,11 +111,16 @@ $previousHash = $null
 $backupReady = $false
 
 function Write-UpdateLog([string]$Message) {
-    try {
-        $dir = Split-Path -Parent $LogPath
-        if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-        Add-Content -LiteralPath $LogPath -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) -Encoding UTF8
-    } catch {}
+    $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    $candidates = @($LogPath, (Join-Path $targetDir 'update.log')) | Select-Object -Unique
+    foreach ($candidate in $candidates) {
+        try {
+            $dir = Split-Path -Parent $candidate
+            if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            Add-Content -LiteralPath $candidate -Value $line -Encoding UTF8
+            return
+        } catch {}
+    }
 }
 function Write-Receipt([bool]$Confirmed, [string]$Message) {
     try {
@@ -259,14 +264,19 @@ try {
     # Verify actual bytes and embedded Windows file-version metadata before launch.
     $installedHash = (Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $ExpectedSha256.ToLowerInvariant()) { throw 'После замены SHA-256 установленного EXE не совпадает.' }
+    # Windows version resources are useful metadata, but some valid PyInstaller
+    # builds expose empty ProductVersion/FileVersion in Explorer. Do not block
+    # installation on missing metadata: the launched application must confirm
+    # its own APP_VERSION, exact path and SHA-256 through the receipt handshake.
     $fileInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($TargetPath)
     $embeddedVersion = [string]$fileInfo.ProductVersion
     if ([string]::IsNullOrWhiteSpace($embeddedVersion)) { $embeddedVersion = [string]$fileInfo.FileVersion }
     if ([string]::IsNullOrWhiteSpace($embeddedVersion)) {
-        throw 'В загруженном EXE отсутствует встроенная информация о версии. Установка отклонена.'
-    }
-    if ($embeddedVersion -notmatch [regex]::Escape($ExpectedVersion)) {
+        Write-UpdateLog 'В свойствах Windows нет FileVersion/ProductVersion. Продолжаю: версию подтвердит само приложение при запуске.'
+    } elseif ($embeddedVersion -notmatch [regex]::Escape($ExpectedVersion)) {
         throw "В EXE записана версия '$embeddedVersion', ожидалась '$ExpectedVersion'."
+    } else {
+        Write-UpdateLog "Windows version metadata совпадает: $embeddedVersion. Дополнительно проверю версию через запуск приложения."
     }
 
     if (Test-Path -LiteralPath $ReceiptPath) { Remove-Item -LiteralPath $ReceiptPath -Force }
@@ -370,6 +380,15 @@ def launch_windows_replacement(
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.unlink(missing_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
+    # Create the log before launching PowerShell. If the helper never starts,
+    # the user still gets a clear record that launch was attempted.
+    try:
+        with log.open("a", encoding="utf-8") as stream:
+            from datetime import datetime
+            stream.write(f"{datetime.now().astimezone().isoformat()}  Запуск установщика обновления {expected_version.strip().lstrip('v')}.\n")
+            stream.write(f"Целевой EXE: {target}\nВременный EXE: {staged}\n")
+    except OSError as exc:
+        raise OSError(f"Не удалось создать журнал обновления {log}: {exc}") from exc
     helper_fd, helper_name = tempfile.mkstemp(prefix="MoyaIshka_Updater_", suffix=".ps1")
     os.close(helper_fd)
     helper = Path(helper_name)
@@ -396,8 +415,14 @@ def launch_windows_replacement(
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
         subprocess.Popen(command, close_fds=True, creationflags=creation_flags)
         return helper
-    except Exception:
+    except Exception as exc:
         helper.unlink(missing_ok=True)
+        try:
+            with log.open("a", encoding="utf-8") as stream:
+                from datetime import datetime
+                stream.write(f"{datetime.now().astimezone().isoformat()}  ОШИБКА запуска PowerShell-установщика: {exc}\n")
+        except OSError:
+            pass
         raise
 
 

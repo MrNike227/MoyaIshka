@@ -155,6 +155,33 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn('"update.log"', source)
         self.assertNotIn("shutil.copy2(running_exe, temporary)", source)
 
+    def test_missing_windows_version_metadata_does_not_block_app_handshake(self):
+        script = _powershell_script()
+        self.assertIn("нет FileVersion/ProductVersion", script)
+        self.assertIn("версию подтвердит само приложение при запуске", script)
+        self.assertIn("if ($embeddedVersion -notmatch", script)
+        self.assertIn("Новая версия не подтвердила запуск", script)
+
+    def test_updater_launcher_creates_log_before_starting_powershell(self):
+        from unittest.mock import patch
+        import updater_helper
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            staged = root / "staging" / "MoyaIshka.exe"
+            staged.parent.mkdir()
+            staged.write_bytes(b"test exe bytes")
+            log = root / "AppData" / "MoyaIshka" / "update.log"
+            target = root / "ISH" / "MoyaIshka.exe"
+            with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
+                 patch.object(updater_helper.subprocess, "Popen"):
+                updater_helper.launch_windows_replacement(
+                    staged, target, 1234, log, expected_version="4.1.4", platform_name="nt",
+                )
+            self.assertTrue(log.is_file())
+            content = log.read_text(encoding="utf-8")
+            self.assertIn("Запуск установщика обновления 4.1.4", content)
+            self.assertIn(str(target.resolve()), content)
+
     def test_updater_confirmation_requires_version_hash_and_exact_target(self):
         script = _powershell_script()
         self.assertIn("ExpectedVersion", script)
