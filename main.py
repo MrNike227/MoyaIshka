@@ -30,7 +30,7 @@ from typing import Any
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, project_dir
+from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement, sha256_file,
@@ -58,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.6"
+APP_VERSION = "4.1.7"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -630,6 +630,8 @@ class MoyaIshkaApp:
         self.avatar: AvatarWindow | None = None
         self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
         self.pending_patch_text = ""
+        self.improvement_suggestions: list[dict[str, str]] = []
+        self._auto_improvement_after_id: str | None = None
         self.staged_update_path: Path | None = None
         self.staged_update_version = ""
         self._last_update_check_day = ""
@@ -663,6 +665,8 @@ class MoyaIshkaApp:
         self.root.after(450, self._apply_high_dpi_windows_icon)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
+        if bool(self.config.get("self_improve_auto_enabled", False)):
+            self.root.after(25000, self._run_scheduled_improvement_analysis)
         if self._any_cloud_session_ready() and bool(self.config.get("cloud_auto_sync", True)):
             self.root.after(18000, self._start_cloud_sync)
 
@@ -4610,7 +4614,7 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.6-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.7-smoke")
         plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.6-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
