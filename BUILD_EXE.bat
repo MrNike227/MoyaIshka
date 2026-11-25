@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.8 single-file Windows application...
+echo Building Moya Ishka 4.1.8.2 single-file Windows application...
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
   goto have_python
@@ -19,6 +19,7 @@ goto no_python
 set "PY=py -3.11"
 :have_python
 %PY% --version
+%PY% -c "import struct; assert struct.calcsize('P') * 8 == 64, '64-bit Python is required'"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
 if errorlevel 1 goto failed
@@ -30,7 +31,7 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto crypto_failed
 %PY% prepare_python_runtime.py
 if errorlevel 1 goto runtime_failed
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
