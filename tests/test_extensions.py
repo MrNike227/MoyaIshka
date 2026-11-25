@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff
+from self_improvement import apply_unified_diff, build_model_source_context
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -28,6 +28,38 @@ class AutoMemoryTests(unittest.TestCase):
 
 
 class PatchTests(unittest.TestCase):
+    def test_large_source_context_contains_relevant_function_only(self):
+        padding = "".join(f"# padding {index} " + ("x" * 80) + "\\n" for index in range(1400))
+        source = (
+            "import os\\n\\n"
+            + padding
+            + "def update_profile():\\n    return 'profile'\\n\\n"
+            + "def erase_secret():\\n    return 'secret'\\n"
+        )
+        self.assertGreater(len(source), 90_000)
+        context = build_model_source_context(source, "change the profile button")
+        self.assertLessEqual(len(context), 90_000)
+        self.assertIn("def update_profile", context)
+        self.assertIn("исходные строки", context)
+        self.assertNotIn("return 'secret'", context)
+
+    def test_large_source_context_keeps_original_line_numbers_for_diff(self):
+        padding = "".join(f"# padding {index} " + ("x" * 80) + "\\n" for index in range(1400))
+        source = "import os\\n\\n" + padding + "def update_profile():\\n    return 'profile'\\n"
+        context = build_model_source_context(source, "profile")
+        original_line = source.splitlines().index("    return 'profile'") + 1
+        patch = (
+            "--- a/main.py\\n+++ b/main.py\\n"
+            + f"@@ -{original_line},1 +{original_line},1 @@\\n"
+            + "-    return 'profile'\\n+    return 'PROFILE'\\n"
+        )
+        updated = apply_unified_diff(source, patch, "main.py")
+        self.assertIn("return 'PROFILE'", updated)
+
+    def test_small_source_context_is_unchanged(self):
+        source = "def answer():\\n    return 42\\n"
+        self.assertEqual(build_model_source_context(source, "answer"), source)
+
     def test_apply_single_file_diff(self):
         original = "first\nsecond\nthird\n"
         patch = """--- a/main.py
