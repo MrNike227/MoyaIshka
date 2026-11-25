@@ -150,6 +150,13 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.exe.sha256", workflow)
 
+    def test_self_improvement_retries_when_model_does_not_return_diff(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("except ValueError as first_error", source)
+        self.assertIn("repaired_response = self._current_model_call(repair_messages)", source)
+        self.assertIn("Не добавляй пояснений, Markdown или полный файл", source)
+
+
 if __name__ == "__main__":
     unittest.main()
 
