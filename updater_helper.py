@@ -503,7 +503,7 @@ def apply_update(staged_path: str, target_path: str, process_id: str) -> int:
     try:
         launch_windows_replacement(
             staged_path, target_path, int(process_id),
-            user_install_dir() / "update.log", expected_version="4.1.6",
+            user_install_dir() / "update.log", expected_version="4.1.7",
         )
         return 0
     except Exception:
