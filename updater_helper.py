@@ -292,7 +292,7 @@ try {
     $launchErrors = @()
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
-            $newProcess = Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -PassThru -ErrorAction Stop
+            $newProcess = Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -WindowStyle Normal -PassThru -ErrorAction Stop
             if ($newProcess) { break }
         } catch {
             $launchErrors += $_.Exception.Message
