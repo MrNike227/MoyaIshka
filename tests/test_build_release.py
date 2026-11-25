@@ -207,7 +207,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_publishes_only_after_frozen_exe_smoke_test(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertLess(workflow.index("Verify x64 VC runtime and Universal CRT DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
+        self.assertLess(workflow.index("Verify app-local VC runtime DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
         self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.exe.sha256", workflow)
 
