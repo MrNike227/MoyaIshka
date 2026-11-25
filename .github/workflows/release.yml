@@ -1,9 +1,10 @@
-name: Build Windows release — verified 4.1.6
+name: Build Windows release — verified 4.1.7
 
 on:
   push:
     branches:
       - main
+      - 'feature/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -78,7 +79,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = if ($env:GITHUB_REF -eq 'refs/heads/main') { 'v4.1.6' } else { $env:GITHUB_REF_NAME }
+          $tag = if ($env:GITHUB_REF -eq 'refs/heads/main') { 'v4.1.7' } else { $env:GITHUB_REF_NAME }
           gh release view "$tag" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload "$tag" 'dist/MoyaIshka.exe' 'dist/MoyaIshka.exe.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
