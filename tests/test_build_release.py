@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseBuildTests(unittest.TestCase):
     def test_application_version_is_417(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.7"', source)
+        self.assertIn('APP_VERSION = "4.1.8"', source)
 
     def test_python_vc_runtime_is_bundled_for_python_dll_loader(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -125,7 +125,7 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4,1,7,0)", source)
         self.assertIn("prodvers=(4,1,7,0)", source)
-        self.assertIn("ProductVersion', '4.1.7'", source)
+        self.assertIn("ProductVersion', '4.1.8'", source)
 
 
 
@@ -137,7 +137,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.7", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
