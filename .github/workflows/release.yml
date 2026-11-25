@@ -11,6 +11,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: moyaishka-release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
