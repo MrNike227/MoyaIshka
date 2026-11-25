@@ -4804,7 +4804,7 @@ def _packaged_import_self_test() -> int:
         # in the one-file archive: verify the app-local runtime was extracted.
         if getattr(sys, "frozen", False):
             runtime_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-            required_runtime = ("vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll")
+            required_runtime = ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll")
             missing_runtime = [name for name in required_runtime if not (runtime_root / name).is_file()]
             if missing_runtime:
                 return 73
