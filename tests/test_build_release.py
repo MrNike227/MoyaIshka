@@ -88,6 +88,19 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertNotIn("4.1.5.1", source, relative)
             self.assertIn("4.1.5.2", source, relative)
 
+    def test_cffi_native_backend_is_declared_and_collected(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        hook = (ROOT / "hooks" / "hook-cryptography.py").read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^cffi\s*>=")
+        self.assertRegex(requirements, r"(?m)^pycparser\s*>=")
+        self.assertIn("--collect-all cffi", build)
+        self.assertIn("--hidden-import=_cffi_backend", build)
+        self.assertIn("_cffi_backend", hook)
+        self.assertIn("from cffi import FFI as _CffiFFI", source)
+        self.assertIn("backend_probe", source)
+
     def test_packaged_import_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
         self.assertEqual(_packaged_import_self_test(), 0)
