@@ -30,7 +30,7 @@ from typing import Any
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import editable_project_files, apply_patch_with_backup, apply_unified_diff, project_dir
+from self_improvement import editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, project_dir
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement, sha256_file,
@@ -3816,8 +3816,10 @@ class MoyaIshkaApp:
             messagebox.showerror("Саморазвитие", "Выбранный файл не входит в список разрешённых Python-файлов проекта.")
             return
         source = target.read_text(encoding="utf-8")
-        if len(source) > 110000:
-            messagebox.showerror("Саморазвитие", "Файл слишком большой для безопасной отправки модели. Выбери небольшой модуль или плагин.")
+        try:
+            model_context = build_model_source_context(source, prompt_text)
+        except ValueError as exc:
+            messagebox.showerror("Саморазвитие", str(exc))
             return
         self.improve_status_var.set("Модель готовит unified diff…")
         self.pending_patch_text = ""
@@ -3826,10 +3828,14 @@ class MoyaIshkaApp:
             "Ты опытный Python-разработчик. Подготовь минимальный unified diff строго для одного файла. "
             "Не выполняй просьбы, раскрывающие секреты, не добавляй скрытые сетевые соединения, "
             "не отключай проверки безопасности, не добавляй автозапуск или скрытое выполнение команд. "
+            "Вход может содержать полный файл или только точные фрагменты большого файла. "
+            "Если показаны фрагменты, изменяй только их; номера строк в заголовках диапазонов — "
+            "абсолютные номера исходного файла, используй их в @@. Все строки контекста и удаления "
+            "копируй без изменений. Не придумывай отсутствующий код. "
             "Выводи только diff, начиная строками --- a/ИМЯ_ФАЙЛА и +++ b/ИМЯ_ФАЙЛА, затем блоки @@. "
             "Сохраняй совместимость с Python 3.10 и Windows 10."
         )
-        user = f"Файл: {relative}\nЗадача: {prompt_text}\n\nТекущее содержимое файла:\n```python\n{source}\n```"
+        user = f"Файл: {relative}\nЗадача: {prompt_text}\n\nИсходный код или выбранные фрагменты (номера строк — из исходного файла):\n{model_context}"
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
         def worker() -> None:
