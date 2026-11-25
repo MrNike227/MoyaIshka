@@ -79,7 +79,7 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('getattr(sys, "frozen", False)', source)
         self.assertIn('"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"', source)
-        self.assertIn(\'"_MEIPASS"\', source)
+        self.assertIn('"_MEIPASS"', source)
 
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -151,3 +151,4 @@ class ReleaseBuildTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
