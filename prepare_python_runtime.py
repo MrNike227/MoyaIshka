@@ -27,7 +27,7 @@ RUNTIME_DLL_NAMES = (
     "ucrtbase.dll",
 )
 RUNTIME_DLL_GLOBS = ("api-ms-win-crt-*.dll",)
-REQUIRED_RUNTIME_DLLS = {"vcruntime140.dll", "msvcp140.dll", "ucrtbase.dll"}
+REQUIRED_RUNTIME_DLLS = {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"}
 
 
 def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | Path) -> list[Path]:
@@ -93,7 +93,7 @@ def main() -> int:
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     # Prefer the current system VC runtime over the older app-local copy that
     # may ship with a Python installation; this avoids runtime version conflicts.
-    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)"))
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
     ucrt_redist = program_files_x86 / "Windows Kits" / "10" / "Redist" / "ucrt" / "DLLs" / "x64"
     roots = (ucrt_redist, system_root / "System32", Path(sys.base_prefix), Path(sys.prefix), executable_dir)
     destination = Path(__file__).resolve().parent / "build_runtime" / "python_runtime"
