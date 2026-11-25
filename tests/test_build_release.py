@@ -15,7 +15,7 @@ class ReleaseBuildTests(unittest.TestCase):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         helper = (ROOT / "prepare_python_runtime.py").read_text(encoding="utf-8")
         self.assertIn("%PY% prepare_python_runtime.py", build)
-        self.assertIn('--add-binary "build\\python_runtime;."', build)
+        self.assertIn('--add-binary "build_runtime\\python_runtime;."', build)
         self.assertIn("vcruntime140.dll", helper)
         self.assertIn("vcruntime140_1.dll", helper)
 
