@@ -12,6 +12,7 @@ LF_FILES = [
     "HOTFIX_4.1.4_GITHUB_RU.md",
     "INSTALLER.iss",
     "LICENSE.txt",
+    "licenses/GPL-3.0.txt",
     "PATCH_INSTALL_RU.txt",
     "PATCH_INSTRUCTIONS_GITHUB_RU.md",
     "README_RU.md",
