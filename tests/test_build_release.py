@@ -29,6 +29,7 @@ class ReleaseBuildTests(unittest.TestCase):
             destination = root / "bundle"
             source.mkdir()
             (source / "vcruntime140.dll").write_bytes(b"runtime")
+            (source / "vcruntime140_1.dll").write_bytes(b"runtime-helper")
             (source / "msvcp140.dll").write_bytes(b"cxx")
             (source / "ucrtbase.dll").write_bytes(b"ucrt")
             (source / "api-ms-win-crt-runtime-l1-1-0.dll").write_bytes(b"api")
