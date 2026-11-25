@@ -134,6 +134,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+LEGACY_UPDATE_REPOSITORIES = {"mrnike227/moyaishka_v4.1.1"}
+
+
+def migrate_legacy_update_repository(config: dict[str, Any]) -> bool:
+    """Move only the former built-in updater default to this repository.
+
+    User-selected custom repositories are deliberately left untouched.
+    """
+    repository = str(config.get("update_repo", "")).strip()
+    if not repository or repository.casefold() in LEGACY_UPDATE_REPOSITORIES:
+        config["update_repo"] = DEFAULT_CONFIG["update_repo"]
+        return True
+    return False
+
+
 def resource_path(name: str) -> Path:
     """Locate a bundled asset both in source and PyInstaller builds."""
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -539,8 +554,7 @@ class MoyaIshkaApp:
         self.config: dict[str, Any] = dict(DEFAULT_CONFIG)
         if isinstance(legacy_config, dict):
             self.config.update(legacy_config)
-        if not str(self.config.get("update_repo", "")).strip():
-            self.config["update_repo"] = DEFAULT_CONFIG["update_repo"]
+        migrate_legacy_update_repository(self.config)
         # Improve readability for users upgrading from the former 10pt default.
         # Keep an explicitly selected font family and any larger custom size.
         if isinstance(legacy_config, dict) and "font_family" not in legacy_config:
