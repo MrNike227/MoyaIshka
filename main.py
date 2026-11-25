@@ -1675,7 +1675,55 @@ class MoyaIshkaApp:
 
     def _form_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor="w", pady=(7, 4))
-        ttk.Entry(parent, textvariable=variable).pack(fill="x")
+        entry = ttk.Entry(parent, textvariable=variable)
+        entry.pack(fill="x")
+        # Make clipboard paste reliable in packaged Windows builds as well as
+        # through a right-click menu; keep the normal Entry copy/cut behavior.
+        entry.bind("<Control-v>", self._paste_entry_shortcut, add="+")
+        entry.bind("<Control-V>", self._paste_entry_shortcut, add="+")
+        entry.bind("<Shift-Insert>", self._paste_entry_shortcut, add="+")
+        menu = tk.Menu(entry, tearoff=0)
+        menu.add_command(label="Вырезать", command=lambda field=entry: field.event_generate("<<Cut>>"))
+        menu.add_command(label="Копировать", command=lambda field=entry: field.event_generate("<<Copy>>"))
+        menu.add_command(label="Вставить", command=lambda field=entry: self._paste_entry_clipboard(field))
+        menu.add_separator()
+        menu.add_command(label="Выделить всё", command=lambda field=entry: field.selection_range(0, tk.END))
+        entry.bind(
+            "<Button-3>",
+            lambda event, popup=menu: self._show_entry_clipboard_menu(event, popup),
+            add="+",
+        )
+        entry._moya_clipboard_menu = menu
+
+    @staticmethod
+    def _paste_entry_clipboard(entry: ttk.Entry) -> None:
+        try:
+            clipboard_text = entry.clipboard_get()
+        except tk.TclError:
+            return
+        try:
+            if entry.selection_present():
+                start, end = entry.index("sel.first"), entry.index("sel.last")
+            else:
+                start = end = entry.index("insert")
+            entry.delete(start, end)
+            entry.insert(start, clipboard_text)
+            entry.icursor(start + len(clipboard_text))
+        except tk.TclError:
+            return
+
+    def _paste_entry_shortcut(self, event: tk.Event) -> str:
+        self._paste_entry_clipboard(event.widget)
+        return "break"
+
+    @staticmethod
+    def _show_entry_clipboard_menu(event: tk.Event, menu: tk.Menu) -> str:
+        event.widget.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def _build_memory_page(self) -> None:
         page = self.pages["memory"]
