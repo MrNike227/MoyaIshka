@@ -102,7 +102,7 @@ def _download_to_file(
 ) -> int:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "MoyaIshka-VoiceManager/4.1.3", "Accept": "application/octet-stream"},
+        headers={"User-Agent": "MoyaIshka-VoiceManager/4.1.4", "Accept": "application/octet-stream"},
     )
     temporary = destination.with_name(destination.name + ".part")
     digest = hashlib.sha256()

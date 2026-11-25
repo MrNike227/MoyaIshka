@@ -33,7 +33,7 @@ from plugin_manager import PluginManager
 from self_improvement import editable_project_files, apply_patch_with_backup, apply_unified_diff, project_dir
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
-    ensure_install_dir_writable, install_from_source, launch_windows_replacement,
+    ensure_install_dir_writable, install_from_source, launch_windows_replacement, sha256_file,
     resolve_install_dir, user_install_dir, scan_application_copies, delete_application_copy,
 )
 from voice_assistant import listen_once, speak_text, unload_piper_voice
@@ -51,7 +51,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.3"
+APP_VERSION = "4.1.4"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -620,6 +620,7 @@ class MoyaIshkaApp:
         self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
         self.pending_patch_text = ""
         self.staged_update_path: Path | None = None
+        self.staged_update_version = ""
         self._last_update_check_day = ""
         self.busy = False
         self.voice_busy = False
@@ -1859,7 +1860,14 @@ class MoyaIshkaApp:
         self.update_install_dir_var = tk.StringVar(value=initial_install_dir)
         ttk.Entry(install_row, textvariable=self.update_install_dir_var).pack(side="left", fill="x", expand=True)
         ttk.Button(install_row, text="Выбрать папку…", command=self.browse_install_dir).pack(side="left", padx=(8, 0))
-        ttk.Button(install_row, text="Открыть", command=lambda: self._open_local_folder(self._selected_install_dir())).pack(side="left", padx=(6, 0))
+        ttk.Button(install_row, text="Открыть папку установки", command=self.open_install_folder).pack(side="left", padx=(6, 0))
+        current_run_path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve()
+        current_run_label = str(current_run_path if getattr(sys, "frozen", False) else current_run_path.parent)
+        target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "MoyaIshka.exe")
+        self.actual_run_path_var = tk.StringVar(
+            value=f"Фактически запущена: {current_run_label}\nЦелевой файл обновлений: {target_exe_label}"
+        )
+        ttk.Label(updates, textvariable=self.actual_run_path_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(4, 2))
         self.auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_update_check", True)))
         self._make_checkbox(updates, "Проверять наличие обновлений при запуске", self.auto_update_var, background_key="panel").pack(anchor="w", pady=4)
         update_buttons = ttk.Frame(updates, style="Panel.TFrame")
@@ -1868,6 +1876,7 @@ class MoyaIshkaApp:
         ttk.Button(update_buttons, text="Сохранить настройки обновлений", command=self.save_update_settings).pack(side="left", padx=8)
         ttk.Button(update_buttons, text="Установить текущую версию сюда", command=self.install_current_build_to_selected_folder).pack(side="left", padx=8)
         ttk.Button(update_buttons, text="Поиск устаревших версий", command=self.search_old_versions).pack(side="left", padx=8)
+        ttk.Button(update_buttons, text="Открыть журнал обновлений", command=self.open_update_log).pack(side="left", padx=8)
         self.update_status_var = tk.StringVar(value="Репозиторий не задан. Выбери папку установки и сохрани настройки.")
         ttk.Label(updates, textvariable=self.update_status_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(8, 0))
         self._refresh_skill_list()
@@ -2977,8 +2986,17 @@ class MoyaIshkaApp:
                     else:
                         self.update_status_var.set(f"Установлена актуальная версия {APP_VERSION}.")
                 elif event == "update_downloaded":
-                    self.staged_update_path = Path(str(payload))
-                    self.update_status_var.set(f"Обновление загружено и проверено: {self.staged_update_path.name}")
+                    if isinstance(payload, dict):
+                        self.staged_update_path = Path(str(payload.get("path", "")))
+                        self.staged_update_version = str(payload.get("version", "")).lstrip("v")
+                    else:  # compatibility with earlier updater worker payloads
+                        self.staged_update_path = Path(str(payload))
+                        self.staged_update_version = ""
+                    if not self.staged_update_version:
+                        self.update_status_var.set("Файл загружен, но версия релиза неизвестна. Установка отменена.")
+                        messagebox.showerror("Обновление", "GitHub не передал номер версии релиза. Для безопасной установки нужна точная версия.")
+                        continue
+                    self.update_status_var.set(f"Обновление {self.staged_update_version} загружено и проверено: {self.staged_update_path.name}")
                     # Ask for a permanent folder on the first install; afterwards always reuse it.
                     initial = self._selected_install_dir()
                     if bool(self.config.get("install_dir_user_selected", False)):
@@ -3850,6 +3868,31 @@ class MoyaIshkaApp:
         running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
         return resolve_install_dir(raw, running_exe=running_exe)
 
+    def open_install_folder(self) -> None:
+        """Open the persisted installation directory, not the AppData staging folder."""
+        try:
+            folder = ensure_install_dir_writable(self._selected_install_dir())
+            self._open_local_folder(folder)
+        except Exception as exc:
+            messagebox.showerror("Папка установки", f"Не удалось открыть папку установки.\n\n{exc}")
+
+    def open_update_log(self) -> None:
+        """Open the updater's diagnostic log from the user-data directory."""
+        log_path = DATA_DIR / "update.log"
+        try:
+            if not log_path.is_file():
+                messagebox.showinfo(
+                    "Журнал обновлений",
+                    f"Журнал пока не создан. Он появится после первой попытки установки обновления.\n\nОжидаемое расположение:\n{log_path}",
+                )
+                return
+            if os.name == "nt":
+                subprocess.Popen(["notepad.exe", str(log_path)], close_fds=True)
+            else:
+                self._open_local_folder(log_path.parent)
+        except Exception as exc:
+            messagebox.showerror("Журнал обновлений", f"Не удалось открыть журнал.\n\n{exc}\n\nФайл:\n{log_path}")
+
     def browse_install_dir(self) -> None:
         current = self._selected_install_dir()
         selected = filedialog.askdirectory(
@@ -3873,8 +3916,13 @@ class MoyaIshkaApp:
         self.config["install_dir"] = str(install_dir)
         self.config["install_dir_user_selected"] = True
         self.update_install_dir_var.set(str(install_dir))
+        if hasattr(self, "actual_run_path_var"):
+            current_run = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+            self.actual_run_path_var.set(
+                f"Фактически запущена: {current_run}\nЦелевой файл обновлений: {install_dir / 'MoyaIshka.exe'}"
+            )
         atomic_json_save(CONFIG_PATH, self.config)
-        self.update_status_var.set(f"Настройки сохранены. Обновления будут устанавливаться в: {install_dir}")
+        self.update_status_var.set(f"Настройки сохранены. Обновления будут устанавливаться в: {install_dir / 'MoyaIshka.exe'}")
         if show_message:
             messagebox.showinfo("Настройки обновлений", f"Папка установки сохранена:\n{install_dir}")
 
@@ -4108,7 +4156,7 @@ class MoyaIshkaApp:
     def _download_update_worker(self, info: dict[str, Any]) -> None:
         try:
             path = download_verified_update(info, DATA_DIR / "update_staging")
-            self.events.put(("update_downloaded", str(path)))
+            self.events.put(("update_downloaded", {"path": str(path), "version": str(info.get("version", ""))}))
         except Exception as exc:
             self.events.put(("update_error", str(exc)))
 
@@ -4129,9 +4177,11 @@ class MoyaIshkaApp:
                 target,
                 os.getpid(),
                 DATA_DIR / "update.log",
+                expected_version=self.staged_update_version,
+                receipt_path=DATA_DIR / "update_confirmation.json",
             )
             self.update_status_var.set(
-                f"Установка подготовлена. После закрытия старого окна новая версия запустится из: {target}"
+                f"Передаю установку отдельному процессу. После закрытия этого окна будет проверена замена и запуск версии {self.staged_update_version} из: {target}"
             )
             if self.avatar is not None:
                 self.avatar.hide()
@@ -4159,8 +4209,14 @@ class MoyaIshkaApp:
             self.update_install_dir_var.set(str(target_dir))
 
             log_path = DATA_DIR / "update.log"
-            launch_windows_replacement(self.staged_update_path, target, os.getpid(), log_path)
-            self.update_status_var.set(f"Установка запущена. После закрытия приложение будет обновлено в: {target_dir}")
+            launch_windows_replacement(
+                self.staged_update_path, target, os.getpid(), log_path,
+                expected_version=self.staged_update_version,
+                receipt_path=DATA_DIR / "update_confirmation.json",
+            )
+            self.update_status_var.set(
+                f"Установщик запущен. Замена EXE и запуск версии {self.staged_update_version} будут проверены в: {target}"
+            )
             if self.avatar is not None:
                 self.avatar.hide()
             self.on_close()
@@ -4276,11 +4332,14 @@ class MoyaIshkaApp:
 
 
 def migrate_staged_exe_on_first_launch() -> bool:
-    """Move a manually launched AppData-staged updater EXE to a stable location.
+    """Install an EXE launched from update_staging into the chosen permanent folder.
 
-    Older builds downloaded the new EXE to %APPDATA%\\MoyaIshka\\update_staging
-    but could not install it. When the user opens that EXE, copy it into the
-    normal per-user Programs directory and relaunch from there.
+    Older releases downloaded the new EXE into AppData and sometimes launched it
+    directly. Do not try to overwrite the destination from this still-running EXE:
+    Windows locks the image file. Instead, start the detached PowerShell installer,
+    exit this process, and let the helper replace the target after both old instances
+    have closed. The helper verifies SHA-256, embedded version, actual launch path,
+    and the new process' startup receipt before reporting success.
     """
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return False
@@ -4288,50 +4347,141 @@ def migrate_staged_exe_on_first_launch() -> bool:
         running_exe = Path(sys.executable).resolve()
         if running_exe.parent.name.casefold() != "update_staging":
             return False
+
         saved_config = load_json(CONFIG_PATH, {})
-        configured_dir = saved_config.get("install_dir") if isinstance(saved_config, dict) else None
-        was_user_selected = bool(saved_config.get("install_dir_user_selected", False)) if isinstance(saved_config, dict) else False
+        if not isinstance(saved_config, dict):
+            saved_config = {}
+        configured_dir = saved_config.get("install_dir")
+        was_user_selected = bool(saved_config.get("install_dir_user_selected", False))
         target_dir = resolve_install_dir(configured=configured_dir)
+
         if not was_user_selected:
-            # Legacy updater builds placed EXE in AppData. Ask once for a real install folder.
             chooser_root = tk.Tk()
             chooser_root.withdraw()
             try:
                 selected = filedialog.askdirectory(
-                    parent=chooser_root, title="Выбери постоянную папку установки Моей ИИшки",
-                    initialdir=str(target_dir), mustexist=False,
+                    parent=chooser_root,
+                    title="Выбери постоянную папку установки Моей ИИшки",
+                    initialdir=str(target_dir),
+                    mustexist=False,
                 )
             finally:
                 chooser_root.destroy()
-            if selected:
-                target_dir = Path(selected).expanduser().resolve()
-            else:
-                # Keep running from staging if the user cancels; the settings page can install later.
+            if not selected:
+                # Keep the staged app usable; the user can set the target in Settings.
                 return False
+            target_dir = Path(selected).expanduser().resolve()
+
         target_dir = ensure_install_dir_writable(target_dir)
-        target = target_dir / "MoyaIshka.exe"
-        if isinstance(saved_config, dict):
-            saved_config["install_dir"] = str(target_dir)
-            saved_config["install_dir_user_selected"] = True
-            atomic_json_save(CONFIG_PATH, saved_config)
-        temporary = target_dir / "MoyaIshka.installing.exe"
-        import shutil
-        shutil.copy2(running_exe, temporary)
-        if temporary.stat().st_size != running_exe.stat().st_size:
-            temporary.unlink(missing_ok=True)
-            raise IOError("Не удалось полностью скопировать EXE в папку установки.")
-        os.replace(temporary, target)
-        subprocess.Popen([str(target)], cwd=str(target_dir), close_fds=True)
+        target_exe = target_dir / "MoyaIshka.exe"
+        saved_config["install_dir"] = str(target_dir)
+        saved_config["install_dir_user_selected"] = True
+        atomic_json_save(CONFIG_PATH, saved_config)
+
+        # This process is the staged EXE. The helper waits for it to exit, then
+        # atomically replaces target_exe and launches the verified new process.
+        launch_windows_replacement(
+            staged_path=running_exe,
+            target_path=target_exe,
+            parent_pid=os.getpid(),
+            log_path=DATA_DIR / "update.log",
+            expected_version=APP_VERSION,
+            receipt_path=DATA_DIR / "update_confirmation.json",
+        )
         return True
     except Exception as exc:
         try:
             messagebox.showerror(
                 "Установка Моей ИИшки",
-                f"Не удалось перенести приложение из временной папки.\n\n{exc}\n\nЗапустите EXE из папки загрузки ещё раз или скопируйте его в %LOCALAPPDATA%\\Programs\\MoyaIshka.",
+                f"Не удалось запустить безопасную установку из временной папки.\n\nПричина: {exc}\n\nСкачанный EXE сохранён здесь:\n{Path(sys.executable).resolve()}\n\nЖурнал установки:\n{DATA_DIR / 'update.log'}",
             )
         except Exception:
             pass
         return False
+
+
+
+def confirm_update_startup(receipt_path: str, expected_version: str, expected_sha256: str, expected_target: str) -> tuple[bool, str]:
+    """Confirm an updater launch only when version, executable path and hash match."""
+    receipt = Path(receipt_path).expanduser().resolve()
+    target = Path(expected_target).expanduser().resolve()
+    try:
+        actual_exe = Path(sys.executable).resolve()
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Запустилась не автономная EXE-сборка.")
+        if APP_VERSION != expected_version:
+            raise RuntimeError(f"Запущена версия {APP_VERSION}, ожидалась {expected_version}.")
+        if actual_exe != target:
+            raise RuntimeError(f"Приложение запущено из {actual_exe}, ожидался путь {target}.")
+        actual_hash = sha256_file(actual_exe)
+        if actual_hash.lower() != expected_sha256.lower():
+            raise RuntimeError("SHA-256 запущенного EXE не совпадает с загруженным файлом.")
+        result = {
+            "confirmed": True,
+            "version": APP_VERSION,
+            "target": str(actual_exe),
+            "sha256": actual_hash.lower(),
+            "message": "Новая версия успешно запущена и проверена.",
+            "timestamp": datetime.now().astimezone().isoformat(),
+        }
+        atomic_json_save(receipt, result)
+        return True, str(actual_exe)
+    except Exception as exc:
+        try:
+            atomic_json_save(receipt, {
+                "confirmed": False,
+                "version": APP_VERSION,
+                "target": str(Path(sys.executable).resolve()),
+                "sha256": "",
+                "message": str(exc),
+                "timestamp": datetime.now().astimezone().isoformat(),
+            })
+        except Exception:
+            pass
+        return False, str(exc)
+
+
+def _handle_update_confirmation_args(root: tk.Tk) -> None:
+    """Process the private command line handshake passed by the Windows updater."""
+    if len(sys.argv) >= 6 and sys.argv[1] == "--confirm-update":
+        receipt, version, expected_hash, target = sys.argv[2:6]
+
+        def confirm() -> None:
+            ok, detail = confirm_update_startup(receipt, version, expected_hash, target)
+            if ok:
+                messagebox.showinfo(
+                    "Обновление подтверждено",
+                    f"Моя ИИшка версии {version} успешно установлена и запущена.\n\nФактический путь:\n{detail}",
+                    parent=root,
+                )
+            else:
+                messagebox.showerror(
+                    "Проверка обновления не пройдена",
+                    f"Новая версия не прошла проверку. Установщик восстановит предыдущую версию.\n\nПричина: {detail}",
+                    parent=root,
+                )
+
+        root.after(1200, confirm)
+        return
+
+    # If the helper rolled back, it leaves a failed receipt for the restored app.
+    failure_receipt = DATA_DIR / "update_confirmation.json"
+    previous = load_json(failure_receipt, {})
+    if isinstance(previous, dict) and previous.get("confirmed") is False:
+        try:
+            failure_receipt.unlink(missing_ok=True)
+        except OSError:
+            pass
+        reason = str(previous.get("message", "Неизвестная причина"))
+        log_path = DATA_DIR / "update.log"
+
+        def show_failure() -> None:
+            messagebox.showwarning(
+                "Обновление отменено — восстановлена предыдущая версия",
+                f"Новая версия не прошла проверку. Предыдущая версия восстановлена.\\n\\nПричина: {reason}\\n\\nЖурнал установки:\\n{log_path}",
+                parent=root,
+            )
+        root.after(1200, show_failure)
 
 
 def main() -> None:
@@ -4347,6 +4497,7 @@ def main() -> None:
     prepare_source_workspace()
     root = tk.Tk()
     MoyaIshkaApp(root)
+    _handle_update_confirmation_args(root)
     root.mainloop()
 
 

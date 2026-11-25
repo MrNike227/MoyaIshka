@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.3 single-file Windows application...
+echo Building Moya Ishka 4.1.4 single-file Windows application...
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
 where python >nul 2>nul
@@ -18,8 +18,9 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pyinstaller pypdf python-docx SpeechRecognition pyttsx3 PyAudio comtypes pywin32 piper-tts==1.8.0 cryptography psutil
 if errorlevel 1 goto failed
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico ^
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt ^
   --add-data "app_icon.ico;." ^
+  --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
   --add-data "app_icon_128.png;." ^
   --add-data "app_icon_64.png;." ^
@@ -69,14 +70,14 @@ if errorlevel 1 goto failed
 echo.
 echo BUILD COMPLETE: dist\MoyaIshka.exe
 echo This EXE includes Python, Windows SAPI and Piper voice engines; download a voice pack from the app. A model/API is still needed for AI replies.
-pause
+if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 0
 :failed
 echo.
 echo EXE build failed. Use 64-bit Python 3.11 and check internet access.
-pause
+if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
 :no_python
 echo Python 3.11 x64 was not found. Install it on the build computer only.
-pause
+if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1

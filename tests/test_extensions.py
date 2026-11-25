@@ -7,7 +7,7 @@ from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
 from self_improvement import apply_unified_diff
 from updater import version_tuple
-from updater_helper import install_from_source, _powershell_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
+from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
 
 
@@ -68,12 +68,12 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_413(self):
+    def test_application_release_version_is_414(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.1.3")
+        self.assertEqual(APP_VERSION, "4.1.4")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
@@ -104,11 +104,63 @@ class UpdaterTests(unittest.TestCase):
 
     def test_windows_updater_waits_then_replaces_and_restarts(self):
         script = _powershell_script()
-        self.assertIn("WaitForExit(120000)", script)
+        self.assertIn("AddSeconds(120)", script)
+        self.assertIn("CloseMainWindow()", script)
         self.assertIn("Get-FileHash", script)
-        self.assertIn("[System.IO.File]::Replace", script)
+        self.assertIn("MoyaIshka.installing.exe", script)
         self.assertIn("Start-Process -FilePath $TargetPath", script)
         self.assertIn("MoyaIshka.previous.exe", script)
+        self.assertIn("Выполняется откат", script)
+        self.assertIn("ПОДТВЕРЖДЕНО", script)
+
+    def test_updater_script_is_written_with_windows_crlf_and_bom(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_powershell_updater_script(Path(temp) / "update.ps1")
+            raw = path.read_bytes()
+            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+            self.assertIn(b"\r\n", raw)
+            self.assertEqual(raw.replace(b"\r\n", b"").count(b"\n"), 0)
+            self.assertIn("Get-FileHash".encode("utf-8"), raw)
+
+    def test_windows_launcher_builds_detached_command_with_exact_target(self):
+        from unittest.mock import patch
+        import updater_helper
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            staged = root / "staging" / "MoyaIshka.exe"
+            staged.parent.mkdir()
+            staged.write_bytes(b"test exe bytes")
+            target = root / "ISH" / "MoyaIshka.exe"
+            log = root / "AppData" / "MoyaIshka" / "update.log"
+            with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \
+                 patch.object(updater_helper.subprocess, "Popen") as popen:
+                helper = updater_helper.launch_windows_replacement(
+                    staged, target, 1234, log, expected_version="4.1.4",
+                    receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
+                )
+            self.assertTrue(helper.is_file())
+            args = popen.call_args.args[0]
+            self.assertEqual(args[0], "powershell.exe")
+            self.assertIn("-File", args)
+            self.assertIn(str(staged.resolve()), args)
+            self.assertIn(str(target.resolve()), args)
+            self.assertIn("4.1.4", args)
+
+    def test_staged_exe_first_launch_uses_detached_transactional_installer(self):
+        import inspect
+        import main
+        source = inspect.getsource(main.migrate_staged_exe_on_first_launch)
+        self.assertIn("launch_windows_replacement(", source)
+        self.assertIn("expected_version=APP_VERSION", source)
+        self.assertIn('"update.log"', source)
+        self.assertNotIn("shutil.copy2(running_exe, temporary)", source)
+
+    def test_updater_confirmation_requires_version_hash_and_exact_target(self):
+        script = _powershell_script()
+        self.assertIn("ExpectedVersion", script)
+        self.assertIn("ExpectedSha256", script)
+        self.assertIn("ReceiptPath", script)
+        self.assertIn("Новая версия не подтвердила запуск", script)
 
     def test_user_install_path_is_named_for_app(self):
         self.assertEqual(user_install_dir().name, "MoyaIshka")
