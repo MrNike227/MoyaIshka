@@ -24,9 +24,9 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade -r requirements.txt piper-tts==1.8.0
 if errorlevel 1 goto failed
-%PY% -c "import sys, cryptography; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('Build Python:', sys.executable); print('cryptography:', cryptography.__version__, cryptography.__file__)"
+%PY% -c "import sys, cryptography, cffi, _cffi_backend; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('Build Python:', sys.executable); print('cryptography:', cryptography.__version__, cryptography.__file__); print('cffi:', cffi.__version__, cffi.__file__); print('_cffi_backend:', _cffi_backend.__file__)"
 if errorlevel 1 goto failed
-%PY% -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
+%PY% -c "import cryptography, cffi, _cffi_backend; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
 if errorlevel 1 goto crypto_failed
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
@@ -73,7 +73,8 @@ if errorlevel 1 goto crypto_failed
   --collect-all pypdf --collect-all docx --collect-all speech_recognition ^
   --collect-all piper --collect-all onnxruntime ^
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
-  --collect-all cryptography --collect-submodules cryptography --collect-binaries cryptography --collect-data cryptography --collect-all psutil ^
+  --collect-all cryptography --collect-submodules cryptography --collect-binaries cryptography --collect-data cryptography ^
+  --collect-all cffi --hidden-import=cffi --hidden-import=_cffi_backend --collect-all psutil ^
   --hidden-import=cryptography --hidden-import=cryptography.exceptions ^
   --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
   --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^

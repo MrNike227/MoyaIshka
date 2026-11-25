@@ -4494,6 +4494,11 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
 def _packaged_import_self_test() -> int:
     """Fast, no-GUI smoke test used by CI to verify frozen crypto imports."""
     try:
+        # Force PyInstaller to include CFFI's native backend. Some runtime
+        # dependencies load it dynamically, so static analysis can miss it.
+        import cffi as _cffi  # noqa: F401
+        import _cffi_backend  # noqa: F401
+
         salt = b"MoyaIshka-test-salt"
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)

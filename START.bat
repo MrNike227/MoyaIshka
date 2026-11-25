@@ -15,10 +15,10 @@ goto run_source
 :use_py
 set "PY=py -3"
 :run_source
-%PY% -c "import cryptography" >nul 2>nul
+%PY% -c "import cryptography, cffi, _cffi_backend" >nul 2>nul
 if errorlevel 1 (
-    echo The required cryptography package is missing. Installing it...
-    %PY% -m pip install --upgrade "cryptography>=42.0"
+    echo Required cryptography/cffi packages are missing. Installing them...
+    %PY% -m pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"
     if errorlevel 1 goto crypto_install_failed
 )
 %PY% main.py
@@ -33,7 +33,7 @@ endlocal & exit /b %APP_RC%
 :crypto_install_failed
 echo.
 echo Could not install cryptography. Check your internet connection and Python pip.
-echo Manual command: %PY% -m pip install "cryptography>=42.0"
+echo Manual command: %PY% -m pip install "cryptography>=42.0" "cffi>=2.0.0"
 pause
 endlocal & exit /b 1
 :no_python

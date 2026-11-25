@@ -26,7 +26,16 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertTrue(hook.is_file())
         source = hook.read_text(encoding="utf-8")
         self.assertIn('collect_all("cryptography")', source)
+        self.assertIn('collect_all("cffi")', source)
+        self.assertIn('"_cffi_backend"', source)
         self.assertIn('cryptography.hazmat.bindings._rust', source)
+
+    def test_cffi_backend_is_declared_and_collected(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        self.assertIn("cffi>=2.0.0", requirements)
+        self.assertIn("--collect-all cffi", build)
+        self.assertIn("--hidden-import=_cffi_backend", build)
 
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -34,6 +43,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
+        self.assertIn("import _cffi_backend", source)
 
     def test_github_actions_use_node24_compatible_action_majors(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -51,13 +61,14 @@ class ReleaseBuildTests(unittest.TestCase):
         build_script = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("cryptography", requirements)
+        self.assertIn("cffi>=2.0.0", requirements)
         self.assertIn("cryptography", build_script)
         self.assertIn("Verify active Python and install dependencies", workflow)
 
     def test_source_launcher_bootstraps_missing_cryptography(self):
         launcher = (ROOT / "START.bat").read_text(encoding="utf-8-sig")
-        self.assertIn('import cryptography', launcher)
-        self.assertIn('pip install --upgrade "cryptography>=42.0"', launcher)
+        self.assertIn('import cryptography, cffi, _cffi_backend', launcher)
+        self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
     def test_windows_version_resource_is_4151(self):

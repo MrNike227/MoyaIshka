@@ -35,7 +35,7 @@ jobs:
           python -c "import struct, sys; assert struct.calcsize('P') * 8 == 64, '64-bit Python is required'; print(sys.executable)"
           python -m pip install --upgrade pip
           python -m pip install --upgrade -r requirements.txt
-          python -c "import cryptography; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
+          python -c "import cryptography, cffi, _cffi_backend; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
 
       - name: Run release configuration tests
         shell: pwsh
