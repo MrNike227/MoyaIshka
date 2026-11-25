@@ -172,11 +172,39 @@ class UpdaterTests(unittest.TestCase):
                 )
             self.assertTrue(helper.is_file())
             args = popen.call_args.args[0]
-            self.assertEqual(args[0], "powershell.exe")
+            self.assertEqual(Path(args[0]).name.casefold(), "powershell.exe")
             self.assertIn("-File", args)
             self.assertIn(str(staged.resolve()), args)
             self.assertIn(str(target.resolve()), args)
             self.assertIn("4.1.7", args)
+            self.assertEqual(
+                popen.call_args.kwargs["creationflags"],
+                getattr(updater_helper.subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
+    def test_windows_updater_retries_process_start_without_creation_flags(self):
+        from unittest.mock import patch, Mock
+        import updater_helper
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            staged = root / "staging" / "MoyaIshka.exe"
+            staged.parent.mkdir()
+            staged.write_bytes(b"test exe bytes")
+            target = root / "ISH" / "MoyaIshka.exe"
+            log = root / "AppData" / "MoyaIshka" / "update.log"
+            denied = PermissionError(5, "Access is denied")
+            process = Mock()
+            with patch.object(updater_helper.shutil, "which", return_value="powershell.exe"), \\
+                 patch.object(updater_helper.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \\
+                 patch.object(updater_helper.subprocess, "Popen", side_effect=[denied, process]) as popen:
+                updater_helper.launch_windows_replacement(
+                    staged, target, 1234, log, expected_version="4.1.7",
+                    receipt_path=log.with_name("update_confirmation.json"), platform_name="nt",
+                )
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(popen.call_args_list[0].kwargs["creationflags"], 0x08000000)
+            self.assertEqual(popen.call_args_list[1].kwargs["creationflags"], 0)
+            self.assertTrue(any("PowerShell-установщик запущен" in line for line in log.read_text(encoding="utf-8").splitlines()))
 
     def test_staged_exe_first_launch_uses_detached_transactional_installer(self):
         import inspect
