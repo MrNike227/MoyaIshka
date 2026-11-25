@@ -79,7 +79,7 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('getattr(sys, "frozen", False)', source)
         self.assertIn('"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll"', source)
-        self.assertIn("sys._MEIPASS", source)
+        self.assertIn(\'"_MEIPASS"\', source)
 
     def test_runtime_smoke_test_performs_aes_gcm_roundtrip(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -99,7 +99,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
         self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
         self.assertIn("$process.ExitCode", workflow)
-        self.assertNotIn("$LASTEXITCODE -ne 0", workflow)
+        self.assertIn("if ($process.ExitCode -ne 0)", workflow)
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
