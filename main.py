@@ -4743,8 +4743,21 @@ def confirm_update_startup(receipt_path: str, expected_version: str, expected_sh
 
 def _handle_update_confirmation_args(root: tk.Tk) -> None:
     """Process the private command line handshake passed by the Windows updater."""
+    confirmation = None
     if len(sys.argv) >= 6 and sys.argv[1] == "--confirm-update":
-        receipt, version, expected_hash, target = sys.argv[2:6]
+        confirmation = tuple(sys.argv[2:6])
+    elif all(os.environ.get(key) for key in (
+        "MOYA_UPDATE_RECEIPT", "MOYA_UPDATE_VERSION",
+        "MOYA_UPDATE_SHA256", "MOYA_UPDATE_TARGET",
+    )):
+        confirmation = (
+            os.environ["MOYA_UPDATE_RECEIPT"],
+            os.environ["MOYA_UPDATE_VERSION"],
+            os.environ["MOYA_UPDATE_SHA256"],
+            os.environ["MOYA_UPDATE_TARGET"],
+        )
+    if confirmation:
+        receipt, version, expected_hash, target = confirmation
 
         def confirm() -> None:
             ok, detail = confirm_update_startup(receipt, version, expected_hash, target)
