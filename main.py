@@ -941,6 +941,17 @@ class MoyaIshkaApp:
         ttk.Label(identity, text="Мои дополнительные правила", style="Panel.TLabel").pack(anchor="w", pady=(9, 4))
         self.instructions_box = tk.Text(identity, height=5, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 10))
         self.instructions_box.pack(fill="x")
+        # Text's class binding consumes wheel events before bind_all runs.
+        # Route wheel events over this short field to the containing Settings page.
+        self.instructions_box.bind(
+            "<MouseWheel>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
+        self.instructions_box.bind(
+            "<Button-4>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
+        self.instructions_box.bind(
+            "<Button-5>", lambda event, target=canvas: self._scroll_canvas_from_mousewheel(event, target), add="+"
+        )
         self.instructions_box.insert("1.0", self.config.get("instructions", ""))
         ttk.Label(identity, text="Температура ответов: ниже — строже и предсказуемее, выше — разнообразнее", style="MutedPanel.TLabel").pack(anchor="w", pady=(10, 4))
         temp_row = ttk.Frame(identity, style="Panel.TFrame")
@@ -2445,6 +2456,27 @@ class MoyaIshkaApp:
         if int(getattr(event, "state", 0)) & 0x0001:
             return None
         self.send_message()
+        return "break"
+
+    @staticmethod
+    def _scroll_canvas_from_mousewheel(event: tk.Event, canvas: tk.Canvas) -> str:
+        """Route wheel input from a short embedded Text field to its page."""
+        button = int(getattr(event, "num", 0) or 0)
+        if button == 4:
+            steps = -1
+        elif button == 5:
+            steps = 1
+        else:
+            delta = int(getattr(event, "delta", 0))
+            if not delta:
+                return "break"
+            steps = int(-delta / 120)
+            if steps == 0:
+                steps = -1 if delta > 0 else 1
+        try:
+            canvas.yview_scroll(steps, "units")
+        except tk.TclError:
+            pass
         return "break"
 
     def _on_global_mousewheel(self, event: tk.Event, linux_direction: int = 0) -> str | None:
