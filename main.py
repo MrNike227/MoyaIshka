@@ -58,7 +58,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
 from resource_governor import ResourceGovernor
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.8.2"
+APP_VERSION = "4.1.8.3"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -152,7 +152,7 @@ def prepare_source_workspace() -> Path:
             "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
-            "BUILD_EXE.bat", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
+            "BUILD_EXE.bat", "build_patched_pyinstaller.py", "prepare_python_runtime.py", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
             "tests/test_core.py", "tests/test_extensions.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
@@ -4860,8 +4860,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.2-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.2-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.3-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.3-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0

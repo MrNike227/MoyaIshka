@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.8.2 single-file Windows application...
+echo Building Moya Ishka 4.1.8.3 single-file Windows application...
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
   goto have_python
@@ -25,6 +25,8 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade -r requirements.txt piper-tts==1.8.0
 if errorlevel 1 goto failed
+%PY% build_patched_pyinstaller.py
+if errorlevel 1 goto bootloader_failed
 %PY% -c "import sys, cryptography, cffi, _cffi_backend; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('Build Python:', sys.executable); print('cryptography:', cryptography.__version__, cryptography.__file__); print('cffi:', cffi.__version__, cffi.__file__); print('_cffi_backend:', _cffi_backend.__file__)"
 if errorlevel 1 goto failed
 %PY% -c "import cryptography, cffi, _cffi_backend; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
@@ -57,6 +59,7 @@ if errorlevel 1 goto runtime_failed
   --add-data "requirements.txt;source_project" ^
   --add-data "requirements_voice.txt;source_project" ^
   --add-data "prepare_python_runtime.py;source_project" ^
+  --add-data "build_patched_pyinstaller.py;source_project" ^
   --add-binary "build_runtime\python_runtime;." ^
   --add-data "START.bat;source_project" ^
   --add-data "BUILD_EXE.bat;source_project" ^
@@ -110,6 +113,11 @@ endlocal & exit /b 1
 :crypto_bundle_failed
 echo.
 echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE is not safe to publish.
+if not defined GITHUB_ACTIONS pause
+endlocal & exit /b 1
+:bootloader_failed
+echo.
+echo Custom PyInstaller bootloader build failed. Install Git and Visual Studio C++ Build Tools.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
 :runtime_failed
