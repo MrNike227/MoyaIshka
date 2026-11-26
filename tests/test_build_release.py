@@ -357,6 +357,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("ClearDirectoryContents $TargetDir", script)
         self.assertIn("CopyDirectoryContents $StagedDir $TargetDir", script)
         self.assertNotIn("$TempDir", script)
+        self.assertNotIn("$backupExe", script)
         self.assertNotIn("Move-Item -LiteralPath $TargetDir -Destination $BackupDir", script)
         self.assertIn("/MT:16", script)
         self.assertNotIn("/MT:8", script)
@@ -450,7 +451,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_422(self):
+    def test_windows_version_resource_is_423(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4, 2, 2, 0)", source)
         self.assertIn("prodvers=(4, 2, 2, 0)", source)
