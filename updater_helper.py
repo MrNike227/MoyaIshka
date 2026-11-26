@@ -741,7 +741,7 @@ def _directory_updater_script() -> str:
     # antivirus/indexers or shell handles) can hold a directory open and make
     # renaming the whole installation folder fail with "folder is in use".
     $AttemptId = [guid]::NewGuid().ToString('N')
-        $BackupDir = Join-Path $Parent ($Name + '.previous.' + (Get-Date -Format 'yyyyMMddHHmmssfff') + '.' + $AttemptId)
+    $BackupDir = Join-Path $Parent ($Name + '.previous.' + (Get-Date -Format 'yyyyMMddHHmmssfff') + '.' + $AttemptId)
     $TargetChanged = $false
     $BackupReady = $false
     $HadPrevious = $false
@@ -1092,6 +1092,8 @@ def launch_windows_directory_replacement(
         raise ValueError("Папка обновления и папка установки должны быть разными.")
     if not expected_version.strip():
         raise ValueError("Не указана ожидаемая версия.")
+    if not staged.is_dir():
+        raise FileNotFoundError(f"Папка обновления не найдена: {staged}")
     if not staged_verified:
         validate_app_directory(staged, expected_version)
 
