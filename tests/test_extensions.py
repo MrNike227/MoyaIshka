@@ -106,6 +106,30 @@ class PatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_unified_diff(response, "main.py")
 
+    def test_extract_unified_diff_accepts_insertion_only_changes(self):
+        original = "one\n two\n"
+        response = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,0 +2 @@\n+inserted\n"
+        )
+        patch = extract_unified_diff(response, "main.py")
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "one\ninserted\n two\n",
+        )
+
+    def test_extract_unified_diff_accepts_deletion_only_changes(self):
+        original = "remove me\nkeep me\n"
+        response = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1 +0,0 @@\n-remove me\n"
+        )
+        patch = extract_unified_diff(response, "main.py")
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "keep me\n",
+        )
+
     def test_extract_unified_diff_rejects_missing_hunk(self):
         with self.assertRaises(ValueError):
             extract_unified_diff("--- a/main.py\n+++ b/main.py\nизменений нет", "main.py")
