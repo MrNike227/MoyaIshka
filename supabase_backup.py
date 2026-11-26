@@ -7,8 +7,8 @@ from typing import Any
 
 BUCKET_NAME = "moyaishka-backups"
 TUS_CHUNK_BYTES = 6 * 1024 * 1024
-MAX_SUPABASE_FILE_BYTES = 50 * 1024 * 1024
-MAX_SUPABASE_BUCKET_BYTES = 1024 * 1024 * 1024
+MAX_SUPABASE_FILE_BYTES = 50_000_000
+MAX_SUPABASE_BUCKET_BYTES = 1_000_000_000
 MAX_LIST_PAGE = 100
 _SHA256_RE = re.compile(r"_([0-9a-f]{64})\.mibak$", re.IGNORECASE)
 _USER_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)

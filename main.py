@@ -1211,11 +1211,11 @@ class MoyaIshkaApp:
         ttk.Button(backup_actions, text="Создать копию сейчас", style="Accent.TButton", command=self.create_local_backup).pack(side="left")
         ttk.Button(backup_actions, text="Восстановить с диска…", command=self.restore_local_backup).pack(side="left", padx=7)
         ttk.Button(backup_actions, text="Восстановить из Google Drive…", command=self.restore_cloud_backup).pack(side="left", padx=7)
-        ttk.Button(backup_actions, text="Восстановить из Supabase…", command=self.restore_supabase_backup).pack(side="left", padx=7)
         ttk.Button(backup_actions, text="Отправить ожидающие копии", command=self.upload_pending_backups_now).pack(side="left")
         backup_actions2 = ttk.Frame(backups, style="Panel.TFrame")
         backup_actions2.pack(fill="x", pady=(2, 0))
         ttk.Button(backup_actions2, text="Открыть папку копий", command=self.open_backup_folder).pack(side="left")
+        ttk.Button(backup_actions2, text="Восстановить из Supabase…", command=self.restore_supabase_backup).pack(side="left", padx=7)
         ttk.Button(backup_actions2, text="Сохранить настройки копирования", command=self.save_backup_settings).pack(side="left", padx=7)
         self.backup_status_var = tk.StringVar(value="Папка резервных копий: " + str(self._backup_directory()))
         ttk.Label(backups, textvariable=self.backup_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(6, 0))
@@ -4041,10 +4041,22 @@ class MoyaIshkaApp:
             remote_name = f"{source.stem}_{encrypted_hash}.mibak"
             remote_path = f"{client.user_id}/{remote_name}"
             existing = next(
-                (item for item in client.list_backup_files()
-                 if item.get("path") == remote_path and int(item.get("size", 0)) == encrypted_size),
+                (item for item in client.list_backup_files() if item.get("path") == remote_path),
                 None,
             )
+            if existing and int(existing.get("size", 0)) != encrypted_size:
+                client.delete_backup_file(remote_path)
+                existing = None
+            if existing:
+                # A matching file name is not enough: authenticate the bytes already in Storage.
+                verify_existing = encrypted_path.with_name(encrypted_path.name + ".existing-check")
+                try:
+                    client.download_backup_file(remote_path, verify_existing)
+                except SupabaseBackupError:
+                    client.delete_backup_file(remote_path)
+                    existing = None
+                finally:
+                    verify_existing.unlink(missing_ok=True)
             if not existing:
                 client.prune_backup_files(max(1, int(retention) - 1))
                 client.upload_backup_file(

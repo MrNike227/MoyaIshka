@@ -84,6 +84,8 @@ class BackupManagerTests(unittest.TestCase):
                 "backup_cloud_enabled": True,
                 "backup_retention_count": 14,
                 "backup_cloud_retention_count": 30,
+                "backup_supabase_enabled": True,
+                "backup_supabase_retention_count": 14,
             }),
             encoding="utf-8",
         )
@@ -95,6 +97,8 @@ class BackupManagerTests(unittest.TestCase):
         self.assertTrue(restored_config["backup_cloud_enabled"])
         self.assertEqual(restored_config["backup_retention_count"], 14)
         self.assertEqual(restored_config["backup_cloud_retention_count"], 30)
+        self.assertTrue(restored_config["backup_supabase_enabled"])
+        self.assertEqual(restored_config["backup_supabase_retention_count"], 14)
         self.assertEqual(restored_config["memory"], ["помнить факт"])
         self.assertEqual(self._read_database(), "исходный диалог")
         self.assertTrue((self.root / "skills" / "skill.json").is_file())
