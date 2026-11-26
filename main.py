@@ -675,6 +675,7 @@ class MoyaIshkaApp:
         self._last_update_check_day = ""
         self.backup_working = False
         self.backup_upload_working = False
+        self.backup_migration_lock = threading.Lock()
         self.cloud_backup_dialog: tk.Toplevel | None = None
         self.cloud_backup_listbox: tk.Listbox | None = None
         self.cloud_backup_status_var: tk.StringVar | None = None
@@ -3787,6 +3788,15 @@ class MoyaIshkaApp:
         configured = str(self.config.get("backup_dir", "")).strip()
         return Path(configured).expanduser().resolve() if configured else default_backup_directory()
 
+    def _migrate_legacy_backups_once(self, destination: Path) -> tuple[int, int]:
+        with self.backup_migration_lock:
+            if bool(self.config.get("backup_legacy_migrated", False)):
+                return 0, 0
+            copied, skipped = copy_verified_backups(DATA_DIR / "backups", destination)
+            self.config["backup_legacy_migrated"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+            return copied, skipped
+
     def choose_backup_directory(self) -> None:
         current = self._backup_directory()
         initial = current if current.is_dir() else current.parent
@@ -3817,8 +3827,7 @@ class MoyaIshkaApp:
             backup_dir.mkdir(parents=True, exist_ok=True)
             if not backup_dir.is_dir():
                 raise OSError("Выбранный путь не является папкой.")
-            if not bool(self.config.get("backup_legacy_migrated", False)):
-                legacy_copied, legacy_skipped = copy_verified_backups(DATA_DIR / "backups", backup_dir)
+            legacy_copied, legacy_skipped = self._migrate_legacy_backups_once(backup_dir)
         except Exception as exc:
             messagebox.showerror("Резервное копирование", f"Не удалось сохранить папку копий или параметры: {exc}")
             return False
@@ -4011,6 +4020,15 @@ class MoyaIshkaApp:
         *,
         automatic: bool,
     ) -> tuple[Path | None, str]:
+        migration_note = ""
+        try:
+            migrated, skipped = self._migrate_legacy_backups_once(backup_dir)
+            if migrated:
+                migration_note = f"Перенесено старых резервных копий: {migrated}."
+            if skipped:
+                migration_note = (migration_note + " " if migration_note else "") + f"Повреждённых старых архивов пропущено: {skipped}."
+        except Exception as exc:
+            migration_note = f"Старые архивы пока не перенесены: {exc}"
         # Pending archives must not be deleted by local retention before they reach Drive.
         effective_retention = max(retention, len(self._backup_queue_items()) + 1) if cloud_enabled else retention
         if automatic:
@@ -4022,7 +4040,8 @@ class MoyaIshkaApp:
                 DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
             )
         if not cloud_enabled:
-            return archive, "Загрузка в Google Drive выключена." if archive else ""
+            note = "Загрузка в Google Drive выключена." if archive else ""
+            return archive, " ".join(part for part in (migration_note, note) if part)
         if archive is not None:
             self._queue_backup_upload(archive)
         if not package:
@@ -4036,6 +4055,7 @@ class MoyaIshkaApp:
             note = f"В Google Drive подтверждена загрузка: {uploaded}; в очереди осталось: {pending_count}."
         else:
             note = f"Ожидают отправки в Google Drive: {pending_count}." if pending_count else "В Google Drive уже есть актуальные копии."
+        note = " ".join(part for part in (migration_note, note) if part)
         return archive, note
 
     def create_local_backup(self) -> None:
