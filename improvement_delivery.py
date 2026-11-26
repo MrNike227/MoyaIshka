@@ -118,7 +118,7 @@ def save_change_bundle(
         raise TypeError("Содержимое предложения должно быть текстом.")
     original_bytes = original_text.encode("utf-8")
     updated_bytes = updated_text.encode("utf-8")
-    normalized_patch_text = patch_text.rstrip() + "\n"
+    normalized_patch_text = patch_text.rstrip("\r\n") + "\n"
     patch_bytes = normalized_patch_text.encode("utf-8")
     if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES or len(patch_bytes) > MAX_PROPOSAL_FILE_BYTES:
         raise ValueError("Файл предложения слишком большой (максимум 2 МБ).")
@@ -247,6 +247,8 @@ _CHAT_IDEA_MARKERS = (
     re.compile(r"\bможно\s+(?:ли\s+)?(?:улучшить|добавить|доработать|оптимизировать)\b", re.IGNORECASE),
     re.compile(r"\b(?:нужно|надо|стоит)\s+(?:добавить|улучшить|доработать|исправить)\b", re.IGNORECASE),
     re.compile(r"\b(?:хочу\s*,?\s*чтобы|хотелось\s+бы)\b", re.IGNORECASE),
+    re.compile(r"\bя\s+хочу\s+(?:добавить|улучшить|доработать|исправить)\b", re.IGNORECASE),
+    re.compile(r"\bдавайте\s+(?:добавим|улучшим|доработаем|исправим)\b", re.IGNORECASE),
     re.compile(r"\bбыло\s+бы\s+(?:удобно|полезно|хорошо)\b", re.IGNORECASE),
     re.compile(r"\bне\s+хватает\b", re.IGNORECASE),
 )
