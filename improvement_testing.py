@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from improvement_delivery import _safe_relative_path, _write_text_atomic
+from self_improvement import apply_unified_diff
 
 class ProposalTestError(RuntimeError):
     """Proposal integrity or test execution error."""
@@ -24,10 +25,14 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     if not bundle.is_dir() or not source.is_dir():
         raise ProposalTestError("Не найдена папка предложения или исходников.")
     manifest_path = bundle / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_size > 128 * 1024:
+        raise ProposalTestError("Манифест предложения отсутствует, слишком велик или является ссылкой.")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ProposalTestError(f"Манифест предложения повреждён: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ProposalTestError("Манифест предложения имеет неверный формат.")
     entries = manifest.get("files")
     if manifest.get("schema") != 1 or not isinstance(entries, list) or not entries or len(entries) > 10:
         raise ProposalTestError("Неподдерживаемый формат или пустой список файлов.")
@@ -37,9 +42,15 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     patch_path = (bundle / "changes.patch").resolve()
     if bundle not in patch_path.parents or not patch_path.is_file():
         raise ProposalTestError("Файл diff предложения не найден.")
+    if patch_path.stat().st_size > 2 * 1024 * 1024:
+        raise ProposalTestError("Размер diff превышает безопасный лимит 2 МБ.")
     patch_bytes = patch_path.read_bytes()
     if len(patch_bytes) != patch_meta.get("size") or _sha256(patch_bytes) != patch_meta.get("sha256"):
         raise ProposalTestError("Контрольная сумма diff не совпадает.")
+    try:
+        patch_text = patch_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProposalTestError("Файл diff не является текстом UTF-8.") from exc
     checked, total = [], 0
     for entry in entries:
         try:
@@ -65,7 +76,25 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
             compile(new.decode("utf-8"), relative.as_posix(), "exec")
         except Exception as exc:
             raise ProposalTestError(f"Ошибка синтаксиса {relative.as_posix()}: {exc}") from exc
-        checked.append((relative, candidate))
+        checked.append((relative, candidate, old, new))
+    patch_matches = []
+    for relative, _candidate, original_bytes, updated_bytes in checked:
+        try:
+            original_text = original_bytes.decode("utf-8")
+            updated_text = updated_bytes.decode("utf-8")
+            reconstructed = apply_unified_diff(
+                original_text, patch_text, relative.as_posix(),
+            )
+        except (UnicodeDecodeError, ValueError):
+            continue
+        normalize = lambda value: value.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        if normalize(reconstructed) == normalize(updated_text):
+            patch_matches.append(relative.as_posix())
+    if len(patch_matches) != 1:
+        raise ProposalTestError(
+            "Сохранённый diff не соответствует ровно одному изменённому файлу. "
+            "Пакет предложения повреждён или diff устарел."
+        )
     report: dict[str, Any] = {
         "schema": 1, "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "passed": False, "checked_files": len(checked), "tests_exit_code": None,
@@ -78,7 +107,7 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
                 ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
                 "build", "dist", "*.pyc", "*.db", "*.sqlite",
             ))
-            for relative, candidate in checked:
+            for relative, candidate, _original, _updated in checked:
                 destination = sandbox / Path(*relative.parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(candidate, destination)
