@@ -5562,7 +5562,14 @@ class MoyaIshkaApp:
             if not silent:
                 messagebox.showerror("Саморазвитие", error)
             return
-        source = target.read_text(encoding="utf-8")
+        try:
+            source = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            error = f"Не удалось прочитать файл {relative}: {exc}"
+            self.improve_status_var.set(error)
+            if not silent:
+                messagebox.showerror("Саморазвитие", error)
+            return
         review_prompt = "Проведи автоматический анализ качества, надёжности, безопасности и производительности кода. Предложи улучшения."
         try:
             model_context = build_model_source_context(source, review_prompt, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
@@ -5599,8 +5606,8 @@ class MoyaIshkaApp:
             chat_ideas = []
         if chat_ideas:
             ideas_text = "\n".join(
-                f"{index}. {item['text']}"
-                for index, item in enumerate(chat_ideas[-8:], 1)
+                f"{index}. {item['text'][:700]}"
+                for index, item in enumerate(chat_ideas[-5:], 1)
             )
             user += (
                 "\n\nПОЖЕЛАНИЯ ПОЛЬЗОВАТЕЛЯ ИЗ ЧАТА:\n"
@@ -5671,7 +5678,11 @@ class MoyaIshkaApp:
         if project not in target.parents or not target.is_file() or target.suffix.lower() != ".py":
             messagebox.showerror("Саморазвитие", "Выбранный файл не входит в список разрешённых Python-файлов проекта.")
             return
-        source = target.read_text(encoding="utf-8")
+        try:
+            source = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            messagebox.showerror("Саморазвитие", f"Не удалось прочитать файл {relative}: {exc}")
+            return
         try:
             model_context = build_model_source_context(source, prompt_text, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
         except ValueError as exc:
