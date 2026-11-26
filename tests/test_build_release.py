@@ -14,6 +14,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("dist\\MoyaIshka\\MoyaIshka.exe", build)
         self.assertIn("package_onedir.py", build)
         self.assertIn("dist\\MoyaIshka.zip", build)
+        self.assertIn("api-ms-win-crt-", build)
+        self.assertIn("ucrtbase.dll", build)
 
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -190,6 +192,11 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("context_engine.py", source)
         self.assertTrue((ROOT / "tests" / "test_context_engine.py").is_file())
 
+    def test_workflow_parses_folder_updater_with_windows_powershell(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("Validate PowerShell folder updater syntax", workflow)
+        self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", workflow)
+
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
         self.assertIn("validate_app_directory", helper)
@@ -203,6 +210,7 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "package_onedir.py").read_text(encoding="utf-8")
         self.assertIn("build_manifest.json", source)
         self.assertIn("sha256", source)
+        self.assertIn('stream.reconfigure(encoding="utf-8"', source)
         self.assertIn("MoyaIshka.zip", (ROOT / "updater.py").read_text(encoding="utf-8"))
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):

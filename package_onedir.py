@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import zipfile
 from pathlib import Path
 
@@ -29,7 +30,7 @@ def build_package(dist_dir: Path, output: Path, version: str) -> Path:
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path}")
-        if path.is_file() and path.name != "build_manifest.json":
+        if path.is_file() and path.relative_to(root).as_posix() != "build_manifest.json":
             files.append({
                 "path": path.relative_to(root).as_posix(),
                 "size": path.stat().st_size,
@@ -63,6 +64,9 @@ def build_package(dist_dir: Path, output: Path, version: str) -> Path:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)

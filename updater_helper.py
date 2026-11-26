@@ -686,7 +686,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
     for path in root.rglob("*"):
         if path.is_symlink():
             raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
-        if path.is_file() and path.name != "build_manifest.json":
+        if path.is_file() and path.relative_to(root).as_posix() != "build_manifest.json":
             actual_files.add(path.relative_to(root).as_posix().casefold())
     if actual_files != seen:
         missing = sorted(seen - actual_files)

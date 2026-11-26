@@ -105,6 +105,8 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
 if not exist "dist\MoyaIshka\MoyaIshka.exe" goto failed
+%PY% -c "from pathlib import Path; root=Path('dist/MoyaIshka/_internal'); removed=[p for p in root.rglob('*.dll') if p.name.casefold() == 'ucrtbase.dll' or p.name.casefold().startswith('api-ms-win-crt-')]; [p.unlink() for p in removed]; print('Removed build-host UCRT/API-set DLLs:', len(removed))"
+if errorlevel 1 goto failed
 
 %PY% verify_pe_dependencies.py "dist\MoyaIshka"
 if errorlevel 1 goto dependency_failed

@@ -65,6 +65,31 @@ jobs:
             }
           }
 
+      - name: Validate PowerShell folder updater syntax
+        shell: powershell
+        run: |
+          python -c "from pathlib import Path; from updater_helper import _directory_updater_script; Path('updater_directory_helper.ps1').write_text(_directory_updater_script(), encoding='utf-8-sig')"
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'updater_directory_helper.ps1').Path, [ref]$tokens, [ref]$errors)
+          Remove-Item 'updater_directory_helper.ps1' -Force
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'PowerShell folder updater has syntax errors.'
+          }
+
+      - name: Ensure Windows UCRT is not bundled
+        shell: pwsh
+        run: |
+          $runtime = 'dist/MoyaIshka/_internal'
+          if (Test-Path (Join-Path $runtime 'ucrtbase.dll')) {
+            throw 'ucrtbase.dll must be resolved from Windows, not the application folder.'
+          }
+          $apiSet = @(Get-ChildItem -LiteralPath $runtime -Filter 'api-ms-win-crt-*.dll' -File -Recurse)
+          if ($apiSet.Count -gt 0) {
+            throw 'Windows API-set DLLs must not be copied from the build host.'
+          }
+
       - name: Audit python311.dll PE dependency tree on Windows
         shell: pwsh
         run: python verify_pe_dependencies.py dist/MoyaIshka
