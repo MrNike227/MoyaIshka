@@ -70,6 +70,9 @@ class ImprovementDeliveryTests(unittest.TestCase):
             self.assertEqual(manifest["version"], "4.2.1")
             self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(updated.encode()).hexdigest())
             self.assertEqual(manifest["files"][0]["base_sha256"], hashlib.sha256(original.encode()).hexdigest())
+            patch_bytes = (bundle / "changes.patch").read_bytes()
+            self.assertEqual(manifest["patch"]["size"], len(patch_bytes))
+            self.assertEqual(manifest["patch"]["sha256"], hashlib.sha256(patch_bytes).hexdigest())
 
     def test_change_bundle_rejects_traversal_and_non_python_file(self):
         with tempfile.TemporaryDirectory() as temp:
