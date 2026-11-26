@@ -51,7 +51,7 @@ from supabase_backup import (
     MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
 )
 from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
+from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
@@ -3291,11 +3291,21 @@ class MoyaIshkaApp:
         if not base.startswith("http://") and not base.startswith("https://"):
             raise RuntimeError("Адрес Ollama должен начинаться с http:// или https://")
         pressure = bool(settings.get("resource_pressure", False))
+        self_improvement = str(settings.get("task_profile", "")).casefold() == "self_improvement"
         cpu_count = os.cpu_count() or 4
         logical_threads = 2 if pressure else max(3, min(6, cpu_count // 2))
-        context_window = 4096 if pressure else 6144
-        max_tokens = 1024 if pressure else 2048
-        num_batch = 128 if pressure else 256
+        if self_improvement:
+            # Large source-code prompts need more context; reduce batch size for
+            # 8 GB GPUs and allow enough time for a local 3B model to answer.
+            context_window = 4096 if pressure else 8192
+            max_tokens = 1024 if pressure else 2048
+            num_batch = 128
+            request_timeout = 900
+        else:
+            context_window = 4096 if pressure else 6144
+            max_tokens = 1024 if pressure else 2048
+            num_batch = 128 if pressure else 256
+            request_timeout = 240
         conversation = [dict(message) for message in messages]
         parts: list[str] = []
         for attempt in range(3):
@@ -3312,7 +3322,7 @@ class MoyaIshkaApp:
                     "num_predict": max_tokens,
                 },
             }
-            data = post_json(base + "/api/chat", payload, timeout=240)
+            data = post_json(base + "/api/chat", payload, timeout=request_timeout)
             try:
                 piece = str(data["message"]["content"]).strip()
             except (KeyError, TypeError) as exc:
@@ -5441,6 +5451,8 @@ class MoyaIshkaApp:
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": 0.15,
+            "task_profile": "self_improvement",
+            "resource_pressure": bool(self.resource_governor.snapshot().system_pressure),
         }
         mode = str(self.config.get("mode", "Авто"))
         errors = []
@@ -5516,7 +5528,7 @@ class MoyaIshkaApp:
         source = target.read_text(encoding="utf-8")
         review_prompt = "Проведи автоматический анализ качества, надёжности, безопасности и производительности кода. Предложи улучшения."
         try:
-            model_context = build_model_source_context(source, review_prompt)
+            model_context = build_model_source_context(source, review_prompt, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
         except ValueError as exc:
             self.improve_status_var.set(str(exc))
             if not silent:
@@ -5604,7 +5616,7 @@ class MoyaIshkaApp:
             return
         source = target.read_text(encoding="utf-8")
         try:
-            model_context = build_model_source_context(source, prompt_text)
+            model_context = build_model_source_context(source, prompt_text, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
         except ValueError as exc:
             messagebox.showerror("Саморазвитие", str(exc))
             return
@@ -5618,7 +5630,10 @@ class MoyaIshkaApp:
             "Вход может содержать полный файл или только точные фрагменты большого файла. "
             "Если показаны фрагменты, изменяй только их; номера строк в заголовках диапазонов — "
             "абсолютные номера исходного файла, используй их в @@. Все строки контекста и удаления "
-            "копируй без изменений. Не придумывай отсутствующий код. "
+            "копируй посимвольно из переданного фрагмента. Запрещены заглушки вроде "
+            "'# main.py original content', '# остальной код без изменений' и вымышленные строки. "
+            "Каждый блок @@ должен содержать минимум одну точную строку исходника; если её нет в контексте, "
+            "не выдумывай diff, а верни строку UNABLE_TO_CREATE_PATCH. "
             "Выводи только diff, начиная строками --- a/ИМЯ_ФАЙЛА и +++ b/ИМЯ_ФАЙЛА, затем блоки @@. "
             "Сохраняй совместимость с Python 3.10 и Windows 10."
         )
