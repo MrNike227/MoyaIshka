@@ -7,7 +7,9 @@ AppName=Моя ИИшка
 AppVersion=4.2.3
 AppPublisher=Моя ИИшка
 DisableProgramGroupPage=yes
-DefaultDirName={localappdata}\Programs\MoyaIshka
+DefaultDirName={localappdata}\Programs\MoyaIshka_Container\App
+UsePreviousAppDir=no
+UninstallFilesDir={app}\..\Uninstall
 DefaultGroupName=Моя ИИшка
 OutputDir=installer_output
 OutputBaseFilename=MoyaIshka_Setup
@@ -27,9 +29,9 @@ Name: "desktopicon"; Description: "Создать значок на рабоче
 
 [Dirs]
 ; Keep self-improvement data outside App so folder updates never delete it.
-Name: "{app}\\..\\Updates"; Flags: uninsneveruninstall
+Name: "{app}\..\Updates"; Flags: uninsneveruninstall
 ; Keep the uninstaller outside the folder replaced by the onedir updater.
-Name: "{app}\\..\\Uninstall"; Flags: uninsneveruninstall
+Name: "{app}\..\Uninstall"; Flags: uninsneveruninstall
 
 [Files]
 Source: "dist\MoyaIshka\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
