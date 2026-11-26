@@ -80,6 +80,12 @@ class ParsingTests(unittest.TestCase):
             path.write_text("Тестовый текст", encoding="utf-8")
             self.assertEqual(read_attachment(path), "Тестовый текст")
 
+    def test_chat_improvement_ideas_are_connected_to_send_and_analysis(self):
+        source = Path(main_module.__file__).read_text(encoding="utf-8")
+        self.assertIn("save_chat_improvement_idea(", source)
+        self.assertIn("load_chat_improvement_ideas(", source)
+        self.assertIn("идея сохранена для самоанализа", source)
+
     def test_attachment_size_is_limited(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "large.txt"
