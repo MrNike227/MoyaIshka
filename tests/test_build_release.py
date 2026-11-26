@@ -338,10 +338,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
 
-    def test_feature_pull_request_uses_single_ci_trigger(self):
+    def test_feature_branch_uses_single_push_ci_trigger(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("pull_request:", workflow)
-        self.assertNotIn("- 'feature/**'", workflow)
+        self.assertIn("- 'feature/**'", workflow)
+        self.assertNotIn("pull_request:", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)

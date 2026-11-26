@@ -4,12 +4,10 @@ on:
   push:
     branches:
       - main
+      - 'feature/**'
     tags:
       - 'v*'
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
 
 concurrency:
   group: moyaishka-onedir-${{ github.ref }}
