@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.8.5 onedir Windows application...
+echo Building Moya Ishka 4.1.9 onedir Windows application...
 
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
@@ -57,6 +57,7 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "voice_assistant.py;source_project" ^
   --add-data "voice_manager.py;source_project" ^
   --add-data "auto_memory.py;source_project" ^
+  --add-data "backup_manager.py;source_project" ^
   --add-data "avatar_widget.py;source_project" ^
   --add-data "plugin_manager.py;source_project" ^
   --add-data "self_improvement.py;source_project" ^
@@ -114,9 +115,9 @@ if errorlevel 1 goto dependency_failed
 if errorlevel 1 goto crypto_bundle_failed
 %PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/MoyaIshka/TEST_WINDOWS10.ps1')"
 if errorlevel 1 goto failed
-%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.1.8.5
+%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.1.9
 if errorlevel 1 goto failed
-%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.1.8.5')"
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.1.9')"
 if errorlevel 1 goto failed
 
 echo.

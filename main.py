@@ -29,6 +29,7 @@ from typing import Any
 
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
+from backup_manager import create_backup, maybe_create_daily_backup, restore_backup
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
@@ -59,7 +60,7 @@ from resource_governor import ResourceGovernor
 from context_engine import select_relevant_memories, trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.8.5"
+APP_VERSION = "4.1.9"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -115,6 +116,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "font_size": 12,
     "memory": [],
     "auto_memory": True,
+    "auto_backup_enabled": True,
+    "backup_retention_count": 7,
     "voice_tts": False,
     "voice_engine": "system",
     "tts_voice_id": "",
@@ -165,13 +168,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "context_engine.py",
+            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "backup_manager.py", "context_engine.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -651,6 +654,7 @@ class MoyaIshkaApp:
         self.staged_update_path: Path | None = None
         self.staged_update_version = ""
         self._last_update_check_day = ""
+        self.backup_working = False
         self.busy = False
         self.voice_busy = False
         self.voice_cancel_event: threading.Event | None = None
@@ -679,6 +683,7 @@ class MoyaIshkaApp:
         self.root.after(100, self._process_events)
         self.root.after(250, self._apply_windows_titlebar_theme)
         self.root.after(450, self._apply_high_dpi_windows_icon)
+        self.root.after(4500, self._schedule_automatic_backup)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
         if bool(self.config.get("self_improve_auto_enabled", False)):
@@ -1104,6 +1109,34 @@ class MoyaIshkaApp:
         ttk.Combobox(appearance_row, textvariable=self.font_family_var, state="readonly", values=["Segoe UI", "Arial", "Verdana"], width=14).pack(side="left")
         ttk.Label(appearance_row, text="Размер", style="Panel.TLabel").pack(side="left", padx=(18, 8))
         ttk.Combobox(appearance_row, textvariable=self.font_size_var, state="readonly", values=["10", "11", "12", "13", "14", "15", "16"], width=5).pack(side="left")
+
+        backups = ttk.LabelFrame(content, text="Резервные копии памяти и данных", padding=12)
+        backups.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            backups,
+            text="Ежедневно создаётся резервная копия истории диалогов, памяти ИИ, настроек, базы знаний, навыков и плагинов. Перед восстановлением текущие данные тоже сохраняются. Архивы хранятся локально и не зашифрованы отдельно — не передавай их посторонним. Сессии Google Drive и Supabase не копируются: они привязаны к текущей Windows-учётной записи.",
+            style="MutedPanel.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        backup_options.pack(fill="x", pady=(0, 6))
+        self.auto_backup_var = tk.BooleanVar(value=bool(self.config.get("auto_backup_enabled", True)))
+        self._make_checkbox(
+            backup_options, "Создавать резервную копию автоматически каждый день",
+            self.auto_backup_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(backup_options, text="Хранить копий:", style="Panel.TLabel").pack(side="left", padx=(18, 6))
+        self.backup_retention_var = tk.StringVar(value=str(self.config.get("backup_retention_count", 7)))
+        ttk.Combobox(
+            backup_options, textvariable=self.backup_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        backup_actions = ttk.Frame(backups, style="Panel.TFrame")
+        backup_actions.pack(fill="x", pady=(2, 4))
+        ttk.Button(backup_actions, text="Создать копию сейчас", style="Accent.TButton", command=self.create_local_backup).pack(side="left")
+        ttk.Button(backup_actions, text="Восстановить из копии…", command=self.restore_local_backup).pack(side="left", padx=8)
+        ttk.Button(backup_actions, text="Открыть папку копий", command=self.open_backup_folder).pack(side="left")
+        self.backup_status_var = tk.StringVar(value="Папка резервных копий: " + str(DATA_DIR / "backups"))
+        ttk.Label(backups, textvariable=self.backup_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(6, 0))
 
         bottom = ttk.Frame(content)
         bottom.pack(fill="x", pady=(4, 10))
@@ -3100,7 +3133,44 @@ class MoyaIshkaApp:
         try:
             while True:
                 event, payload = self.events.get_nowait()
-                if event == "reply":
+                if event == "backup_created":
+                    self.backup_working = False
+                    self.backup_status_var.set(f"Резервная копия создана: {payload}")
+                    self._set_status("Резервная копия данных создана")
+                elif event == "backup_auto_result":
+                    self.backup_working = False
+                    if payload:
+                        self.backup_status_var.set(f"Автоматическая копия создана: {payload}")
+                    elif hasattr(self, "backup_status_var"):
+                        self.backup_status_var.set("На сегодня резервная копия уже существует.")
+                elif event == "backup_error":
+                    self.backup_working = False
+                    self.backup_status_var.set("Не удалось создать резервную копию.")
+                    messagebox.showerror("Резервное копирование", str(payload))
+                elif event == "backup_restore_complete":
+                    self.backup_working = False
+                    restored, detail = payload
+                    try:
+                        self._reload_after_backup_restore()
+                    except Exception as exc:
+                        messagebox.showerror(
+                            "Восстановление данных",
+                            "Не удалось перечитать восстановленные данные. Закрой и снова запусти Мою ИИшку.\n\n" + str(exc),
+                        )
+                    else:
+                        if restored:
+                            self.backup_status_var.set("Данные успешно восстановлены.")
+                            self._set_status("Резервная копия восстановлена")
+                            messagebox.showinfo(
+                                "Восстановление завершено",
+                                "История, память, настройки и пользовательские данные восстановлены. "
+                                "Перед восстановлением создана страховочная копия.\n\n"
+                                f"Источник: {detail}",
+                            )
+                        else:
+                            self.backup_status_var.set("Восстановление не выполнено. Текущие данные сохранены.")
+                            messagebox.showerror("Восстановление не выполнено", str(detail))
+                elif event == "reply":
                     conversation_id, answer, source = payload
                     self.store.add_message(conversation_id, "assistant", answer, source)
                     if conversation_id == self.current_chat_id:
@@ -3617,6 +3687,131 @@ class MoyaIshkaApp:
             self.research_interval_var.set(str(self.config.get("research_interval_hours", 12)))
             self.research_results_var.set(str(self.config.get("research_results_limit", 5)))
             self.research_fetch_var.set(str(self.config.get("research_fetch_pages", 3)))
+
+    def save_backup_settings(self) -> None:
+        try:
+            retention = max(3, min(30, int(self.backup_retention_var.get())))
+        except (ValueError, AttributeError):
+            retention = 7
+        self.config["auto_backup_enabled"] = bool(self.auto_backup_var.get())
+        self.config["backup_retention_count"] = retention
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.backup_status_var.set(
+            f"Автокопирование: {'включено' if self.config['auto_backup_enabled'] else 'выключено'} · "
+            f"хранится до {retention} копий · {DATA_DIR / 'backups'}"
+        )
+
+    def open_backup_folder(self) -> None:
+        self._open_local_folder(DATA_DIR / "backups")
+
+    def create_local_backup(self) -> None:
+        if self.backup_working:
+            self.backup_status_var.set("Операция с резервной копией уже выполняется.")
+            return
+        self.save_backup_settings()
+        self.backup_working = True
+        self.backup_status_var.set("Создаю резервную копию…")
+        retention = int(self.config.get("backup_retention_count", 7))
+        threading.Thread(target=self._manual_backup_worker, args=(retention,), daemon=True).start()
+
+    def _manual_backup_worker(self, retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            path = create_backup(DATA_DIR, app_version=APP_VERSION, retention_count=retention)
+            self.events.put(("backup_created", str(path)))
+        except Exception as exc:
+            self.events.put(("backup_error", str(exc)))
+
+    def _schedule_automatic_backup(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        if bool(self.config.get("auto_backup_enabled", True)) and not self.backup_working:
+            self.backup_working = True
+            retention = int(self.config.get("backup_retention_count", 7))
+            threading.Thread(target=self._automatic_backup_worker, args=(retention,), daemon=True).start()
+        self.root.after(6 * 60 * 60 * 1000, self._schedule_automatic_backup)
+
+    def _automatic_backup_worker(self, retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            path = maybe_create_daily_backup(DATA_DIR, app_version=APP_VERSION, retention_count=retention)
+            self.events.put(("backup_auto_result", str(path) if path else ""))
+        except Exception as exc:
+            self.events.put(("backup_error", str(exc)))
+
+    def restore_local_backup(self) -> None:
+        if self.backup_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning(
+                "Восстановление",
+                "Сначала дождись завершения ответа ИИ, голосовой операции, исследования и облачной синхронизации.",
+            )
+            return
+        folder = DATA_DIR / "backups"
+        selected = filedialog.askopenfilename(
+            title="Выбери резервную копию Моей ИИшки",
+            initialdir=str(folder if folder.exists() else DATA_DIR),
+            filetypes=[("Резервные копии Моя ИИшка", "*.zip")],
+        )
+        if not selected:
+            return
+        if not messagebox.askyesno(
+            "Восстановить резервную копию",
+            "Текущая история, память, настройки, база знаний, навыки и плагины будут заменены данными из выбранного архива. "
+            "Перед заменой программа создаст отдельную страховочную копию. Продолжить?",
+        ):
+            return
+        self.save_backup_settings()
+        self.backup_working = True
+        self.backup_status_var.set("Проверяю архив и подготавливаю безопасное восстановление…")
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        retention = int(self.config.get("backup_retention_count", 7))
+        threading.Thread(
+            target=self._restore_backup_worker, args=(selected, retention), daemon=True,
+        ).start()
+
+    def _restore_backup_worker(self, archive_path: str, retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True,
+            )
+            self.events.put(("backup_restore_complete", (True, str(restored.get("source", archive_path)))))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+
+    def _reload_after_backup_restore(self) -> None:
+        saved = load_json(CONFIG_PATH, {})
+        self.config = dict(DEFAULT_CONFIG)
+        if isinstance(saved, dict):
+            self.config.update(saved)
+        self.api_key = unprotect_api_key(self.config)
+        self.store = Store(DB_PATH)
+        self.research_library = ResearchLibrary(DATA_DIR / "research_library.json", max_items=1000)
+        self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
+        self.current_chat_id = self.store.ensure_conversation()
+        self.cloud_session = load_protected_session(CLOUD_SESSION_PATH)
+        self.google_drive_session = load_protected_session(GOOGLE_DRIVE_SESSION_PATH)
+        self.cloud_session_ready = bool(
+            self.cloud_session.get("session", {}).get("access_token")
+            and self.cloud_session.get("e2e_passphrase")
+        )
+        self.google_drive_session_ready = self._is_google_drive_session_ready(self.google_drive_session)
+        self._reload_settings_controls()
+        if hasattr(self, "auto_backup_var"):
+            self.auto_backup_var.set(bool(self.config.get("auto_backup_enabled", True)))
+            self.backup_retention_var.set(str(self.config.get("backup_retention_count", 7)))
+        self._refresh_chat_list()
+        self._render_current_chat()
+        self._refresh_memory_list()
+        self._refresh_research_list()
+        self._refresh_skill_list()
 
     def test_online(self) -> None:
         if not self.api_key_var.get().strip():
@@ -4926,8 +5121,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.5-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.5-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.9-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.9-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
