@@ -313,14 +313,46 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Фактический состав папки не совпадает", verify)
 
     def test_directory_updater_ignores_only_windows_shell_metadata(self):
+        import hashlib
+        import json
         from updater_helper import validate_app_directory
+
         with tempfile.TemporaryDirectory() as temp:
-            app = write_fake_app(Path(temp))
+            app = Path(temp) / "MoyaIshka"
+            internal = app / "_internal"
+            internal.mkdir(parents=True)
+            payloads = {
+                "MoyaIshka.exe": b"fake exe",
+                "_internal/python311.dll": b"python",
+                "_internal/vcruntime140.dll": b"runtime",
+                "_internal/vcruntime140_1.dll": b"runtime",
+                "_internal/msvcp140.dll": b"runtime",
+            }
+            entries = []
+            for relative, payload in payloads.items():
+                target = app / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                entries.append({
+                    "path": relative,
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                })
+            manifest = {
+                "schema": 1,
+                "version": "4.2.0",
+                "entrypoint": "MoyaIshka.exe",
+                "exe_sha256": hashlib.sha256(payloads["MoyaIshka.exe"]).hexdigest(),
+                "files": entries,
+            }
+            (app / "build_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
             (app / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
-            (app / "_internal" / "Thumbs.db").write_bytes(b"cache")
-            (app / "_internal" / "ehthumbs.db").write_bytes(b"cache")
+            (internal / "Thumbs.db").write_bytes(b"cache")
+            (internal / "ehthumbs.db").write_bytes(b"cache")
             self.assertEqual(validate_app_directory(app, "4.2.0")["version"], "4.2.0")
-            (app / "_internal" / "unexpected.dll").write_bytes(b"unexpected")
+
+            (internal / "unexpected.dll").write_bytes(b"unexpected")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
                 validate_app_directory(app, "4.2.0")
 
