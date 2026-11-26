@@ -205,15 +205,20 @@ def project_dir() -> Path:
 
 def editable_project_files() -> list[str]:
     root = project_dir()
+    ignored_directories = {
+        "__pycache__", ".venv", "venv", "tests", ".git", ".github",
+        "build", "dist", ".pytest_cache", ".mypy_cache",
+    }
     result = []
     for path in root.rglob("*.py"):
-        if any(part in {"__pycache__", ".venv", "venv", "tests"} for part in path.parts):
-            continue
         try:
-            rel = path.relative_to(root).as_posix()
+            relative = path.relative_to(root)
         except ValueError:
             continue
-        if rel in {"updater_helper.py"}:
+        if any(part.casefold() in ignored_directories for part in relative.parts):
+            continue
+        rel = relative.as_posix()
+        if rel == "updater_helper.py":
             continue
         result.append(rel)
     return sorted(result)
@@ -258,8 +263,8 @@ def extract_unified_diff(response: str, expected_path: str) -> str:
             body.append(line if line.endswith("\n") else line + "\n")
         else:
             break
-    if not any(line.startswith("+") for line in body) or not any(line.startswith("-") for line in body):
-        raise ValueError("В diff нет парных строк добавления и удаления.")
+    if not any(line.startswith(("+", "-")) for line in body):
+        raise ValueError("В diff нет строк добавления или удаления.")
     return "--- a/" + expected + "\n+++ b/" + expected + "\n" + "".join(body)
 
 
@@ -579,8 +584,15 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
 
 def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool = True) -> Path:
     relative = Path(relative_path)
-    if relative.is_absolute() or ".." in relative.parts or relative.suffix.lower() not in EDITABLE_SUFFIXES:
-        raise ValueError("Разрешено изменять только Python-файлы проекта.")
+    relative_parts = tuple(part.casefold() for part in relative.parts)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or not relative.parts
+        or any(part in {".git", ".github"} for part in relative_parts)
+        or relative.suffix.lower() not in EDITABLE_SUFFIXES
+    ):
+        raise ValueError("Разрешено изменять только Python-файлы проекта вне служебных папок.")
     root = project_dir()
     target = (root / relative).resolve()
     if root.resolve() not in target.parents or not target.is_file():

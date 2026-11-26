@@ -16,6 +16,9 @@ from typing import Any
 
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PACKAGE_FILES = 20000
+DOWNLOAD_CHUNK_BYTES = 50 * 1024 * 1024
+FILE_HASH_CHUNK_BYTES = 50 * 1024 * 1024
+EXTRACT_CHUNK_BYTES = 50 * 1024 * 1024
 _RETRYABLE_WINDOWS_LOCK_ERRORS = {5, 32, 33}
 
 
@@ -88,7 +91,7 @@ def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES
                 if announced > max_bytes:
                     raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
             while True:
-                chunk = response.read(1024 * 1024)
+                chunk = response.read(DOWNLOAD_CHUNK_BYTES)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -148,7 +151,7 @@ def _safe_member_path(name: str) -> tuple[str, ...]:
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        for chunk in iter(lambda: stream.read(FILE_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -168,6 +171,7 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
     if not isinstance(entries, list) or not entries or len(entries) > MAX_PACKAGE_FILES:
         raise RuntimeError("Манифест содержит неверный список файлов.")
     seen: set[str] = set()
+    exe_hash = ""
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Повреждён элемент манифеста.")
@@ -186,8 +190,11 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
         if path.stat().st_size != int(entry.get("size", -1)):
             raise RuntimeError(f"Размер файла пакета не совпадает: {relative}.")
         expected_hash = str(entry.get("sha256", "")).lower()
-        if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or _sha256_file(path) != expected_hash:
+        actual_hash = _sha256_file(path)
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or actual_hash != expected_hash:
             raise RuntimeError(f"Контрольная сумма файла пакета не совпадает: {relative}.")
+        if key == "moyaishka.exe":
+            exe_hash = actual_hash
     actual_files: set[str] = set()
     for path in root.rglob("*"):
         if path.is_symlink():
@@ -203,8 +210,7 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
         if extra:
             details.append("лишние: " + ", ".join(extra[:8]))
         raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
-    exe = root / "MoyaIshka.exe"
-    if not exe.is_file() or _sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
+    if not exe_hash or exe_hash.lower() != str(manifest.get("exe_sha256", "")).lower():
         raise RuntimeError("SHA-256 главного EXE не совпадает с манифестом.")
     for name in ("python311.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
         if not (root / "_internal" / name).is_file():
@@ -242,7 +248,7 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(item) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    shutil.copyfileobj(source, output, length=EXTRACT_CHUNK_BYTES)
         validate_app_folder(app_dir, expected_version)
         if final_dir.exists():
             shutil.rmtree(final_dir)

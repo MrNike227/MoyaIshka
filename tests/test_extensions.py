@@ -1,11 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff, build_model_source_context, extract_unified_diff, parse_improvement_suggestions
+from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, parse_improvement_suggestions
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -56,6 +57,28 @@ class PatchTests(unittest.TestCase):
         updated = apply_unified_diff(source, patch, "main.py")
         self.assertIn("return 'PROFILE'", updated)
 
+    def test_editable_file_scan_uses_project_relative_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "tests" / "MoyaIshka"
+            (root / "pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / ".git" / "hooks").mkdir(parents=True)
+            (root / ".github").mkdir()
+            (root / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "pkg" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+            (root / "tests" / "test_module.py").write_text("VALUE = 3\n", encoding="utf-8")
+            (root / ".git" / "hooks" / "hook.py").write_text("VALUE = 4\n", encoding="utf-8")
+            (root / ".github" / "helper.py").write_text("VALUE = 5\n", encoding="utf-8")
+            previous = os.environ.get("MOYA_PROJECT_DIR")
+            os.environ["MOYA_PROJECT_DIR"] = str(root)
+            try:
+                self.assertEqual(editable_project_files(), ["main.py", "pkg/module.py"])
+            finally:
+                if previous is None:
+                    os.environ.pop("MOYA_PROJECT_DIR", None)
+                else:
+                    os.environ["MOYA_PROJECT_DIR"] = previous
+
     def test_small_source_context_is_unchanged(self):
         source = "def answer():\n    return 42\n"
         self.assertEqual(build_model_source_context(source, "answer"), source)
@@ -82,6 +105,30 @@ class PatchTests(unittest.TestCase):
         response = "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-a\n+b\n"
         with self.assertRaises(ValueError):
             extract_unified_diff(response, "main.py")
+
+    def test_extract_unified_diff_accepts_insertion_only_changes(self):
+        original = "one\n two\n"
+        response = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,0 +2 @@\n+inserted\n"
+        )
+        patch = extract_unified_diff(response, "main.py")
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "one\ninserted\n two\n",
+        )
+
+    def test_extract_unified_diff_accepts_deletion_only_changes(self):
+        original = "remove me\nkeep me\n"
+        response = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1 +0,0 @@\n-remove me\n"
+        )
+        patch = extract_unified_diff(response, "main.py")
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "keep me\n",
+        )
 
     def test_extract_unified_diff_rejects_missing_hunk(self):
         with self.assertRaises(ValueError):
@@ -288,12 +335,26 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_422(self):
+    def test_application_release_version_is_423(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.2")
+        self.assertEqual(APP_VERSION, "4.2.3")
+
+    def test_saved_container_overrides_legacy_install_directory(self):
+        import main
+        with tempfile.TemporaryDirectory() as temp:
+            container = Path(temp) / "SelectedContainer"
+            app = object.__new__(main.MoyaIshkaApp)
+            app.config = {
+                "install_root_dir": str(container),
+                "install_dir": str(Path(temp) / "OldInstall"),
+            }
+            self.assertEqual(
+                app._selected_install_dir(),
+                (container / "App").resolve(),
+            )
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))

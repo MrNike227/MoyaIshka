@@ -4,10 +4,12 @@
 [Setup]
 AppId={{C6DBA092-A00B-4E45-9C02-67B8D543A2A1}
 AppName=Моя ИИшка
-AppVersion=4.2.2
+AppVersion=4.2.3
 AppPublisher=Моя ИИшка
 DisableProgramGroupPage=yes
-DefaultDirName={localappdata}\Programs\MoyaIshka
+DefaultDirName={localappdata}\Programs\MoyaIshka_Container\App
+UsePreviousAppDir=no
+UninstallFilesDir={app}\..\Uninstall
 DefaultGroupName=Моя ИИшка
 OutputDir=installer_output
 OutputBaseFilename=MoyaIshka_Setup
@@ -24,6 +26,12 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные значки:"; Flags: unchecked
+
+[Dirs]
+; Keep self-improvement data outside App so folder updates never delete it.
+Name: "{app}\..\Updates"; Flags: uninsneveruninstall
+; Keep the uninstaller outside the folder replaced by the onedir updater.
+Name: "{app}\..\Uninstall"; Flags: uninsneveruninstall
 
 [Files]
 Source: "dist\MoyaIshka\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

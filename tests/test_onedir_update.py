@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from package_onedir import build_package
+from package_onedir import build_package, SHA256_CHUNK_BYTES
 from updater import _extract_package, _safe_member_path, validate_app_folder
 from updater_helper import validate_app_directory, _directory_updater_script
 
@@ -43,23 +43,27 @@ class OnedirUpdateTests(unittest.TestCase):
     def test_large_package_download_streams_to_disk_and_checks_size(self):
         from unittest.mock import patch
         from io import BytesIO
-        from updater import _download_to
+        from updater import _download_to, DOWNLOAD_CHUNK_BYTES
 
         class FakeResponse:
             headers = {"Content-Length": "6"}
             def __init__(self):
                 self.stream = BytesIO(b"abcdef")
+                self.read_sizes = []
             def __enter__(self):
                 return self
             def __exit__(self, *_args):
                 return False
             def read(self, size=-1):
+                self.read_sizes.append(size)
                 return self.stream.read(size)
 
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "download.zip"
-            with patch("updater.urllib.request.urlopen", return_value=FakeResponse()):
+            response = FakeResponse()
+            with patch("updater.urllib.request.urlopen", return_value=response):
                 digest, size = _download_to("https://example.test/file", path, 10)
+            self.assertEqual(response.read_sizes, [DOWNLOAD_CHUNK_BYTES, DOWNLOAD_CHUNK_BYTES])
             self.assertEqual(size, 6)
             self.assertEqual(path.read_bytes(), b"abcdef")
             self.assertEqual(digest, hashlib.sha256(b"abcdef").hexdigest())
@@ -159,15 +163,35 @@ class OnedirUpdateTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), b"verified")
             self.assertFalse(source.exists())
 
-    def test_directory_updater_keeps_install_folder_in_place(self):
+    def test_directory_updater_installs_directly_without_full_intermediate_copy(self):
         script = _directory_updater_script()
+        self.assertIn("$stagedHash = VerifyFolder $StagedDir", script)
         self.assertIn("CopyDirectoryContents $TargetDir $BackupDir", script)
         self.assertIn("VerifyBackupCopy $TargetDir $BackupDir", script)
         self.assertIn("ClearDirectoryContents $TargetDir", script)
-        self.assertIn("CopyDirectoryContents $TempDir $TargetDir", script)
-        self.assertIn("VerifyFolder $TargetDir", script)
+        self.assertIn("CopyDirectoryContents $StagedDir $TargetDir", script)
+        self.assertIn("$ExeHash = VerifyFolder $TargetDir", script)
+        self.assertIn("if ($ExeHash -ne $stagedHash)", script)
+        self.assertNotIn("$TempDir", script)
+        self.assertNotIn("$copiedHash", script)
         self.assertNotIn("Move-Item -LiteralPath $TargetDir -Destination $BackupDir", script)
-        self.assertNotIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
+        self.assertIn("/MT:16", script)
+        self.assertNotIn("/MT:8", script)
+
+    def test_download_extract_and_hash_buffers_are_fifty_megabytes(self):
+        from updater import (
+            DOWNLOAD_CHUNK_BYTES, FILE_HASH_CHUNK_BYTES,
+            EXTRACT_CHUNK_BYTES, MAX_PACKAGE_BYTES,
+        )
+        from updater_helper import FILE_HASH_CHUNK_BYTES as INSTALL_HASH_CHUNK_BYTES
+
+        expected = 50 * 1024 * 1024
+        self.assertEqual(MAX_PACKAGE_BYTES, 2 * 1024 * 1024 * 1024)
+        self.assertEqual(DOWNLOAD_CHUNK_BYTES, expected)
+        self.assertEqual(FILE_HASH_CHUNK_BYTES, expected)
+        self.assertEqual(EXTRACT_CHUNK_BYTES, expected)
+        self.assertEqual(INSTALL_HASH_CHUNK_BYTES, expected)
+        self.assertEqual(SHA256_CHUNK_BYTES, expected)
 
     def test_archive_path_traversal_is_rejected(self):
         for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):

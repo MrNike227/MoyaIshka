@@ -10,11 +10,13 @@ import sys
 import zipfile
 from pathlib import Path
 
+SHA256_CHUNK_BYTES = 50 * 1024 * 1024
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        for chunk in iter(lambda: stream.read(SHA256_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 

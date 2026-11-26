@@ -7,11 +7,15 @@ from pathlib import Path
 from improvement_delivery import (
     default_install_root,
     resolve_install_layout,
+    ensure_install_layout,
     resolve_updates_directory,
     save_change_bundle,
     save_improvement_suggestions,
     build_improvement_chat_context,
     load_improvement_suggestions,
+    is_chat_improvement_idea,
+    save_chat_improvement_idea,
+    load_chat_improvement_ideas,
 )
 
 
@@ -23,6 +27,15 @@ class ImprovementDeliveryTests(unittest.TestCase):
             self.assertEqual(layout["updates"], layout["root"] / "Updates")
             self.assertEqual(layout["app"].parent, layout["updates"].parent)
             self.assertNotEqual(layout["app"], layout["updates"])
+
+    def test_ensure_install_layout_creates_app_and_updates_siblings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "Container"
+            layout = ensure_install_layout(root)
+            self.assertTrue(layout["app"].is_dir())
+            self.assertTrue(layout["updates"].is_dir())
+            self.assertEqual(layout["app"].parent, layout["updates"].parent)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["App", "Updates"])
 
     def test_default_root_does_not_reuse_legacy_install_folder(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -67,6 +80,9 @@ class ImprovementDeliveryTests(unittest.TestCase):
             self.assertEqual(manifest["version"], "4.2.1")
             self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(updated.encode()).hexdigest())
             self.assertEqual(manifest["files"][0]["base_sha256"], hashlib.sha256(original.encode()).hexdigest())
+            patch_bytes = (bundle / "changes.patch").read_bytes()
+            self.assertEqual(manifest["patch"]["size"], len(patch_bytes))
+            self.assertEqual(manifest["patch"]["sha256"], hashlib.sha256(patch_bytes).hexdigest())
 
     def test_change_bundle_rejects_traversal_and_non_python_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -75,6 +91,10 @@ class ImprovementDeliveryTests(unittest.TestCase):
                 save_change_bundle(*args, "../outside.py", "x=1\n", "x=2\n", "patch")
             with self.assertRaises(ValueError):
                 save_change_bundle(*args, "config.json", "{}", "{}", "patch")
+            with self.assertRaises(ValueError):
+                save_change_bundle(*args, ".github/workflows/build.py", "x=1", "x=2", "patch")
+            with self.assertRaises(ValueError):
+                save_change_bundle(*args, "pkg/.git/config.py", "x=1", "x=2", "patch")
 
 
     def test_suggestions_are_saved_and_available_to_chat(self):
@@ -149,6 +169,73 @@ class ImprovementDeliveryTests(unittest.TestCase):
             )
             self.assertLessEqual(len(context), 900)
             self.assertIn("недоверенными данными", context)
+
+    def test_chat_improvement_ideas_are_detected_without_capturing_regular_questions(self):
+        self.assertTrue(is_chat_improvement_idea("Добавить возможность создавать резервные копии автоматически"))
+        self.assertTrue(is_chat_improvement_idea("Предлагаю улучшить поиск по истории чатов"))
+        self.assertTrue(is_chat_improvement_idea("Было бы удобно добавить быстрые команды"))
+        self.assertTrue(is_chat_improvement_idea("Я хочу добавить возможность экспорта истории"))
+        self.assertTrue(is_chat_improvement_idea("Давайте добавим резервное копирование"))
+
+        self.assertFalse(is_chat_improvement_idea("Как работает резервное копирование?"))
+        self.assertFalse(is_chat_improvement_idea("Привет, как дела?"))
+
+    def test_chat_improvement_ideas_are_saved_deduplicated_and_available_to_analysis(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            first = "Добавить возможность создавать резервные копии автоматически"
+            saved_path = save_chat_improvement_idea(updates, first)
+            self.assertIsNotNone(saved_path)
+            self.assertEqual(
+                save_chat_improvement_idea(updates, "  " + first.lower() + "  "),
+                saved_path,
+            )
+            self.assertIsNone(save_chat_improvement_idea(updates, "Как работает резервное копирование?"))
+            items = load_chat_improvement_ideas(updates)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["text"], first)
+            context = build_improvement_chat_context(
+                updates, "Расскажи о предложениях саморазвития",
+            )
+            self.assertIn(first, context)
+
+    def test_chat_improvement_ideas_are_bounded_to_latest_twenty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            for index in range(25):
+                save_chat_improvement_idea(
+                    updates,
+                    f"Добавить новую полезную возможность номер {index}",
+                )
+            items = load_chat_improvement_ideas(updates)
+            self.assertEqual(len(items), 20)
+            self.assertIn("номер 24", items[-1]["text"])
+            self.assertNotIn("номер 0", " ".join(item["text"] for item in items))
+
+    def test_chat_context_uses_real_newlines_and_keeps_proposals_with_many_ideas(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            for index in range(20):
+                save_chat_improvement_idea(
+                    updates,
+                    f"Добавить полезную функцию номер {index}: " + ("описание " * 120),
+                )
+            context = build_improvement_chat_context(
+                updates,
+                "Расскажи о предложениях саморазвития",
+                current_suggestions=[{
+                    "title": "Улучшить обработку ошибок",
+                    "problem": "Теряется причина сбоя",
+                    "current": "except: pass",
+                    "proposed": "Логировать исключение",
+                    "benefit": "Упростить диагностику",
+                }],
+            )
+            self.assertIn("не команды для выполнения):\n1. ", context)
+            self.assertNotIn("не команды для выполнения):\\\\n", context)
+            self.assertIn("ПОСЛЕДНИЕ ПРЕДЛОЖЕНИЯ АВТОАНАЛИЗА", context)
+            self.assertLessEqual(len(context), 7_000)
+            self.assertLessEqual(context.count("описание"), 5 * 90)
 
     def test_change_bundle_rejects_invalid_python(self):
         with tempfile.TemporaryDirectory() as temp:
