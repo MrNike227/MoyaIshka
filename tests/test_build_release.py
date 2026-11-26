@@ -17,6 +17,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "backup_cloud.py;source_project"', build)
         self.assertIn('--add-data "intelligent_memory.py;source_project"', build)
         self.assertIn('--add-data "improvement_delivery.py;source_project"', build)
+        self.assertIn('--add-data "improvement_testing.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.1_RU.md;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
