@@ -38,6 +38,9 @@ from backup_manager import (
 from backup_cloud import (
     BackupEncryptionError, decrypt_backup_file, encrypt_backup_file, sha256_file as backup_sha256_file,
 )
+from supabase_backup import (
+    MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
+)
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
@@ -107,6 +110,7 @@ DB_PATH = DATA_DIR / "assistant.db"
 CLOUD_SESSION_PATH = DATA_DIR / "cloud_session.dat"
 GOOGLE_DRIVE_SESSION_PATH = DATA_DIR / "google_drive_session.dat"
 BACKUP_UPLOAD_QUEUE_PATH = DATA_DIR / "backup_upload_queue.json"
+BACKUP_SUPABASE_UPLOAD_QUEUE_PATH = DATA_DIR / "backup_supabase_upload_queue.json"
 if os.environ.get("APPDATA"):
     LEGACY_DATA_DIR = Path(os.environ["APPDATA"]) / "CustomAI"
 else:
@@ -136,6 +140,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "backup_dir": "",
     "backup_cloud_enabled": True,
     "backup_cloud_retention_count": 7,
+    "backup_supabase_enabled": False,
+    "backup_supabase_retention_count": 7,
     "backup_legacy_migrated": False,
     "voice_tts": False,
     "voice_engine": "system",
@@ -680,6 +686,10 @@ class MoyaIshkaApp:
         self.cloud_backup_listbox: tk.Listbox | None = None
         self.cloud_backup_status_var: tk.StringVar | None = None
         self.cloud_backup_items: list[dict[str, Any]] = []
+        self.supabase_backup_dialog: tk.Toplevel | None = None
+        self.supabase_backup_listbox: tk.Listbox | None = None
+        self.supabase_backup_status_var: tk.StringVar | None = None
+        self.supabase_backup_items: list[dict[str, Any]] = []
         self.busy = False
         self.voice_busy = False
         self.voice_cancel_event: threading.Event | None = None
@@ -1180,11 +1190,28 @@ class MoyaIshkaApp:
         ).pack(side="left")
         ttk.Label(cloud_backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
 
+        supabase_backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        supabase_backup_options.pack(fill="x", pady=(2, 6))
+        self.backup_supabase_enabled_var = tk.BooleanVar(value=bool(self.config.get("backup_supabase_enabled", False)))
+        self._make_checkbox(
+            supabase_backup_options,
+            "Дополнительно дублировать зашифрованные ZIP-архивы в Supabase Storage",
+            self.backup_supabase_enabled_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(supabase_backup_options, text="В Supabase хранить:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
+        self.backup_supabase_retention_var = tk.StringVar(value=str(self.config.get("backup_supabase_retention_count", 7)))
+        ttk.Combobox(
+            supabase_backup_options, textvariable=self.backup_supabase_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        ttk.Label(supabase_backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
         backup_actions = ttk.Frame(backups, style="Panel.TFrame")
         backup_actions.pack(fill="x", pady=(4, 4))
         ttk.Button(backup_actions, text="Создать копию сейчас", style="Accent.TButton", command=self.create_local_backup).pack(side="left")
         ttk.Button(backup_actions, text="Восстановить с диска…", command=self.restore_local_backup).pack(side="left", padx=7)
         ttk.Button(backup_actions, text="Восстановить из Google Drive…", command=self.restore_cloud_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions, text="Восстановить из Supabase…", command=self.restore_supabase_backup).pack(side="left", padx=7)
         ttk.Button(backup_actions, text="Отправить ожидающие копии", command=self.upload_pending_backups_now).pack(side="left")
         backup_actions2 = ttk.Frame(backups, style="Panel.TFrame")
         backup_actions2.pack(fill="x", pady=(2, 0))
@@ -3210,21 +3237,44 @@ class MoyaIshkaApp:
                         self.backup_status_var.set("На сегодня резервная копия уже существует.")
                 elif event == "backup_upload_result":
                     self.backup_upload_working = False
-                    uploaded, pending, error_text = payload
-                    if error_text:
-                        self.backup_status_var.set(f"Локальные копии сохранены. Облачная отправка ожидает повтора: {error_text}")
-                    elif uploaded:
-                        self.backup_status_var.set(f"В Google Drive отправлено копий: {uploaded}. В очереди осталось: {pending}.")
-                    elif pending:
-                        self.backup_status_var.set(f"Ожидают отправки в Google Drive: {pending}.")
+                    if isinstance(payload, dict):
+                        messages = []
+                        for provider, title in (("google_drive", "Google Drive"), ("supabase", "Supabase Storage")):
+                            result = payload.get(provider)
+                            if not result:
+                                continue
+                            uploaded, pending, error_text = result
+                            if error_text:
+                                messages.append(f"{title}: ожидает повтора — {error_text}")
+                            elif uploaded:
+                                messages.append(f"{title}: отправлено {uploaded}; в очереди {pending}.")
+                            elif pending:
+                                messages.append(f"{title}: ожидают отправки {pending}.")
+                            else:
+                                messages.append(f"{title}: очередь пуста.")
+                        self.backup_status_var.set(" ".join(messages) or "Очереди облачных копий пусты.")
                     else:
-                        self.backup_status_var.set("Очередь облачных резервных копий пуста.")
+                        uploaded, pending, error_text = payload
+                        if error_text:
+                            self.backup_status_var.set(f"Локальные копии сохранены. Облачная отправка ожидает повтора: {error_text}")
+                        elif uploaded:
+                            self.backup_status_var.set(f"В Google Drive отправлено копий: {uploaded}. В очереди осталось: {pending}.")
+                        elif pending:
+                            self.backup_status_var.set(f"Ожидают отправки в Google Drive: {pending}.")
+                        else:
+                            self.backup_status_var.set("Очередь облачных резервных копий пуста.")
                 elif event == "backup_cloud_list":
                     self._show_cloud_backup_items(payload)
                 elif event == "backup_cloud_list_error":
                     if self.cloud_backup_status_var is not None:
                         self.cloud_backup_status_var.set(f"Не удалось получить список Google Drive: {payload}")
                     self.backup_status_var.set(f"Google Drive: {payload}")
+                elif event == "backup_supabase_list":
+                    self._show_supabase_backup_items(payload)
+                elif event == "backup_supabase_list_error":
+                    if self.supabase_backup_status_var is not None:
+                        self.supabase_backup_status_var.set(f"Не удалось получить список Supabase: {payload}")
+                    self.backup_status_var.set(f"Supabase Storage: {payload}")
                 elif event == "backup_error":
                     self.backup_working = False
                     self.backup_status_var.set("Не удалось создать резервную копию.")
@@ -3688,6 +3738,8 @@ class MoyaIshkaApp:
             "backup_dir": self.backup_dir_var.get().strip() if hasattr(self, "backup_dir_var") else str(self.config.get("backup_dir", "")),
             "backup_cloud_enabled": bool(self.backup_cloud_enabled_var.get()) if hasattr(self, "backup_cloud_enabled_var") else bool(self.config.get("backup_cloud_enabled", True)),
             "backup_cloud_retention_count": max(3, min(30, int(self.backup_cloud_retention_var.get()))) if hasattr(self, "backup_cloud_retention_var") else int(self.config.get("backup_cloud_retention_count", 7)),
+            "backup_supabase_enabled": bool(self.backup_supabase_enabled_var.get()) if hasattr(self, "backup_supabase_enabled_var") else bool(self.config.get("backup_supabase_enabled", False)),
+            "backup_supabase_retention_count": max(3, min(30, int(self.backup_supabase_retention_var.get()))) if hasattr(self, "backup_supabase_retention_var") else int(self.config.get("backup_supabase_retention_count", 7)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
             "voice_engine": str(self.config.get("voice_engine", "system")),
             "tts_voice_id": str(self.config.get("tts_voice_id", "")),
@@ -3762,6 +3814,9 @@ class MoyaIshkaApp:
             if hasattr(self, "backup_cloud_enabled_var"):
                 self.backup_cloud_enabled_var.set(bool(self.config.get("backup_cloud_enabled", True)))
                 self.backup_cloud_retention_var.set(str(self.config.get("backup_cloud_retention_count", 7)))
+                if hasattr(self, "backup_supabase_enabled_var"):
+                    self.backup_supabase_enabled_var.set(bool(self.config.get("backup_supabase_enabled", False)))
+                    self.backup_supabase_retention_var.set(str(self.config.get("backup_supabase_retention_count", 7)))
         if hasattr(self, "voice_tts_var"):
             self.voice_tts_var.set(bool(self.config.get("voice_tts", False)))
         if hasattr(self, "tts_voice_combo"):
@@ -3802,6 +3857,8 @@ class MoyaIshkaApp:
                     except Exception:
                         continue
                     self._queue_backup_upload(candidate)
+                    if bool(self.config.get("backup_supabase_enabled", False)) and candidate.stat().st_size + 64 <= MAX_SUPABASE_FILE_BYTES:
+                        self._queue_supabase_backup_upload(candidate)
             self.config["backup_legacy_migrated"] = True
             atomic_json_save(CONFIG_PATH, self.config)
             return copied, skipped
@@ -3823,6 +3880,7 @@ class MoyaIshkaApp:
         try:
             retention = max(3, min(30, int(self.backup_retention_var.get())))
             cloud_retention = max(3, min(30, int(self.backup_cloud_retention_var.get())))
+            supabase_retention = max(3, min(30, int(self.backup_supabase_retention_var.get())))
             backup_dir = Path(self.backup_dir_var.get().strip() or default_backup_directory()).expanduser().resolve()
             install_dir = (
                 Path(sys.executable).resolve().parent
@@ -3842,10 +3900,13 @@ class MoyaIshkaApp:
         self.config["backup_dir"] = str(backup_dir)
         self.config["backup_cloud_enabled"] = bool(self.backup_cloud_enabled_var.get())
         self.config["backup_cloud_retention_count"] = cloud_retention
+        self.config["backup_supabase_enabled"] = bool(self.backup_supabase_enabled_var.get())
+        self.config["backup_supabase_retention_count"] = supabase_retention
         atomic_json_save(CONFIG_PATH, self.config)
         self.backup_status_var.set(
             f"Папка: {backup_dir} · локально: {retention} · Google Drive: "
-            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · облако: {cloud_retention}"
+            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · Google Drive: {cloud_retention} · "
+            f"Supabase: {'включён' if self.config['backup_supabase_enabled'] else 'выключен'} · {supabase_retention}"
         )
         return True
 
@@ -3899,6 +3960,139 @@ class MoyaIshkaApp:
     def _remove_backup_from_queue(self, filename: str) -> None:
         target = str(Path(filename).expanduser().resolve())
         self._save_backup_queue([item for item in self._backup_queue_items() if str(Path(item).resolve()) != target])
+
+    def _backup_supabase_queue_items(self) -> list[str]:
+        values = load_json(BACKUP_SUPABASE_UPLOAD_QUEUE_PATH, [])
+        if not isinstance(values, list):
+            return []
+        safe: list[str] = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        return safe
+
+    def _save_supabase_backup_queue(self, values: list[str]) -> None:
+        safe: list[str] = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        atomic_json_save(BACKUP_SUPABASE_UPLOAD_QUEUE_PATH, safe)
+
+    def _queue_supabase_backup_upload(self, archive_path: Path) -> None:
+        pending = self._backup_supabase_queue_items()
+        value = str(archive_path.expanduser().resolve())
+        if value not in pending:
+            pending.append(value)
+        self._save_supabase_backup_queue(pending)
+
+    @staticmethod
+    def _supabase_backup_client(package: dict[str, Any]) -> tuple[SupabaseBackupClient, SupabaseCloudClient]:
+        session = package.get("session", {}) if isinstance(package.get("session"), dict) else {}
+        auth_client = SupabaseCloudClient(
+            str(package.get("project_url", "")), str(package.get("publishable_key", "")), dict(session),
+        )
+        auth_client.ensure_fresh_session()
+        storage_client = SupabaseBackupClient(
+            str(package.get("project_url", "")), str(package.get("publishable_key", "")), dict(auth_client.session),
+        )
+        return storage_client, auth_client
+
+    def _save_supabase_backup_session(self, package: dict[str, Any], auth_client: SupabaseCloudClient) -> None:
+        updated = dict(package)
+        updated["session"] = dict(auth_client.session)
+        self._remember_cloud_package(updated)
+
+    def _upload_supabase_backup_archive(self, archive_path: Path, package: dict[str, Any], retention: int) -> str:
+        passphrase = str(package.get("e2e_passphrase", ""))
+        if len(passphrase) < 10:
+            raise SupabaseBackupError("В защищённой сессии Supabase не найден E2E-пароль резервных копий.")
+        source = Path(archive_path).expanduser().resolve()
+        if not source.is_file() or source.is_symlink():
+            raise SupabaseBackupError("Локальный ZIP-архив для Supabase не найден.")
+        encrypted_path = source.with_name(source.stem + ".supabase.mibak")
+        try:
+            encrypt_backup_file(source, encrypted_path, passphrase)
+            encrypted_hash = backup_sha256_file(encrypted_path)
+            encrypted_size = encrypted_path.stat().st_size
+            if encrypted_size > MAX_SUPABASE_FILE_BYTES:
+                raise SupabaseBackupError(
+                    "Архив превышает лимит Supabase Free — 50 МБ на файл. "
+                    "Полная копия остаётся локально и в Google Drive."
+                )
+            client, auth_client = self._supabase_backup_client(package)
+            remote_name = f"{source.stem}_{encrypted_hash}.mibak"
+            remote_path = f"{client.user_id}/{remote_name}"
+            existing = next(
+                (item for item in client.list_backup_files()
+                 if item.get("path") == remote_path and int(item.get("size", 0)) == encrypted_size),
+                None,
+            )
+            if not existing:
+                client.prune_backup_files(max(1, int(retention) - 1))
+                client.upload_backup_file(
+                    encrypted_path, remote_name=remote_name, sha256=encrypted_hash,
+                    app_version=APP_VERSION,
+                    backup_kind=(source.stem.split("_")[2] if len(source.stem.split("_")) > 2 else "manual"),
+                )
+                listed = client.list_backup_files()
+                existing = next(
+                    (item for item in listed
+                     if item.get("path") == remote_path and int(item.get("size", 0)) == encrypted_size
+                     and item.get("sha256") == encrypted_hash),
+                    None,
+                )
+                if not existing:
+                    raise SupabaseBackupError("Supabase не подтвердил полную загрузку зашифрованной копии.")
+                verify_path = encrypted_path.with_name(encrypted_path.name + ".verify")
+                try:
+                    verified = client.download_backup_file(remote_path, verify_path)
+                    if str(verified.get("sha256", "")).lower() != encrypted_hash:
+                        raise SupabaseBackupError("SHA-256 скачанного из Supabase архива не совпал.")
+                finally:
+                    verify_path.unlink(missing_ok=True)
+            client.prune_backup_files(retention)
+            self._save_supabase_backup_session(package, auth_client)
+            return f"Зашифрованная копия подтверждена в Supabase: {remote_name}."
+        finally:
+            encrypted_path.unlink(missing_ok=True)
+
+    def _upload_supabase_backup_queue(self, package: dict[str, Any], retention: int) -> tuple[int, int, str]:
+        pending = self._backup_supabase_queue_items()
+        uploaded, error_text = 0, ""
+        remaining = list(pending)
+        for filename in pending:
+            archive = Path(filename).expanduser()
+            if not archive.is_file() or archive.is_symlink():
+                error_text = f"Локальный архив пока недоступен: {archive}. Очередь Supabase сохранена."
+                break
+            try:
+                self._upload_supabase_backup_archive(archive, package, retention)
+                remaining.remove(filename)
+                self._save_supabase_backup_queue(remaining)
+                uploaded += 1
+            except Exception as exc:
+                error_text = str(exc)
+                break
+        self._save_supabase_backup_queue(remaining)
+        return uploaded, len(remaining), error_text
 
     @staticmethod
     def _backup_drive_client(package: dict[str, Any]) -> GoogleDriveVaultClient:
@@ -4019,6 +4213,9 @@ class MoyaIshkaApp:
         cloud_enabled: bool,
         package: dict[str, Any] | None,
         cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
         *,
         automatic: bool,
     ) -> tuple[Path | None, str]:
@@ -4031,8 +4228,9 @@ class MoyaIshkaApp:
                 migration_note = (migration_note + " " if migration_note else "") + f"Повреждённых старых архивов пропущено: {skipped}."
         except Exception as exc:
             migration_note = f"Старые архивы пока не перенесены: {exc}"
-        # Pending archives must not be deleted by local retention before they reach Drive.
-        effective_retention = max(retention, len(self._backup_queue_items()) + 1) if cloud_enabled else retention
+        # Keep queued archives until every enabled cloud target has confirmed its copy.
+        pending_count = len(self._backup_queue_items()) + len(self._backup_supabase_queue_items())
+        effective_retention = max(retention, pending_count + 1)
         if automatic:
             archive = maybe_create_daily_backup(
                 DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
@@ -4041,24 +4239,54 @@ class MoyaIshkaApp:
             archive = create_backup(
                 DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
             )
-        if not cloud_enabled:
-            note = "Загрузка в Google Drive выключена." if archive else ""
-            return archive, " ".join(part for part in (migration_note, note) if part)
-        if archive is not None:
-            self._queue_backup_upload(archive)
-        if not package:
-            pending_count = len(self._backup_queue_items())
-            note = f"Ожидают подключения Google Drive: {pending_count} копий." if pending_count else "Google Drive не подключён; локальная копия сохранена."
-            return archive, note
-        uploaded, pending_count, error_text = self._upload_backup_queue(backup_dir, package, cloud_retention)
-        if error_text:
-            note = f"Облачная отправка отложена до восстановления связи: {error_text}"
-        elif uploaded:
-            note = f"В Google Drive подтверждена загрузка: {uploaded}; в очереди осталось: {pending_count}."
-        else:
-            note = f"Ожидают отправки в Google Drive: {pending_count}." if pending_count else "В Google Drive уже есть актуальные копии."
-        note = " ".join(part for part in (migration_note, note) if part)
-        return archive, note
+        notes: list[str] = []
+        if migration_note:
+            notes.append(migration_note)
+        if cloud_enabled:
+            if archive is not None:
+                self._queue_backup_upload(archive)
+            if package:
+                uploaded, pending, error_text = self._upload_backup_queue(backup_dir, package, cloud_retention)
+                if error_text:
+                    notes.append(f"Google Drive: ожидает повтора — {error_text}")
+                elif uploaded:
+                    notes.append(f"Google Drive: подтверждено копий {uploaded}; в очереди {pending}.")
+                elif pending:
+                    notes.append(f"Google Drive: ожидают отправки {pending}.")
+                else:
+                    notes.append("Google Drive: копии актуальны.")
+            else:
+                pending = len(self._backup_queue_items())
+                if pending:
+                    notes.append(f"Google Drive: ожидают подключения {pending} копий.")
+                else:
+                    notes.append("Google Drive не подключён; локальная копия сохранена.")
+        if supabase_enabled:
+            if archive is not None:
+                try:
+                    if archive.stat().st_size + 64 > MAX_SUPABASE_FILE_BYTES:
+                        notes.append("Supabase: ZIP больше лимита 50 МБ; архив сохранён локально и в Google Drive.")
+                    else:
+                        self._queue_supabase_backup_upload(archive)
+                except OSError as exc:
+                    notes.append(f"Supabase: не удалось проверить локальный архив — {exc}")
+            if supabase_package:
+                uploaded, pending, error_text = self._upload_supabase_backup_queue(supabase_package, supabase_retention)
+                if error_text:
+                    notes.append(f"Supabase: ожидает повтора — {error_text}")
+                elif uploaded:
+                    notes.append(f"Supabase Storage: подтверждено копий {uploaded}; в очереди {pending}.")
+                elif pending:
+                    notes.append(f"Supabase Storage: ожидают отправки {pending}.")
+                else:
+                    notes.append("Supabase Storage: копии актуальны.")
+            else:
+                pending = len(self._backup_supabase_queue_items())
+                if pending:
+                    notes.append(f"Supabase: ожидают подключения {pending} копий.")
+                else:
+                    notes.append("Supabase Storage не подключён; локальная копия и Google Drive не затронуты.")
+        return archive, " ".join(notes)
 
     def create_local_backup(self) -> None:
         if self.backup_working or self.backup_upload_working:
@@ -4076,6 +4304,9 @@ class MoyaIshkaApp:
                 bool(self.config.get("backup_cloud_enabled", True)),
                 dict(self.google_drive_session) if self.google_drive_session_ready else None,
                 int(self.config.get("backup_cloud_retention_count", 7)),
+                bool(self.config.get("backup_supabase_enabled", False)),
+                dict(self.cloud_session) if self.cloud_session_ready else None,
+                int(self.config.get("backup_supabase_retention_count", 7)),
             ),
             daemon=True,
         ).start()
@@ -4087,11 +4318,15 @@ class MoyaIshkaApp:
         cloud_enabled: bool,
         package: dict[str, Any] | None,
         cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
     ) -> None:
         ResourceGovernor.set_current_thread_low_priority()
         try:
             archive, cloud_status = self._create_and_queue_backup(
-                retention, backup_dir, cloud_enabled, package, cloud_retention, automatic=False,
+                retention, backup_dir, cloud_enabled, package, cloud_retention,
+                supabase_enabled, supabase_package, supabase_retention, automatic=False,
             )
             self.events.put(("backup_created", {
                 "path": str(archive) if archive else "",
@@ -4117,6 +4352,9 @@ class MoyaIshkaApp:
                     bool(self.config.get("backup_cloud_enabled", True)),
                     dict(self.google_drive_session) if self.google_drive_session_ready else None,
                     int(self.config.get("backup_cloud_retention_count", 7)),
+                    bool(self.config.get("backup_supabase_enabled", False)),
+                    dict(self.cloud_session) if self.cloud_session_ready else None,
+                    int(self.config.get("backup_supabase_retention_count", 7)),
                 ),
                 daemon=True,
             ).start()
@@ -4129,11 +4367,15 @@ class MoyaIshkaApp:
         cloud_enabled: bool,
         package: dict[str, Any] | None,
         cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
     ) -> None:
         ResourceGovernor.set_current_thread_low_priority()
         try:
             archive, cloud_status = self._create_and_queue_backup(
-                retention, backup_dir, cloud_enabled, package, cloud_retention, automatic=True,
+                retention, backup_dir, cloud_enabled, package, cloud_retention,
+                supabase_enabled, supabase_package, supabase_retention, automatic=True,
             )
             self.events.put(("backup_auto_result", {
                 "path": str(archive) if archive else "",
@@ -4146,54 +4388,78 @@ class MoyaIshkaApp:
         if self.backup_upload_working or self.backup_working:
             self.backup_status_var.set("Другая операция с резервной копией уже выполняется.")
             return
-        if not bool(self.config.get("backup_cloud_enabled", True)):
-            self.backup_status_var.set("Отправка в Google Drive выключена в настройках копирования.")
+        drive_pending = bool(self._backup_queue_items())
+        supabase_pending = bool(self._backup_supabase_queue_items())
+        drive_package = (
+            dict(self.google_drive_session)
+            if drive_pending and bool(self.config.get("backup_cloud_enabled", True)) and self.google_drive_session_ready
+            else None
+        )
+        supabase_package = (
+            dict(self.cloud_session)
+            if supabase_pending and bool(self.config.get("backup_supabase_enabled", False)) and self.cloud_session_ready
+            else None
+        )
+        if not drive_pending and not supabase_pending:
+            self.backup_status_var.set("Нет копий, ожидающих отправки в облако.")
             return
-        if not self.google_drive_session_ready:
-            messagebox.showwarning("Google Drive", "Сначала подключи Google Drive и пароль E2E в настройках.")
-            return
-        if not self._backup_queue_items():
-            self.backup_status_var.set("Нет копий, ожидающих отправки в Google Drive.")
+        if not drive_package and not supabase_package:
+            messagebox.showwarning(
+                "Облачные резервные копии",
+                "Подключи Google Drive или Supabase и включи соответствующее зеркало в настройках копирования.",
+            )
             return
         self.backup_upload_working = True
-        self.backup_status_var.set("Отправляю ожидающие резервные копии в Google Drive…")
+        self.backup_status_var.set("Отправляю ожидающие резервные копии в доступные облака…")
         threading.Thread(
             target=self._retry_backup_upload_worker,
-            args=(
-                self._backup_directory(),
-                dict(self.google_drive_session),
-                int(self.config.get("backup_cloud_retention_count", 7)),
-            ),
+            args=(self._backup_directory(), drive_package, supabase_package,
+                  int(self.config.get("backup_cloud_retention_count", 7)),
+                  int(self.config.get("backup_supabase_retention_count", 7))),
             daemon=True,
         ).start()
 
-    def _retry_backup_upload_worker(self, backup_dir: Path, package: dict[str, Any], cloud_retention: int) -> None:
+    def _retry_backup_upload_worker(
+        self, backup_dir: Path, drive_package: dict[str, Any] | None,
+        supabase_package: dict[str, Any] | None, drive_retention: int, supabase_retention: int,
+    ) -> None:
         ResourceGovernor.set_current_thread_low_priority()
-        try:
-            result = self._upload_backup_queue(backup_dir, package, cloud_retention)
-            self.events.put(("backup_upload_result", result))
-        except Exception as exc:
-            self.events.put(("backup_upload_result", (0, len(self._backup_queue_items()), str(exc))))
+        results: dict[str, tuple[int, int, str]] = {}
+        if drive_package:
+            try:
+                results["google_drive"] = self._upload_backup_queue(backup_dir, drive_package, drive_retention)
+            except Exception as exc:
+                results["google_drive"] = (0, len(self._backup_queue_items()), str(exc))
+        if supabase_package:
+            try:
+                results["supabase"] = self._upload_supabase_backup_queue(supabase_package, supabase_retention)
+            except Exception as exc:
+                results["supabase"] = (0, len(self._backup_supabase_queue_items()), str(exc))
+        self.events.put(("backup_upload_result", results))
 
     def _schedule_backup_upload_retry(self) -> None:
         try:
             if not self.root.winfo_exists():
                 return
-            if (
-                bool(self.config.get("backup_cloud_enabled", True))
-                and self.google_drive_session_ready
-                and self._backup_queue_items()
-                and not self.backup_working
-                and not self.backup_upload_working
-            ):
+            drive_pending = bool(self._backup_queue_items())
+            supabase_pending = bool(self._backup_supabase_queue_items())
+            drive_package = (
+                dict(self.google_drive_session)
+                if drive_pending and bool(self.config.get("backup_cloud_enabled", True)) and self.google_drive_session_ready
+                else None
+            )
+            supabase_package = (
+                dict(self.cloud_session)
+                if supabase_pending and bool(self.config.get("backup_supabase_enabled", False)) and self.cloud_session_ready
+                else None
+            )
+            if (drive_package or supabase_package) and not self.backup_working and not self.backup_upload_working:
                 self.backup_upload_working = True
                 threading.Thread(
                     target=self._retry_backup_upload_worker,
-                    args=(
-                        self._backup_directory(),
-                        dict(self.google_drive_session),
-                        int(self.config.get("backup_cloud_retention_count", 7)),
-                    ),
+                    args=(self._backup_directory(), drive_package, supabase_package,
+                          int(self.config.get("backup_cloud_retention_count", 7)),
+                          int(self.config.get("backup_supabase_retention_count", 7))),
                     daemon=True,
                 ).start()
         finally:
@@ -4404,6 +4670,140 @@ class MoyaIshkaApp:
                 "backup_restore_complete",
                 (True, f"Google Drive: {item.get('name', 'резервная копия')} · восстановлено файлов: {restored.get('files_restored', '0')}"),
             ))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+        finally:
+            if temp_root is not None:
+                shutil.rmtree(temp_root, ignore_errors=True)
+
+    def restore_supabase_backup(self) -> None:
+        if not self.cloud_session_ready:
+            messagebox.showwarning("Supabase", "Сначала подключи резервное облако Supabase и пароль E2E.")
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Резервные копии Supabase Storage")
+        dialog.transient(self.root)
+        dialog.geometry("660x390")
+        dialog.minsize(520, 300)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Выбери зашифрованный архив Supabase. Перед восстановлением текущие данные будут сохранены.", wraplength=620).pack(anchor="w", pady=(0, 8))
+        self.supabase_backup_listbox = tk.Listbox(frame, height=12, exportselection=False)
+        self.supabase_backup_listbox.pack(fill="both", expand=True)
+        self.supabase_backup_status_var = tk.StringVar(value="Получаю список резервных копий Supabase…")
+        ttk.Label(frame, textvariable=self.supabase_backup_status_var, wraplength=620).pack(anchor="w", pady=(8, 6))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Обновить список", command=self._request_supabase_backup_list).pack(side="left")
+        ttk.Button(actions, text="Восстановить выбранную", style="Accent.TButton", command=self._restore_selected_supabase_backup).pack(side="right")
+        ttk.Button(actions, text="Закрыть", command=dialog.destroy).pack(side="right", padx=8)
+        self.supabase_backup_dialog = dialog
+        self.supabase_backup_items = []
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self._request_supabase_backup_list()
+
+    def _request_supabase_backup_list(self) -> None:
+        if self.cloud_session_ready:
+            threading.Thread(target=self._list_supabase_backups_worker, args=(dict(self.cloud_session),), daemon=True).start()
+
+    def _list_supabase_backups_worker(self, package: dict[str, Any]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            client, auth_client = self._supabase_backup_client(package)
+            items = client.list_backup_files()
+            self._save_supabase_backup_session(package, auth_client)
+            self.events.put(("backup_supabase_list", items))
+        except Exception as exc:
+            self.events.put(("backup_supabase_list_error", str(exc)))
+
+    def _show_supabase_backup_items(self, items: list[dict[str, Any]]) -> None:
+        try:
+            if self.supabase_backup_dialog is None or not self.supabase_backup_dialog.winfo_exists() or self.supabase_backup_listbox is None:
+                return
+            self.supabase_backup_items = sorted(list(items or []), key=lambda item: str(item.get("created_at", "")), reverse=True)
+            self.supabase_backup_listbox.delete(0, "end")
+            for item in self.supabase_backup_items:
+                when = str(item.get("created_at", ""))
+                try:
+                    when = datetime.fromisoformat(when.replace("Z", "+00:00")).astimezone().strftime("%d.%m.%Y %H:%M")
+                except (ValueError, TypeError):
+                    when = when or "дата неизвестна"
+                size_mb = int(item.get("size", 0) or 0) / (1024 * 1024)
+                self.supabase_backup_listbox.insert("end", f"{item.get('name', 'Резервная копия')} · {when} · {size_mb:.1f} МБ")
+            if self.supabase_backup_status_var is not None:
+                self.supabase_backup_status_var.set(
+                    f"Найдено резервных копий: {len(self.supabase_backup_items)}. Архивы зашифрованы на этом ПК."
+                    if self.supabase_backup_items else "В Supabase Storage пока нет резервных копий."
+                )
+        except tk.TclError:
+            return
+
+    def _restore_selected_supabase_backup(self) -> None:
+        if self.supabase_backup_listbox is None:
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        selected = self.supabase_backup_listbox.curselection()
+        if not selected or selected[0] >= len(self.supabase_backup_items):
+            messagebox.showinfo("Supabase", "Сначала выбери резервную копию.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        item = dict(self.supabase_backup_items[selected[0]])
+        if not messagebox.askyesno(
+            "Восстановить из Supabase",
+            f"Заменить текущую историю, память, настройки, базу знаний, навыки и плагины архивом «{item.get('name', '')}»? Перед этим будет создана страховочная копия.",
+        ):
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        backup_dir = self._backup_directory()
+        retention = int(self.config.get("backup_retention_count", 7))
+        package = dict(self.cloud_session)
+        try:
+            if self.supabase_backup_dialog is not None:
+                self.supabase_backup_dialog.destroy()
+        except tk.TclError:
+            pass
+        self.supabase_backup_dialog = None
+        threading.Thread(target=self._restore_supabase_backup_worker, args=(item, package, backup_dir, retention), daemon=True).start()
+
+    def _restore_supabase_backup_worker(self, item: dict[str, Any], package: dict[str, Any], backup_dir: Path, retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        temp_root: Path | None = None
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            temp_root = Path(tempfile.mkdtemp(prefix=".supabase-restore-", dir=str(backup_dir)))
+            safe_name = Path(str(item.get("name", "supabase-backup.mibak"))).name
+            encrypted_path, archive_path = temp_root / safe_name, temp_root / "restored_backup.zip"
+            client, auth_client = self._supabase_backup_client(package)
+            downloaded = client.download_backup_file(str(item.get("path", "")), encrypted_path)
+            expected_hash = str(item.get("sha256", "")).lower()
+            if not expected_hash or str(downloaded.get("sha256", "")).lower() != expected_hash:
+                raise BackupEncryptionError("SHA-256 скачанной резервной копии Supabase не совпал. Восстановление отменено.")
+            decrypt_backup_file(encrypted_path, archive_path, str(package.get("e2e_passphrase", "")))
+            inspect_backup(archive_path)
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
+            )
+            self._save_supabase_backup_session(package, auth_client)
+            self.events.put(("backup_restore_complete", (
+                True, f"Supabase Storage: {item.get('name', 'резервная копия')} · восстановлено файлов: {restored.get('files_restored', '0')}",
+            )))
         except Exception as exc:
             self.events.put(("backup_restore_complete", (False, str(exc))))
         finally:

@@ -29,6 +29,8 @@ PRESERVED_BACKUP_CONFIG_KEYS = (
     "backup_dir",
     "backup_cloud_enabled",
     "backup_cloud_retention_count",
+    "backup_supabase_enabled",
+    "backup_supabase_retention_count",
     "backup_legacy_migrated",
 )
 MAX_ARCHIVE_ENTRIES = 10000
