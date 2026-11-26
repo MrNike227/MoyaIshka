@@ -60,7 +60,7 @@ from cloud_sync import (
     CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
     load_protected_session, save_protected_session, delete_protected_session,
 )
-from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
+from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient, backup_file_md5
 from resource_governor import ResourceGovernor
 from context_engine import select_relevant_memories, trim_conversation_context
 
@@ -3905,7 +3905,11 @@ class MoyaIshkaApp:
         # A previous upload may have reached Drive even if the client lost its response.
         # Check for an identical encrypted archive before trying to upload it again.
         remote_match = next(
-            (item for item in client.list_backup_files() if item.get("sha256") == encrypted_hash),
+            (
+                item for item in client.list_backup_files()
+                if item.get("sha256") == encrypted_hash
+                and item.get("md5") == backup_file_md5(encrypted_path)
+            ),
             None,
         )
         if remote_match:
@@ -3918,10 +3922,10 @@ class MoyaIshkaApp:
 
         limit_gb = max(1, min(int(self.config.get("google_drive_storage_limit_gb", 10) or 10), 10))
         encrypted_size = encrypted_path.stat().st_size
-        usage = client.get_app_folder_usage()
+        usage = client.get_app_folder_usage() + client.get_backup_folder_usage()
         if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
             client.prune_backup_files(cloud_retention)
-            usage = client.get_app_folder_usage()
+            usage = client.get_app_folder_usage() + client.get_backup_folder_usage()
             if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
                 raise GoogleDriveError(
                     f"В папке Моя ИИшка Cloud превышен мягкий лимит {limit_gb} ГБ. "
@@ -3937,8 +3941,12 @@ class MoyaIshkaApp:
             app_version=APP_VERSION,
             backup_kind=backup_kind,
         )
+        local_md5 = backup_file_md5(encrypted_path)
         remote_match = next(
-            (item for item in client.list_backup_files() if item.get("sha256") == encrypted_hash),
+            (
+                item for item in client.list_backup_files()
+                if item.get("sha256") == encrypted_hash and item.get("md5") == local_md5
+            ),
             None,
         )
         if not remote_match or int(remote_match.get("size", 0)) != encrypted_size:
@@ -3961,9 +3969,8 @@ class MoyaIshkaApp:
         for filename in pending:
             archive = Path(filename).expanduser()
             if not archive.is_file() or archive.is_symlink():
-                remaining.remove(filename)
-                self._save_backup_queue(remaining)
-                continue
+                error_text = f"Локальный архив пока недоступен: {archive}. Очередь сохранена."
+                break
             try:
                 self._upload_backup_archive(archive, package, cloud_retention)
                 remaining.remove(filename)
@@ -3985,13 +3992,15 @@ class MoyaIshkaApp:
         *,
         automatic: bool,
     ) -> tuple[Path | None, str]:
+        # Pending archives must not be deleted by local retention before they reach Drive.
+        effective_retention = max(retention, len(self._backup_queue_items()) + 1) if cloud_enabled else retention
         if automatic:
             archive = maybe_create_daily_backup(
-                DATA_DIR, app_version=APP_VERSION, retention_count=retention, backup_dir=backup_dir,
+                DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
             )
         else:
             archive = create_backup(
-                DATA_DIR, app_version=APP_VERSION, retention_count=retention, backup_dir=backup_dir,
+                DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
             )
         if not cloud_enabled:
             return archive, "Загрузка в Google Drive выключена." if archive else ""

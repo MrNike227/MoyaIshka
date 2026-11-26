@@ -44,6 +44,15 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def backup_file_md5(path: str | Path) -> str:
+    """Return Drive's server-side MD5 checksum format for an uploaded binary file."""
+    digest = hashlib.md5()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _json_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -449,7 +458,8 @@ class GoogleDriveVaultClient:
             },
             "description": "MoyaIshka encrypted backup; AES-256-GCM",
         }
-        query = urllib.parse.urlencode({"uploadType": "resumable", "fields": "id,name,size,modifiedTime,appProperties"})
+        local_md5 = backup_file_md5(source)
+        query = urllib.parse.urlencode({"uploadType": "resumable", "fields": "id,name,size,md5Checksum,modifiedTime,appProperties"})
         request = urllib.request.Request(
             DRIVE_UPLOAD_API + "/files?" + query,
             data=_json_bytes(metadata),
@@ -524,6 +534,8 @@ class GoogleDriveVaultClient:
         returned_props = result.get("appProperties") if isinstance(result.get("appProperties"), dict) else {}
         if str(returned_props.get(BACKUP_SHA_PROPERTY, "")) != sha256.lower():
             raise GoogleDriveError("Google Drive не подтвердил SHA-256 загруженной резервной копии.")
+        if str(result.get("md5Checksum", "")).lower() != local_md5:
+            raise GoogleDriveError("Контрольная сумма файла, рассчитанная Google Drive, не совпала. Локальная копия сохранена.")
         return result
 
     def download_backup_file(self, file_id: str, destination_path: str | Path) -> dict[str, int | str]:
@@ -600,6 +612,15 @@ class GoogleDriveVaultClient:
             self.delete_backup_file(str(item["id"]))
             deleted += 1
         return deleted
+
+    def get_backup_folder_usage(self) -> int:
+        """Return bytes used by actual encrypted backup objects (inside the backup subfolder)."""
+        folder = self._backup_folder()
+        items = self._list(
+            f"'{folder}' in parents and trashed = false",
+            fields="files(id,name,size)",
+        )
+        return sum(max(0, int(item.get("size", 0) or 0)) for item in items)
 
     def get_app_folder_usage(self) -> int:
         """Return bytes used by files in the app folder (not the whole Google account)."""
