@@ -26,6 +26,15 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     entries = manifest.get("files")
     if manifest.get("schema") != 1 or not isinstance(entries, list) or not entries or len(entries) > 10:
         raise ProposalTestError("Неподдерживаемый формат или пустой список файлов.")
+    patch_meta = manifest.get("patch")
+    if not isinstance(patch_meta, dict) or patch_meta.get("path") != "changes.patch":
+        raise ProposalTestError("В манифесте отсутствует корректная ссылка на diff.")
+    patch_path = (bundle / "changes.patch").resolve()
+    if bundle not in patch_path.parents or not patch_path.is_file():
+        raise ProposalTestError("Файл diff предложения не найден.")
+    patch_bytes = patch_path.read_bytes()
+    if len(patch_bytes) != patch_meta.get("size") or _sha256(patch_bytes) != patch_meta.get("sha256"):
+        raise ProposalTestError("Контрольная сумма diff не совпадает.")
     checked, total = [], 0
     for entry in entries:
         try:
