@@ -52,7 +52,7 @@ from supabase_backup import (
 )
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-from improvement_delivery import (default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
+from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
@@ -674,10 +674,15 @@ class MoyaIshkaApp:
             self.config["install_root_dir"] = str(default_install_root(
                 legacy_install_dir=self.config.get("install_dir"), running_exe=running_exe
             ))
-        if not str(self.config.get("updates_dir", "")).strip():
-            self.config["updates_dir"] = str(resolve_updates_directory(
-                install_root=self.config["install_root_dir"], data_dir=DATA_DIR
-            ))
+        # The container is a real installation layout, not only a saved setting.
+        # Always materialize both sibling folders so Updates exists before the first
+        # download/self-analysis, including when upgrading from a legacy App folder.
+        install_layout = ensure_install_layout(self.config["install_root_dir"])
+        self.config["install_root_dir"] = str(install_layout["root"])
+        self.config["updates_dir"] = str(install_layout["updates"])
+        if running_exe and running_exe.parent.name.casefold() == "app":
+            self.config["install_dir"] = str(install_layout["app"])
+        atomic_json_save(CONFIG_PATH, self.config)
 
         # Enable the requested background research profile when upgrading from releases
         # where it was opt-in by default and the user has not explicitly configured it.
@@ -5944,12 +5949,14 @@ class MoyaIshkaApp:
 
     # Updates are obtained from a user-configured GitHub Releases repository.
     def _selected_install_dir(self) -> Path:
-        raw = str(self.config.get("install_dir", "")).strip()
-        if raw:
-            return resolve_install_dir(raw)
+        # The container is authoritative. A legacy install_dir must never override
+        # the App folder after the user has selected/saved a container root.
         root = str(self.config.get("install_root_dir", "")).strip()
         if root:
             return resolve_install_layout(root)["app"]
+        raw = str(self.config.get("install_dir", "")).strip()
+        if raw:
+            return resolve_install_dir(raw)
         running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
         return resolve_install_dir(running_exe=running_exe)
 
@@ -6329,7 +6336,26 @@ class MoyaIshkaApp:
             messagebox.showerror("Обновление", "Проверенный EXE обновления не найден. Проверь обновления ещё раз.")
             return
         try:
-            destination = ensure_install_dir_writable(install_dir or self._selected_install_dir())
+            requested = Path(install_dir).expanduser().resolve() if install_dir else None
+            configured_root = str(self.config.get("install_root_dir", "")).strip()
+            if configured_root:
+                container_root = Path(configured_root).expanduser().resolve()
+            elif requested and requested.name.casefold() == "app":
+                container_root = requested.parent
+            elif requested:
+                # Compatibility with older callers: a selected directory is the
+                # container root, never the application folder itself.
+                container_root = requested
+            else:
+                container_root = default_install_root(
+                    legacy_install_dir=self.config.get("install_dir"),
+                    running_exe=Path(sys.executable) if getattr(sys, "frozen", False) else None,
+                )
+            layout = ensure_install_layout(container_root)
+            destination = ensure_install_dir_writable(layout["app"])
+            ensure_install_dir_writable(layout["updates"])
+            self.config["install_root_dir"] = str(layout["root"])
+            self.config["updates_dir"] = str(layout["updates"])
             self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
