@@ -6038,12 +6038,13 @@ class MoyaIshkaApp:
             )
         atomic_json_save(CONFIG_PATH, self.config)
         self.update_status_var.set(
-            f"Контейнер сохранён. Предложения: {layout['updates']}. Текущая установка не перемещалась; для переноса нажми «Перенести программу в App»."
+            f"Контейнер сохранён. Новые установки и обновления будут направляться в {layout['app']}. "
+            f"Предложения и резервные материалы: {layout['updates']}. Текущая запущенная копия пока не перемещалась."
         )
         if show_message:
             messagebox.showinfo(
                 "Контейнер сохранён",
-                f"Корневая папка:\n{root}\n\nПапка приложения:\n{layout['app']}\nПапка предложений:\n{layout['updates']}\n\nТекущая установка пока не перемещалась.",
+                f"Корневая папка:\n{root}\n\nПапка приложения:\n{layout['app']}\nПапка предложений:\n{layout['updates']}\n\nНовые обновления будут устанавливаться в App. Текущая запущенная копия пока не перемещалась.",
             )
 
     def install_current_build_to_selected_folder(self) -> None:
@@ -6590,7 +6591,10 @@ def migrate_staged_exe_on_first_launch() -> bool:
             if configured_root
             else default_install_root(
                 legacy_install_dir=saved_config.get("install_dir"),
-                running_exe=running_exe,
+                running_exe=(
+                    None if running_exe.parent.name.casefold() == "update_staging"
+                    else running_exe
+                ),
             )
         )
 
