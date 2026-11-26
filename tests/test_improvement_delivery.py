@@ -81,6 +81,10 @@ class ImprovementDeliveryTests(unittest.TestCase):
                 save_change_bundle(*args, "../outside.py", "x=1\n", "x=2\n", "patch")
             with self.assertRaises(ValueError):
                 save_change_bundle(*args, "config.json", "{}", "{}", "patch")
+            with self.assertRaises(ValueError):
+                save_change_bundle(*args, ".github/workflows/build.py", "x=1", "x=2", "patch")
+            with self.assertRaises(ValueError):
+                save_change_bundle(*args, "pkg/.git/config.py", "x=1", "x=2", "patch")
 
 
     def test_suggestions_are_saved_and_available_to_chat(self):
