@@ -1060,6 +1060,9 @@ def _directory_updater_script() -> str:
         }
         if (-not $confirmed) { throw 'Новая версия не подтвердила запуск за 90 секунд.' }
         Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $TempDir) {
+            Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Remove-Item -LiteralPath $StagedDir -Recurse -Force -ErrorAction SilentlyContinue
         Log "УСПЕХ: версия $ExpectedVersion работает. Резервная копия: $BackupDir"
         try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
