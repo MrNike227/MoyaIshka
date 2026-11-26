@@ -109,6 +109,14 @@ class BackupManagerTests(unittest.TestCase):
             inspect_backup(archive)
         self.assertFalse((Path(self.temp.name) / "outside.txt").exists())
 
+    def test_daily_backup_honors_custom_directory(self):
+        target = Path(self.temp.name) / "custom_daily"
+        first = maybe_create_daily_backup(self.root, app_version="4.1.9", backup_dir=target)
+        second = maybe_create_daily_backup(self.root, app_version="4.1.9", backup_dir=target)
+        self.assertIsNotNone(first)
+        self.assertEqual(first.parent, target)
+        self.assertIsNone(second)
+
     def test_custom_backup_directory_is_used(self):
         target = Path(self.temp.name) / "D_drive" / "MoyaIshka_Backups"
         archive = create_backup(self.root, app_version="4.1.9", backup_dir=target)

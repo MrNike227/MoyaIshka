@@ -3197,7 +3197,7 @@ class MoyaIshkaApp:
                     if isinstance(payload, dict):
                         status = f"Автоматическая копия создана: {payload.get('path')}" if payload.get("path") else "Сегодняшняя копия уже существует."
                         if payload.get("cloud_status"):
-                            status += "\\n" + str(payload["cloud_status"])
+                            status += "\n" + str(payload["cloud_status"])
                         self.backup_status_var.set(status)
                     elif payload:
                         self.backup_status_var.set(f"Автоматическая копия создана: {payload}")
@@ -4260,7 +4260,11 @@ class MoyaIshkaApp:
         try:
             if self.cloud_backup_dialog is None or not self.cloud_backup_dialog.winfo_exists() or self.cloud_backup_listbox is None:
                 return
-            self.cloud_backup_items = list(items or [])
+            self.cloud_backup_items = sorted(
+                list(items or []),
+                key=lambda item: str(item.get("modified_time", "")),
+                reverse=True,
+            )
             self.cloud_backup_listbox.delete(0, "end")
             for item in self.cloud_backup_items:
                 when = str(item.get("modified_time", ""))

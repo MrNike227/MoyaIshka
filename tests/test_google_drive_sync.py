@@ -6,6 +6,7 @@ from google_drive_sync import (
     DRIVE_SCOPE,
     GoogleDriveError,
     GoogleDriveVaultClient,
+    backup_file_md5,
     _b64url,
     _json_bytes,
 )
@@ -85,6 +86,23 @@ class GoogleDriveSyncTests(unittest.TestCase):
             with self.assertRaisesRegex(GoogleDriveError, "SHA-256"):
                 client.upload_backup_file(__file__, remote_name="bad.mibak", sha256="wrong")
             opener.assert_not_called()
+
+    def test_backup_quota_counts_files_inside_backup_subfolder(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._backup_folder = lambda: "backup-folder"
+        client._list = lambda query, **_kwargs: [
+            {"id": "a", "size": "123"}, {"id": "b", "size": "456"},
+        ]
+        self.assertEqual(client.get_backup_folder_usage(), 579)
+
+    def test_backup_md5_helper_matches_file_content(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "backup.mibak"
+            path.write_bytes(b"encrypted-backup-data")
+            self.assertEqual(backup_file_md5(path), hashlib.md5(b"encrypted-backup-data").hexdigest())
 
     def test_quota_usage_sums_only_app_folder_files(self):
         client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
