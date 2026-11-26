@@ -37,6 +37,15 @@ class ImprovementTestingTests(unittest.TestCase):
             self.assertEqual(result["tests_exit_code"], 1)
             self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
 
+    def test_source_hash_accepts_crlf_line_endings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+            (root / "sample.py").write_bytes(b"VALUE = 1\\r\\n")
+            result = test_change_bundle(bundle, root)
+            self.assertTrue(result["passed"], result)
+            self.assertEqual((root / "sample.py").read_bytes(), b"VALUE = 1\\r\\n")
+
     def test_stale_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
