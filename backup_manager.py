@@ -231,7 +231,7 @@ def create_backup(
     )
     destination = folder / filename
     work = Path(tempfile.mkdtemp(prefix=".backup-work-", dir=str(folder)))
-    temp_archive = folder / f".{filename}.{uuid.uuid4().hex}.tmp"
+    temp_archive = folder / f".{filename}.{uuid.uuid4().hex}.tmp.zip"
     try:
         for name in ROOT_FILES:
             source = root / name
