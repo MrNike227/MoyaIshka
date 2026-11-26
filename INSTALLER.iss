@@ -25,6 +25,12 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные значки:"; Flags: unchecked
 
+[Dirs]
+; Keep self-improvement data outside App so folder updates never delete it.
+Name: "{app}\\..\\Updates"; Flags: uninsneveruninstall
+; Keep the uninstaller outside the folder replaced by the onedir updater.
+Name: "{app}\\..\\Uninstall"; Flags: uninsneveruninstall
+
 [Files]
 Source: "dist\MoyaIshka\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
