@@ -997,10 +997,6 @@ def _directory_updater_script() -> str:
             $PreviousExeHash = (Get-FileHash -LiteralPath $previousExe -Algorithm SHA256).Hash.ToLowerInvariant()
             [void](CopyDirectoryContents $TargetDir $BackupDir 'Создание резервной копии')
             VerifyBackupCopy $TargetDir $BackupDir
-            $backupExe = Join-Path $BackupDir 'MoyaIshka.exe'
-            if ((Get-FileHash -LiteralPath $backupExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PreviousExeHash) {
-                throw 'Резервная копия EXE не прошла проверку SHA-256.'
-            }
             $BackupReady = $true
             Log "Проверенная резервная копия сохранена: $BackupDir"
         }
