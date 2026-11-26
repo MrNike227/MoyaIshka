@@ -22,7 +22,7 @@ class ReleaseBuildTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyinstaller==6.22.3", requirements)
 
-    def test_application_version_is_4185(self):
+    def test_application_version_is_419(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.1.9"', source)
 

@@ -198,7 +198,7 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_4185(self):
+    def test_application_release_version_is_419(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

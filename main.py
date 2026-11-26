@@ -3600,6 +3600,8 @@ class MoyaIshkaApp:
             "font_size": int(self.font_size_var.get()),
             "font_family": self.font_family_var.get().strip() or "Segoe UI",
             "auto_memory": bool(self.auto_memory_var.get()) if hasattr(self, "auto_memory_var") else bool(self.config.get("auto_memory", True)),
+            "auto_backup_enabled": bool(self.auto_backup_var.get()) if hasattr(self, "auto_backup_var") else bool(self.config.get("auto_backup_enabled", True)),
+            "backup_retention_count": max(3, min(30, int(self.backup_retention_var.get()))) if hasattr(self, "backup_retention_var") else int(self.config.get("backup_retention_count", 7)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
             "voice_engine": str(self.config.get("voice_engine", "system")),
             "tts_voice_id": str(self.config.get("tts_voice_id", "")),
@@ -3666,6 +3668,9 @@ class MoyaIshkaApp:
         self.instructions_box.insert("1.0", self.config["instructions"])
         if hasattr(self, "auto_memory_var"):
             self.auto_memory_var.set(bool(self.config.get("auto_memory", True)))
+        if hasattr(self, "auto_backup_var"):
+            self.auto_backup_var.set(bool(self.config.get("auto_backup_enabled", True)))
+            self.backup_retention_var.set(str(self.config.get("backup_retention_count", 7)))
         if hasattr(self, "voice_tts_var"):
             self.voice_tts_var.set(bool(self.config.get("voice_tts", False)))
         if hasattr(self, "tts_voice_combo"):
