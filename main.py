@@ -3189,7 +3189,7 @@ class MoyaIshkaApp:
                     cloud_note = str(details.get("cloud_status", "")).strip()
                     status = f"Резервная копия создана: {details.get('path', '')}"
                     if cloud_note:
-                        status += "\\n" + cloud_note
+                        status += chr(10) + cloud_note
                     self.backup_status_var.set(status)
                     self._set_status("Резервная копия данных создана")
                 elif event == "backup_auto_result":
