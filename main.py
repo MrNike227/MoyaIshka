@@ -33,7 +33,7 @@ from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
-    ensure_install_dir_writable, install_from_source, launch_windows_replacement, launch_windows_directory_replacement, sha256_file,
+    ensure_install_dir_writable, install_from_source, launch_windows_replacement, launch_windows_directory_replacement, validate_app_directory, sha256_file,
     resolve_install_dir, user_install_dir, scan_application_copies, delete_application_copy,
 )
 from voice_assistant import listen_once, speak_text, unload_piper_voice
@@ -4317,50 +4317,68 @@ class MoyaIshkaApp:
             messagebox.showinfo("Настройки обновлений", f"Папка установки сохранена:\n{install_dir}")
 
     def install_current_build_to_selected_folder(self) -> None:
-        """Move the current frozen build to the selected persistent folder.
-
-        A source/START.bat session is converted by the next published standalone EXE;
-        it is never copied as if main.py were an executable.
-        """
+        """Move the complete onedir folder using the verified transactional installer."""
         try:
-            destination_dir = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
-            self.config["install_dir"] = str(destination_dir)
+            destination = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+            self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
+
             if not getattr(sys, "frozen", False):
                 self.update_status_var.set(
-                    f"Папка сохранена: {destination_dir}. Текущий запуск идёт через Python; после установки первой EXE-версии она будет размещена здесь."
+                    f"Папка сохранена: {destination}. Автономная onedir-сборка будет установлена сюда."
                 )
                 messagebox.showinfo(
                     "Папка установки сохранена",
-                    "Сейчас приложение запущено из исходников, поэтому переносить нечего.\n\n"
-                    f"Первая автономная версия будет установлена сюда:\n{destination_dir}",
+                    "Сейчас приложение запущено из исходников. Переносить нечего.\n\n"
+                    f"Автономная версия будет установлена сюда:\n{destination}",
                 )
                 return
 
-            current_exe = Path(sys.executable).resolve()
-            target = destination_dir / "MoyaIshka.exe"
-            if current_exe == target.resolve():
-                self.update_status_var.set(f"Приложение уже установлено в {destination_dir}")
+            current_dir = Path(sys.executable).resolve().parent
+            if current_dir == destination:
+                self.update_status_var.set(f"Приложение уже установлено в {destination}")
                 messagebox.showinfo("Установка", "Текущая версия уже находится в выбранной папке.")
                 return
+
+            # Never copy only MoyaIshka.exe: Python DLL, cryptography and all
+            # native extensions belong to the _internal directory.
+            validate_app_directory(current_dir, APP_VERSION)
             if not messagebox.askyesno(
                 "Переместить приложение",
-                f"Будет создана копия приложения в выбранной папке и запущена оттуда.\n\n{destination_dir}\n\n"
-                "Текущее окно закроется. Прежний EXE останется в старой папке, пока ты не проверишь новую копию. Продолжить?",
+                "Будет скопирована вся папка приложения, включая _internal и DLL.\n\n"
+                f"Новая папка:\n{destination}\n\n"
+                "Текущая папка станет резервной, если там уже есть старая версия. "
+                "После проверки новая копия запустится автоматически. Продолжить?",
             ):
                 return
+
             import shutil
-            temporary = destination_dir / "MoyaIshka.installing.exe"
-            shutil.copy2(current_exe, temporary)
-            if temporary.stat().st_size != current_exe.stat().st_size:
-                temporary.unlink(missing_ok=True)
-                raise IOError("Скопированный EXE имеет неверный размер.")
-            os.replace(temporary, target)
-            subprocess.Popen([str(target)], cwd=str(destination_dir), close_fds=True)
+            staging_root = DATA_DIR / "update_staging"
+            staging_root.mkdir(parents=True, exist_ok=True)
+            staged_dir = staging_root / f"MoyaIshka_install_{uuid.uuid4().hex}"
+            shutil.copytree(current_dir, staged_dir)
+            validate_app_directory(staged_dir, APP_VERSION)
+
+            launch_windows_directory_replacement(
+                staged_app_dir=staged_dir,
+                target_dir=destination,
+                parent_pid=os.getpid(),
+                log_path=DATA_DIR / "update.log",
+                expected_version=APP_VERSION,
+                receipt_path=DATA_DIR / "update_confirmation.json",
+            )
+            self.update_status_var.set(
+                f"Перенос всей папки передан установщику. Новая копия: {destination}"
+            )
+            if self.avatar is not None:
+                self.avatar.hide()
             self.on_close()
         except Exception as exc:
-            messagebox.showerror("Установка", f"Не удалось установить приложение в выбранную папку.\n\n{exc}")
+            messagebox.showerror(
+                "Установка",
+                f"Текущая версия не затронута. Проверь, что запускается onedir-сборка 4.1.8.4.\n\n{exc}",
+            )
 
     def search_old_versions(self) -> None:
         """Scan common user folders for obsolete/staged MoyaIshka executables."""

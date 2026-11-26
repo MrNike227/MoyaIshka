@@ -215,6 +215,17 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Validate PowerShell folder updater syntax", workflow)
         self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", workflow)
 
+    def test_move_current_build_copies_complete_onedir_folder(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
+        end = source.index("    def search_old_versions(self) -> None:", start)
+        method = source[start:end]
+        self.assertIn("shutil.copytree(current_dir, staged_dir)", method)
+        self.assertIn("validate_app_directory(current_dir, APP_VERSION)", method)
+        self.assertIn("launch_windows_directory_replacement(", method)
+        self.assertNotIn("os.replace(temporary, target)", method)
+        self.assertIn("_internal", method)
+
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
         self.assertIn("validate_app_directory", helper)
