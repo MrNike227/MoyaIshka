@@ -148,7 +148,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Verify app-local VC runtime DLLs are present", workflow)
         self.assertIn("dist/MoyaIshka/_internal", workflow)
         self.assertIn("Verify onedir EXE starts without Python on PATH", workflow)
-        self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
+        self.assertIn("[System.Diagnostics.Process]::Start($startInfo)", workflow)
         self.assertIn("$process.ExitCode", workflow)
         self.assertIn("if ($process.ExitCode -ne 0)", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
@@ -251,8 +251,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_publishes_only_after_onedir_smoke_test(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertLess(workflow.index("Verify app-local VC runtime DLLs are present"), workflow.index("Verify frozen EXE imports"))
-        self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
+        self.assertLess(workflow.index("Verify app-local VC runtime DLLs are present"), workflow.index("Verify onedir EXE starts without Python on PATH"))
+        self.assertLess(workflow.index("Verify onedir EXE starts without Python on PATH"), workflow.index("Create release or replace assets"))
         self.assertIn("MoyaIshka.zip.sha256", workflow)
 
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
@@ -277,7 +277,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
-    def test_hotfix_marker_refreshes_existing_v4183_release_and_tag_only(self):
+    def test_hotfix_marker_refreshes_existing_v4184_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.4' }}", workflow)
         self.assertIn("- name: Update v4.1.8.4 tag to validated root source", workflow)
