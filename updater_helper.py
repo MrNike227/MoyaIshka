@@ -83,7 +83,7 @@ def sha256_file(path: str | Path) -> str:
     """Calculate SHA-256 without loading the whole EXE into RAM."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -741,8 +741,7 @@ def _directory_updater_script() -> str:
     # antivirus/indexers or shell handles) can hold a directory open and make
     # renaming the whole installation folder fail with "folder is in use".
     $AttemptId = [guid]::NewGuid().ToString('N')
-    $TempDir = Join-Path $Parent ($Name + '.installing.' + $AttemptId)
-    $BackupDir = Join-Path $Parent ($Name + '.previous.' + (Get-Date -Format 'yyyyMMddHHmmssfff') + '.' + $AttemptId)
+        $BackupDir = Join-Path $Parent ($Name + '.previous.' + (Get-Date -Format 'yyyyMMddHHmmssfff') + '.' + $AttemptId)
     $TargetChanged = $false
     $BackupReady = $false
     $HadPrevious = $false
@@ -850,7 +849,7 @@ def _directory_updater_script() -> str:
         }
         New-Item -ItemType Directory -Force -Path $Destination | Out-Null
         $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
-        & $copy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /MT:8 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+        & $copy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /MT:16 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
         $copyCode = $LASTEXITCODE
         if ($copyCode -gt 7) {
             throw ($Purpose + ': robocopy завершился с кодом ' + $copyCode + '.')
@@ -972,20 +971,6 @@ def _directory_updater_script() -> str:
         $stagedHash = VerifyFolder $StagedDir
         Log "Загруженная папка проверена за $([math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)) сек."
 
-        if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force }
-        New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-        $copyTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
-        & $copy $StagedDir $TempDir /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /MT:8 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
-        $robocopyCode = $LASTEXITCODE
-        if ($robocopyCode -gt 7) { throw "Не удалось скопировать папку (robocopy $robocopyCode)." }
-        Log "Копирование завершено (robocopy $robocopyCode) за $([math]::Round($copyTimer.Elapsed.TotalSeconds, 1)) сек."
-
-        # Verify the intermediate copy before touching the current installation.
-        # The final destination is verified again after its files are copied in place.
-        $copiedHash = VerifyFolder $TempDir
-        if ($copiedHash -ne $stagedHash) { throw 'SHA-256 главного EXE после копирования не совпадает.' }
-        Log "Копия проверена по манифесту. Общее время подготовки и проверки: $([math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)) сек."
 
         $HadPrevious = $false
         if (Test-Path -LiteralPath $TargetDir -PathType Container) {
@@ -1022,13 +1007,13 @@ def _directory_updater_script() -> str:
         # handle even after the application's process has exited.
         $TargetChanged = $true
         ClearDirectoryContents $TargetDir
-        [void](CopyDirectoryContents $TempDir $TargetDir 'Установка новой версии')
+        [void](CopyDirectoryContents $StagedDir $TargetDir 'Установка новой версии')
         $targetExe = Join-Path $TargetDir 'MoyaIshka.exe'
         if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) {
             throw 'После копирования в папку установки не найден MoyaIshka.exe.'
         }
         $ExeHash = VerifyFolder $TargetDir
-        if ($ExeHash -ne $copiedHash) {
+        if ($ExeHash -ne $stagedHash) {
             throw 'SHA-256 установленного EXE после копирования не совпадает.'
         }
 
@@ -1060,9 +1045,6 @@ def _directory_updater_script() -> str:
         }
         if (-not $confirmed) { throw 'Новая версия не подтвердила запуск за 90 секунд.' }
         Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $TempDir) {
-            Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
         Remove-Item -LiteralPath $StagedDir -Recurse -Force -ErrorAction SilentlyContinue
         Log "УСПЕХ: версия $ExpectedVersion работает. Резервная копия: $BackupDir"
         try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
@@ -1080,7 +1062,6 @@ def _directory_updater_script() -> str:
             Move-Item -LiteralPath $tempReceipt -Destination $ReceiptPath -Force
         } catch {}
         Rollback $message
-        if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
         try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
         exit 1
     }
@@ -1096,8 +1077,13 @@ def launch_windows_directory_replacement(
     receipt_path: str | Path | None = None,
     *,
     platform_name: str | None = None,
+    staged_verified: bool = False,
 ) -> Path:
-    """Launch a detached Windows helper to replace the entire onedir folder."""
+    """Launch a detached Windows helper to replace the entire onedir folder.
+
+    Set staged_verified only when the caller has just validated this exact staging
+    directory. The detached PowerShell helper always revalidates it before install.
+    """
     if (platform_name or os.name) != "nt":
         raise OSError("Замена папки приложения поддерживается только в Windows.")
     staged = Path(staged_app_dir).resolve()
@@ -1106,7 +1092,8 @@ def launch_windows_directory_replacement(
         raise ValueError("Папка обновления и папка установки должны быть разными.")
     if not expected_version.strip():
         raise ValueError("Не указана ожидаемая версия.")
-    validate_app_directory(staged, expected_version)
+    if not staged_verified:
+        validate_app_directory(staged, expected_version)
 
     log = Path(log_path).resolve()
     receipt = Path(receipt_path).resolve() if receipt_path else log.with_name("update_confirmation.json")
