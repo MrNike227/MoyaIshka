@@ -341,11 +341,11 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_inno_setup_does_not_reuse_legacy_install_path_and_creates_siblings(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
-        self.assertIn(r"DefaultDirName={localappdata}\\Programs\\MoyaIshka_Container\\App", installer)
+        self.assertIn(r"DefaultDirName={localappdata}\Programs\MoyaIshka_Container\App", installer)
         self.assertIn("UsePreviousAppDir=no", installer)
-        self.assertIn(r'Name: "{app}\\..\\Updates"', installer)
-        self.assertIn(r'UninstallFilesDir={app}\\..\\Uninstall', installer)
-        self.assertIn(r'Name: "{app}\\..\\Uninstall"', installer)
+        self.assertIn(r'Name: "{app}\..\Updates"', installer)
+        self.assertIn(r'UninstallFilesDir={app}\..\Uninstall', installer)
+        self.assertIn(r'Name: "{app}\..\Uninstall"', installer)
 
     def test_staged_update_modes_share_one_install_implementation(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
