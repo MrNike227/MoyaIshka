@@ -263,8 +263,8 @@ def extract_unified_diff(response: str, expected_path: str) -> str:
             body.append(line if line.endswith("\n") else line + "\n")
         else:
             break
-    if not any(line.startswith("+") for line in body) or not any(line.startswith("-") for line in body):
-        raise ValueError("В diff нет парных строк добавления и удаления.")
+    if not any(line.startswith(("+", "-")) for line in body):
+        raise ValueError("В diff нет строк добавления или удаления.")
     return "--- a/" + expected + "\n+++ b/" + expected + "\n" + "".join(body)
 
 
