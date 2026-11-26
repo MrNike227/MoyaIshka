@@ -981,23 +981,11 @@ def _directory_updater_script() -> str:
         if ($robocopyCode -gt 7) { throw "Не удалось скопировать папку (robocopy $robocopyCode)." }
         Log "Копирование завершено (robocopy $robocopyCode) за $([math]::Round($copyTimer.Elapsed.TotalSeconds, 1)) сек."
 
-        # Verify the copied folder once. After a same-volume directory rename,
-        # file contents do not change, so a third full-tree SHA pass is redundant.
+        # Verify the intermediate copy before touching the current installation.
+        # The final destination is verified again after its files are copied in place.
         $copiedHash = VerifyFolder $TempDir
         if ($copiedHash -ne $stagedHash) { throw 'SHA-256 главного EXE после копирования не совпадает.' }
         Log "Копия проверена по манифесту. Общее время подготовки и проверки: $([math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)) сек."
-
-        $hadPrevious = $false
-        if (Test-Path -LiteralPath $TargetDir -PathType Container) {
-            $oldItems = @(Get-ChildItem -LiteralPath $TargetDir -Force -ErrorAction Stop)
-            $hadPrevious = ($oldItems.Count -gt 0)
-            if ($hadPrevious -and -not (
-                (Test-Path -LiteralPath (Join-Path $TargetDir 'MoyaIshka.exe') -PathType Leaf) -or
-                (Test-Path -LiteralPath (Join-Path $TargetDir 'build_manifest.json') -PathType Leaf)
-            )) {
-                throw 'Целевая папка уже содержит другие файлы и не распознана как установка Моей ИИшки. Выбери отдельную папку.'
-            }
-        }
 
         $HadPrevious = $false
         if (Test-Path -LiteralPath $TargetDir -PathType Container) {
