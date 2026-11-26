@@ -66,15 +66,30 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
                 shutil.copy2(candidate, destination)
             if not (sandbox / "tests").is_dir():
                 raise ProposalTestError("В проекте не найдена папка tests.")
-            process = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
-                cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=max(30, min(int(timeout_seconds), 600)),
-            )
-            report.update(
-                tests_exit_code=process.returncode, stdout=process.stdout[-12000:],
-                stderr=process.stderr[-12000:], passed=process.returncode == 0,
-            )
+            if getattr(sys, "frozen", False):
+                runner_result = Path(temporary) / "runner_result.json"
+                process = subprocess.run(
+                    [sys.executable, "--run-proposal-tests", str(sandbox), str(runner_result)],
+                    cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=max(30, min(int(timeout_seconds), 600)),
+                )
+                runner_data = json.loads(runner_result.read_text(encoding="utf-8")) if runner_result.is_file() else {}
+                report.update(
+                    tests_exit_code=process.returncode,
+                    stdout=str(runner_data.get("stdout", process.stdout))[-12000:],
+                    stderr=str(runner_data.get("stderr", process.stderr))[-12000:],
+                    passed=process.returncode == 0 and bool(runner_data.get("passed")),
+                )
+            else:
+                process = subprocess.run(
+                    [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
+                    cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=max(30, min(int(timeout_seconds), 600)),
+                )
+                report.update(
+                    tests_exit_code=process.returncode, stdout=process.stdout[-12000:],
+                    stderr=process.stderr[-12000:], passed=process.returncode == 0,
+                )
     except subprocess.TimeoutExpired as exc:
         report["error"] = f"Превышено время выполнения тестов ({exc.timeout} секунд)."
         report["stdout"] = str(exc.stdout or "")[-12000:]
@@ -92,3 +107,40 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     _write_text_atomic(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     report["report_path"] = str(report_path)
     return report
+
+
+def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) -> int:
+    """Entry point used by the frozen EXE to run tests without an external Python install."""
+    import contextlib
+    import io
+    import os
+    import unittest
+    root = Path(project_root).expanduser().resolve()
+    output_path = Path(result_path).expanduser().resolve()
+    result_data: dict[str, Any] = {"passed": False, "stdout": "", "stderr": "", "tests_run": 0}
+    stream = io.StringIO()
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(root)
+        sys.path.insert(0, str(root))
+        loader = unittest.TestLoader()
+        suite = loader.discover(str(root / "tests"), pattern="test_*.py", top_level_dir=str(root))
+        runner = unittest.TextTestRunner(stream=stream, verbosity=2)
+        result = runner.run(suite)
+        result_data.update(
+            passed=result.wasSuccessful(), tests_run=result.testsRun,
+            failures=len(result.failures), errors=len(result.errors), stdout=stream.getvalue(),
+        )
+    except Exception as exc:
+        result_data["stderr"] = str(exc)
+    finally:
+        try:
+            os.chdir(old_cwd)
+        except OSError:
+            pass
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            return 2
+    return 0 if result_data.get("passed") else 1
