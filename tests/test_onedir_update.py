@@ -10,7 +10,7 @@ from updater import _extract_package, _safe_member_path, validate_app_folder
 from updater_helper import validate_app_directory
 
 
-def write_fake_app(root: Path, version: str = "4.2.0") -> Path:
+def write_fake_app(root: Path, version: str = "4.2.1") -> Path:
     app = root / "MoyaIshka"
     internal = app / "_internal"
     internal.mkdir(parents=True)
@@ -103,7 +103,7 @@ class OnedirUpdateTests(unittest.TestCase):
 
         def fake_extract(archive, destination, version):
             self.assertEqual(archive.read_bytes(), payload)
-            self.assertEqual(version, "4.2.0")
+            self.assertEqual(version, "4.2.1")
             app = destination / "MoyaIshka"
             app.mkdir()
             exe = app / "MoyaIshka.exe"
@@ -113,7 +113,7 @@ class OnedirUpdateTests(unittest.TestCase):
         info = {
             "package_url": "https://example.test/MoyaIshka.zip",
             "checksum_url": "https://example.test/MoyaIshka.zip.sha256",
-            "version": "4.2.0",
+            "version": "4.2.1",
         }
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "update_staging"
@@ -171,41 +171,41 @@ class OnedirUpdateTests(unittest.TestCase):
     def test_folder_manifest_is_checked_file_by_file(self):
         with tempfile.TemporaryDirectory() as temp:
             app = write_fake_app(Path(temp))
-            self.assertEqual(validate_app_folder(app, "4.2.0")["version"], "4.2.0")
-            self.assertEqual(validate_app_directory(app, "4.2.0")["version"], "4.2.0")
+            self.assertEqual(validate_app_folder(app, "4.2.1")["version"], "4.2.1")
+            self.assertEqual(validate_app_directory(app, "4.2.1")["version"], "4.2.1")
 
     def test_unmanifested_runtime_dll_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             app = write_fake_app(Path(temp))
             (app / "_internal" / "unexpected.dll").write_bytes(b"unexpected")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
-                validate_app_folder(app, "4.2.0")
+                validate_app_folder(app, "4.2.1")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
-                validate_app_directory(app, "4.2.0")
+                validate_app_directory(app, "4.2.1")
 
     def test_tampered_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             app = write_fake_app(Path(temp))
             (app / "_internal/python311.dll").write_bytes(b"tampered")
             with self.assertRaisesRegex(RuntimeError, "Размер файла"):
-                validate_app_folder(app, "4.2.0")
+                validate_app_folder(app, "4.2.1")
 
     def test_wrong_version_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             app = write_fake_app(Path(temp), "4.1.8.3")
             with self.assertRaisesRegex(RuntimeError, "Версия"):
-                validate_app_folder(app, "4.2.0")
+                validate_app_folder(app, "4.2.1")
 
     def test_built_zip_extracts_to_staging_folder_and_validates(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = write_fake_app(root)
             output = root / "MoyaIshka.zip"
-            build_package(source, output, "4.2.0")
-            staged = _extract_package(output, root / "update_staging", "4.2.0")
+            build_package(source, output, "4.2.1")
+            staged = _extract_package(output, root / "update_staging", "4.2.1")
             self.assertTrue(staged.is_file())
             self.assertTrue((staged.parent / "_internal/python311.dll").is_file())
-            self.assertEqual(validate_app_folder(staged.parent, "4.2.0")["version"], "4.2.0")
+            self.assertEqual(validate_app_folder(staged.parent, "4.2.1")["version"], "4.2.1")
 
     def test_duplicate_archive_entries_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -215,7 +215,7 @@ class OnedirUpdateTests(unittest.TestCase):
                 bundle.writestr("MoyaIshka/file.txt", "one")
                 bundle.writestr("MoyaIshka/file.txt", "two")
             with self.assertRaisesRegex(RuntimeError, "повторяется путь"):
-                _extract_package(archive, root / "stage", "4.2.0")
+                _extract_package(archive, root / "stage", "4.2.1")
 
 
 if __name__ == "__main__":
