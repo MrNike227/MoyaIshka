@@ -12,6 +12,9 @@ from improvement_delivery import (
     save_improvement_suggestions,
     build_improvement_chat_context,
     load_improvement_suggestions,
+    is_chat_improvement_idea,
+    save_chat_improvement_idea,
+    load_chat_improvement_ideas,
 )
 
 
@@ -149,6 +152,45 @@ class ImprovementDeliveryTests(unittest.TestCase):
             )
             self.assertLessEqual(len(context), 900)
             self.assertIn("недоверенными данными", context)
+
+    def test_chat_improvement_ideas_are_detected_without_capturing_regular_questions(self):
+        self.assertTrue(is_chat_improvement_idea("Добавить возможность создавать резервные копии автоматически"))
+        self.assertTrue(is_chat_improvement_idea("Предлагаю улучшить поиск по истории чатов"))
+        self.assertTrue(is_chat_improvement_idea("Было бы удобно добавить быстрые команды"))
+        self.assertFalse(is_chat_improvement_idea("Как работает резервное копирование?"))
+        self.assertFalse(is_chat_improvement_idea("Привет, как дела?"))
+
+    def test_chat_improvement_ideas_are_saved_deduplicated_and_available_to_analysis(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            first = "Добавить возможность создавать резервные копии автоматически"
+            saved_path = save_chat_improvement_idea(updates, first)
+            self.assertIsNotNone(saved_path)
+            self.assertEqual(
+                save_chat_improvement_idea(updates, "  " + first.lower() + "  "),
+                saved_path,
+            )
+            self.assertIsNone(save_chat_improvement_idea(updates, "Как работает резервное копирование?"))
+            items = load_chat_improvement_ideas(updates)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["text"], first)
+            context = build_improvement_chat_context(
+                updates, "Расскажи о предложениях саморазвития",
+            )
+            self.assertIn(first, context)
+
+    def test_chat_improvement_ideas_are_bounded_to_latest_twenty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            for index in range(25):
+                save_chat_improvement_idea(
+                    updates,
+                    f"Добавить новую полезную возможность номер {index}",
+                )
+            items = load_chat_improvement_ideas(updates)
+            self.assertEqual(len(items), 20)
+            self.assertIn("номер 24", items[-1]["text"])
+            self.assertNotIn("номер 0", " ".join(item["text"] for item in items))
 
     def test_change_bundle_rejects_invalid_python(self):
         with tempfile.TemporaryDirectory() as temp:
