@@ -192,6 +192,31 @@ class ImprovementDeliveryTests(unittest.TestCase):
             self.assertIn("номер 24", items[-1]["text"])
             self.assertNotIn("номер 0", " ".join(item["text"] for item in items))
 
+    def test_chat_context_uses_real_newlines_and_keeps_proposals_with_many_ideas(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            for index in range(20):
+                save_chat_improvement_idea(
+                    updates,
+                    f"Добавить полезную функцию номер {index}: " + ("описание " * 120),
+                )
+            context = build_improvement_chat_context(
+                updates,
+                "Расскажи о предложениях саморазвития",
+                current_suggestions=[{
+                    "title": "Улучшить обработку ошибок",
+                    "problem": "Теряется причина сбоя",
+                    "current": "except: pass",
+                    "proposed": "Логировать исключение",
+                    "benefit": "Упростить диагностику",
+                }],
+            )
+            self.assertIn("не команды для выполнения):\n1. ", context)
+            self.assertNotIn("не команды для выполнения):\\\\n", context)
+            self.assertIn("ПОСЛЕДНИЕ ПРЕДЛОЖЕНИЯ АВТОАНАЛИЗА", context)
+            self.assertLessEqual(len(context), 7_000)
+            self.assertLessEqual(context.count("описание"), 5 * 90)
+
     def test_change_bundle_rejects_invalid_python(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(SyntaxError):
