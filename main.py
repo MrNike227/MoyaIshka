@@ -83,7 +83,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.2"
+APP_VERSION = "4.2.3"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -218,7 +218,7 @@ def prepare_source_workspace() -> Path:
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.2_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.3_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
             "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_github_pr.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
@@ -6022,6 +6022,7 @@ class MoyaIshkaApp:
                     log_path=DATA_DIR / "update.log",
                     expected_version=APP_VERSION,
                     receipt_path=DATA_DIR / "update_confirmation.json",
+                    staged_verified=True,
                 )
             except Exception:
                 for key, value in previous_values.items():
@@ -6235,63 +6236,61 @@ class MoyaIshkaApp:
         except Exception as exc:
             self.events.put(("update_error", str(exc)))
 
-    def _install_staged_update_from_source(self, install_dir: str | Path | None = None) -> None:
-        """Install the staged onedir folder after this source process exits."""
-        if not self.staged_update_path or not self.staged_update_path.exists():
-            messagebox.showerror("Обновление", "Папка обновления не найдена. Проверь обновления ещё раз.")
+    def _start_staged_update_install(
+        self,
+        install_dir: str | Path | None = None,
+        *,
+        source_process: bool = False,
+    ) -> None:
+        """Share the confirmed onedir install path for source and frozen launches."""
+        staged = self.staged_update_path
+        if not staged or not staged.is_file():
+            messagebox.showerror("Обновление", "Проверенный EXE обновления не найден. Проверь обновления ещё раз.")
             return
         try:
             destination = ensure_install_dir_writable(install_dir or self._selected_install_dir())
             self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
-            self.update_install_dir_var.set(str(destination))
+            if source_process and hasattr(self, "update_install_dir_var"):
+                self.update_install_dir_var.set(str(destination))
+
             launch_windows_directory_replacement(
-                staged_app_dir=self.staged_update_path.parent,
+                staged_app_dir=staged.parent,
                 target_dir=destination,
                 parent_pid=os.getpid(),
                 log_path=DATA_DIR / "update.log",
                 expected_version=self.staged_update_version,
                 receipt_path=DATA_DIR / "update_confirmation.json",
+                # download_verified_update validates the extracted manifest;
+                # the detached helper validates it again immediately before install.
+                staged_verified=True,
             )
-            self.update_status_var.set(
-                f"Передаю замену всей папки установщику. Резервная копия: {destination}.previous"
-            )
+            if source_process:
+                self.update_status_var.set(
+                    f"Передаю замену папки установщику. Резервная копия: {destination}.previous"
+                )
+            else:
+                self.update_status_var.set(
+                    f"Обновление устанавливается в {destination}. При сбое предыдущая версия будет восстановлена."
+                )
             if self.avatar is not None:
                 self.avatar.hide()
             self.on_close()
         except Exception as exc:
-            messagebox.showerror(
-                "Не удалось установить обновление",
-                f"Текущая версия не затронута.\n\nПричина: {exc}\n\nПакет сохранён здесь:\n{self.staged_update_path.parent}",
-            )
+            if source_process:
+                messagebox.showerror(
+                    "Не удалось установить обновление",
+                    f"Текущая версия не затронута.\\n\\nПричина: {exc}\\n\\nПакет сохранён здесь:\\n{staged.parent}",
+                )
+            else:
+                messagebox.showerror("Обновление", f"Текущая версия продолжает работать.\\n\\n{exc}")
+
+    def _install_staged_update_from_source(self, install_dir: str | Path | None = None) -> None:
+        self._start_staged_update_install(install_dir, source_process=True)
 
     def _apply_staged_update(self, install_dir: str | Path | None = None) -> None:
-        if not self.staged_update_path or not self.staged_update_path.exists():
-            messagebox.showerror("Обновление", "Папка обновления не найдена.")
-            return
-        try:
-            destination = ensure_install_dir_writable(install_dir or self._selected_install_dir())
-            # This method is called only after the user accepts installation.
-            self.config["install_dir"] = str(destination)
-            self.config["install_dir_user_selected"] = True
-            atomic_json_save(CONFIG_PATH, self.config)
-            launch_windows_directory_replacement(
-                staged_app_dir=self.staged_update_path.parent,
-                target_dir=destination,
-                parent_pid=os.getpid(),
-                log_path=DATA_DIR / "update.log",
-                expected_version=self.staged_update_version,
-                receipt_path=DATA_DIR / "update_confirmation.json",
-            )
-            self.update_status_var.set(
-                f"Обновление заменит всю папку {destination}. При сбое предыдущая версия будет восстановлена."
-            )
-            if self.avatar is not None:
-                self.avatar.hide()
-            self.on_close()
-        except Exception as exc:
-            messagebox.showerror("Обновление", f"Текущая версия продолжает работать.\n\n{exc}")
+        self._start_staged_update_install(install_dir, source_process=False)
 
     # ---------- memory ----------
     def _refresh_memory_list(self) -> None:
@@ -6630,7 +6629,7 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.2-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.3-smoke")
         plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.2-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
