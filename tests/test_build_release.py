@@ -120,6 +120,51 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "vcruntime140.dll"):
                 collect_runtime_dlls([source], root / "bundle")
 
+
+    def test_runtime_dll_collector_finds_missing_python_dlls_in_visual_studio_redist(self):
+        import os
+        from unittest.mock import patch
+        from prepare_python_runtime import collect_runtime_dlls, discover_visual_c_runtime_roots
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            python = root / "python311"
+            python.mkdir()
+            redist = (
+                root / "Visual Studio" / "2022" / "BuildTools" / "VC" / "Redist"
+                / "MSVC" / "14.42.34433" / "x64" / "Microsoft.VC143.CRT"
+            )
+            redist.mkdir(parents=True)
+
+            def write_pe(path):
+                data = bytearray(0x86)
+                data[:2] = b"MZ"
+                data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+                data[0x80:0x84] = b"PE\\0\\0"
+                data[0x84:0x86] = (0x8664).to_bytes(2, "little")
+                path.write_bytes(data)
+
+            for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+                write_pe(redist / name)
+
+            environment = {
+                "ProgramFiles": str(root),
+                "ProgramFiles(x86)": str(root),
+                "VCToolsRedistDir": "",
+                "VSINSTALLDIR": "",
+            }
+            with patch.dict(os.environ, environment):
+                roots = discover_visual_c_runtime_roots()
+                self.assertIn(redist.resolve(), roots)
+                copied = collect_runtime_dlls([python, *roots], root / "bundle")
+
+            self.assertEqual(
+                {path.name for path in copied},
+                {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"},
+            )
+            for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+                self.assertEqual((root / "bundle" / name).read_bytes()[:2], b"MZ")
+
     def test_cryptography_is_explicitly_collected(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         self.assertIn("--additional-hooks-dir hooks", build)
