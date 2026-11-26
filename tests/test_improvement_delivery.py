@@ -160,6 +160,9 @@ class ImprovementDeliveryTests(unittest.TestCase):
         self.assertTrue(is_chat_improvement_idea("Добавить возможность создавать резервные копии автоматически"))
         self.assertTrue(is_chat_improvement_idea("Предлагаю улучшить поиск по истории чатов"))
         self.assertTrue(is_chat_improvement_idea("Было бы удобно добавить быстрые команды"))
+        self.assertTrue(is_chat_improvement_idea("Я хочу добавить возможность экспорта истории"))
+        self.assertTrue(is_chat_improvement_idea("Давайте добавим резервное копирование"))
+
         self.assertFalse(is_chat_improvement_idea("Как работает резервное копирование?"))
         self.assertFalse(is_chat_improvement_idea("Привет, как дела?"))
 
