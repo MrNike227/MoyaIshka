@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from package_onedir import build_package
+from package_onedir import build_package, SHA256_CHUNK_BYTES
 from updater import _extract_package, _safe_member_path, validate_app_folder
 from updater_helper import validate_app_directory, _directory_updater_script
 
@@ -178,12 +178,16 @@ class OnedirUpdateTests(unittest.TestCase):
         self.assertIn("/MT:16", script)
         self.assertNotIn("/MT:8", script)
 
-    def test_updater_stream_buffers_are_four_megabytes(self):
+    def test_download_extract_and_hash_buffers_are_fifty_megabytes(self):
         from updater import DOWNLOAD_CHUNK_BYTES, FILE_HASH_CHUNK_BYTES, EXTRACT_CHUNK_BYTES
-        expected = 4 * 1024 * 1024
+        from updater_helper import FILE_HASH_CHUNK_BYTES as INSTALL_HASH_CHUNK_BYTES
+
+        expected = 50 * 1024 * 1024
         self.assertEqual(DOWNLOAD_CHUNK_BYTES, expected)
         self.assertEqual(FILE_HASH_CHUNK_BYTES, expected)
         self.assertEqual(EXTRACT_CHUNK_BYTES, expected)
+        self.assertEqual(INSTALL_HASH_CHUNK_BYTES, expected)
+        self.assertEqual(SHA256_CHUNK_BYTES, expected)
 
     def test_archive_path_traversal_is_rejected(self):
         for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):
