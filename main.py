@@ -2966,7 +2966,7 @@ class MoyaIshkaApp:
                 if context:
                     last_user["content"] += "\n\n" + context
         return trim_conversation_context(
-            messages, max_chars=48_000, max_messages=MAX_CONTEXT_MESSAGES + 1
+            messages, max_chars=18_000, max_messages=MAX_CONTEXT_MESSAGES + 1
         )
 
     @staticmethod

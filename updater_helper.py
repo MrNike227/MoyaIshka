@@ -682,6 +682,21 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         expected = str(item.get("sha256", "")).lower()
         if len(expected) != 64 or sha256_file(path).lower() != expected:
             raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
+    actual_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
+        if path.is_file() and path.name != "build_manifest.json":
+            actual_files.add(path.relative_to(root).as_posix().casefold())
+    if actual_files != seen:
+        missing = sorted(seen - actual_files)
+        extra = sorted(actual_files - seen)
+        details = []
+        if missing:
+            details.append("отсутствуют: " + ", ".join(missing[:8]))
+        if extra:
+            details.append("лишние: " + ", ".join(extra[:8]))
+        raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
     exe = root / "MoyaIshka.exe"
     if not exe.is_file() or sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
         raise RuntimeError("Главный EXE не прошёл проверку SHA-256.")
@@ -856,6 +871,7 @@ def _directory_updater_script() -> str:
         Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $StagedDir -Recurse -Force -ErrorAction SilentlyContinue
         Log "УСПЕХ: версия $ExpectedVersion работает. Резервная копия: $BackupDir"
+        try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
         exit 0
     } catch {
         $message = $_.Exception.Message
@@ -871,6 +887,7 @@ def _directory_updater_script() -> str:
         } catch {}
         Rollback $message
         if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
+        try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
         exit 1
     }
     '''

@@ -40,6 +40,53 @@ def write_fake_app(root: Path, version: str = "4.1.8.4") -> Path:
 
 
 class OnedirUpdateTests(unittest.TestCase):
+    def test_large_package_download_streams_to_disk_and_checks_size(self):
+        from unittest.mock import patch
+        from io import BytesIO
+        from updater import _download_to
+
+        class FakeResponse:
+            headers = {"Content-Length": "6"}
+            def __init__(self):
+                self.stream = BytesIO(b"abcdef")
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, size=-1):
+                return self.stream.read(size)
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "download.zip"
+            with patch("updater.urllib.request.urlopen", return_value=FakeResponse()):
+                digest, size = _download_to("https://example.test/file", path, 10)
+            self.assertEqual(size, 6)
+            self.assertEqual(path.read_bytes(), b"abcdef")
+            self.assertEqual(digest, hashlib.sha256(b"abcdef").hexdigest())
+
+    def test_stream_download_rejects_announced_oversized_content(self):
+        from unittest.mock import patch
+        from io import BytesIO
+        from updater import _download_to
+
+        class FakeResponse:
+            headers = {"Content-Length": "100"}
+            def __init__(self):
+                self.stream = BytesIO(b"small")
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, size=-1):
+                return self.stream.read(size)
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "download.zip"
+            with patch("updater.urllib.request.urlopen", return_value=FakeResponse()):
+                with self.assertRaisesRegex(RuntimeError, "лимит"):
+                    _download_to("https://example.test/file", path, 10)
+            self.assertFalse(path.exists())
+
     def test_archive_path_traversal_is_rejected(self):
         for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):
             with self.subTest(path=path), self.assertRaises(RuntimeError):

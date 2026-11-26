@@ -24,6 +24,43 @@ def _get(url: str) -> bytes:
         return response.read()
 
 
+def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES) -> tuple[str, int]:
+    """Stream package bytes to disk and hash incrementally instead of holding a ZIP in RAM."""
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "MoyaIshka-Updater/4", "Accept": "application/octet-stream"},
+    )
+    digest = hashlib.sha256()
+    total = 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response, destination.open("wb") as output:
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    announced = int(content_length)
+                except (TypeError, ValueError):
+                    announced = 0
+                if announced > max_bytes:
+                    raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+        if total <= 0:
+            raise RuntimeError("Сервер вернул пустой пакет обновления.")
+        return digest.hexdigest(), total
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+
 def version_tuple(value: str) -> tuple[int, ...]:
     match = re.search(r"(\d+(?:\.\d+){1,3})", value)
     if not match:
@@ -106,6 +143,21 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
         expected_hash = str(entry.get("sha256", "")).lower()
         if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or _sha256_file(path) != expected_hash:
             raise RuntimeError(f"Контрольная сумма файла пакета не совпадает: {relative}.")
+    actual_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
+        if path.is_file() and path.name != "build_manifest.json":
+            actual_files.add(path.relative_to(root).as_posix().casefold())
+    if actual_files != seen:
+        missing = sorted(seen - actual_files)
+        extra = sorted(actual_files - seen)
+        details = []
+        if missing:
+            details.append("отсутствуют: " + ", ".join(missing[:8]))
+        if extra:
+            details.append("лишние: " + ", ".join(extra[:8]))
+        raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
     exe = root / "MoyaIshka.exe"
     if not exe.is_file() or _sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
         raise RuntimeError("SHA-256 главного EXE не совпадает с манифестом.")
@@ -159,23 +211,22 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
 def download_verified_update(info: dict[str, Any], target_dir: Path) -> Path:
     if not info.get("package_url") or not info.get("checksum_url"):
         raise RuntimeError("В релизе не найдены MoyaIshka.zip и MoyaIshka.zip.sha256.")
-    binary = _get(str(info["package_url"]))
-    if len(binary) > MAX_PACKAGE_BYTES:
-        raise RuntimeError("Пакет обновления превышает допустимый размер 2 ГБ.")
     checksum_text = _get(str(info["checksum_url"])).decode("utf-8", errors="replace").strip()
     match = re.search(r"\b([a-fA-F0-9]{64})\b", checksum_text)
-    actual = hashlib.sha256(binary).hexdigest()
-    if not match or actual.lower() != match.group(1).lower():
-        raise RuntimeError("Контрольная сумма пакета не совпадает. Обновление отклонено.")
+    if not match:
+        raise RuntimeError("Файл контрольной суммы имеет неверный формат.")
     target_dir.mkdir(parents=True, exist_ok=True)
     archive = target_dir / "MoyaIshka_update.zip"
     temporary = archive.with_suffix(".tmp")
-    temporary.write_bytes(binary)
-    temporary.replace(archive)
     try:
+        actual, _ = _download_to(str(info["package_url"]), temporary, MAX_PACKAGE_BYTES)
+        if actual.lower() != match.group(1).lower():
+            raise RuntimeError("Контрольная сумма пакета не совпадает. Обновление отклонено.")
+        temporary.replace(archive)
         staged_exe = _extract_package(archive, target_dir, str(info.get("version", "")))
         archive.unlink(missing_ok=True)
         return staged_exe
     except Exception:
+        temporary.unlink(missing_ok=True)
         archive.unlink(missing_ok=True)
         raise
