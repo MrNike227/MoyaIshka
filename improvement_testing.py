@@ -87,7 +87,7 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
             )
         except (UnicodeDecodeError, ValueError):
             continue
-        normalize = lambda value: value.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n")
         if normalize(reconstructed) == normalize(updated_text):
             patch_matches.append(relative.as_posix())
     if len(patch_matches) != 1:
@@ -137,8 +137,8 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
                     cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace",
                     timeout=max(30, min(int(timeout_seconds), 600)),
                 )
-                combined_output = process.stdout + "\\n" + process.stderr
-                match = re.search(r"Ran\\s+(\\d+)\\s+tests?", combined_output)
+                combined_output = process.stdout + "\n" + process.stderr
+                match = re.search(r"Ran\s+(\d+)\s+tests?", combined_output)
                 tests_run = int(match.group(1)) if match else 0
                 report.update(
                     tests_exit_code=process.returncode, tests_run=tests_run,
