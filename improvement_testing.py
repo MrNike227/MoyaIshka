@@ -34,8 +34,8 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     if not isinstance(manifest, dict):
         raise ProposalTestError("Манифест предложения имеет неверный формат.")
     entries = manifest.get("files")
-    if manifest.get("schema") != 1 or not isinstance(entries, list) or not entries or len(entries) > 10:
-        raise ProposalTestError("Неподдерживаемый формат или пустой список файлов.")
+    if manifest.get("schema") != 1 or not isinstance(entries, list) or len(entries) != 1:
+        raise ProposalTestError("Пакет должен содержать один изменённый Python-файл.")
     patch_meta = manifest.get("patch")
     if not isinstance(patch_meta, dict) or patch_meta.get("path") != "changes.patch":
         raise ProposalTestError("В манифесте отсутствует корректная ссылка на diff.")
