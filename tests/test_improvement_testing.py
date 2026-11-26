@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -16,7 +17,9 @@ class ImprovementTestingTests(unittest.TestCase):
     def make_bundle(self, temp, value):
         return save_change_bundle(
             Path(temp) / "Updates", "sample.py", "VALUE = 1\n",
-            f"VALUE = {value}\n", "--- a/sample.py\n+++ b/sample.py\n")
+            f"VALUE = {value}\n",
+            f"--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = {value}\n",
+        )
 
     def test_passed_proposal_runs_in_copy_and_preserves_source(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -52,6 +55,31 @@ class ImprovementTestingTests(unittest.TestCase):
             bundle = self.make_bundle(temp, 2)
             (root / "sample.py").write_text("VALUE = 9\n", encoding="utf-8")
             with self.assertRaisesRegex(ProposalTestError, "уже изменился"):
+                test_change_bundle(bundle, root)
+
+    def test_mismatched_diff_is_rejected_even_when_its_hash_is_updated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+            patch = (
+                "--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n"
+                "-VALUE = 1\n+VALUE = 99\n"
+            ).encode("utf-8")
+            (bundle / "changes.patch").write_bytes(patch)
+            manifest_path = bundle / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["patch"]["size"] = len(patch)
+            manifest["patch"]["sha256"] = hashlib.sha256(patch).hexdigest()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ProposalTestError, "diff не соответствует"):
+                test_change_bundle(bundle, root)
+
+    def test_non_object_manifest_is_rejected_cleanly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+            (bundle / "manifest.json").write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(ProposalTestError, "неверный формат"):
                 test_change_bundle(bundle, root)
 
     def test_tampered_proposal_file_is_rejected(self):
