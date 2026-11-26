@@ -729,6 +729,7 @@ class MoyaIshkaApp:
         self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
         self.pending_patch_text = ""
         self.improvement_suggestions: list[dict[str, str]] = []
+        self.improvement_analysis_busy = False
         self._auto_improvement_after_id: str | None = None
         self.staged_update_path: Path | None = None
         self.staged_update_version = ""
@@ -3565,6 +3566,7 @@ class MoyaIshkaApp:
                     self.voice_status_var.set(str(payload))
                     self._set_status("Голосовой ввод остановлен или не выполнен")
                 elif event == "improvement_analysis":
+                    self.improvement_analysis_busy = False
                     suggestions, automatic = payload
                     self.improvement_suggestions = list(suggestions)
                     try:
@@ -3590,6 +3592,7 @@ class MoyaIshkaApp:
                         self.improvement_preview.insert("1.0", "Существенных улучшений не найдено.")
                         self.improvement_preview.configure(state="disabled")
                 elif event == "improvement_analysis_error":
+                    self.improvement_analysis_busy = False
                     automatic, error_text = payload
                     self.improve_status_var.set(str(error_text))
                     if not automatic:
@@ -5533,9 +5536,20 @@ class MoyaIshkaApp:
         self._auto_improvement_after_id = None
         if not bool(self.config.get("self_improve_auto_enabled", False)):
             return
-        if not self.busy and not bool(getattr(self, "research_busy", False)):
-            self.analyze_improvements(silent=True)
-        self._auto_improvement_after_id = self.root.after(24 * 60 * 60 * 1000, self._run_scheduled_improvement_analysis)
+        if (
+            self.busy
+            or bool(getattr(self, "research_busy", False))
+            or bool(getattr(self, "improvement_analysis_busy", False))
+        ):
+            self.improve_status_var.set("Автоанализ отложен: программа занята. Повторю проверку позже.")
+            self._auto_improvement_after_id = self.root.after(
+                10 * 60 * 1000, self._run_scheduled_improvement_analysis,
+            )
+            return
+        self.analyze_improvements(silent=True)
+        self._auto_improvement_after_id = self.root.after(
+            24 * 60 * 60 * 1000, self._run_scheduled_improvement_analysis,
+        )
 
     def _show_selected_improvement(self, _event: tk.Event | None = None) -> None:
         selected = self.improvement_listbox.curselection() if hasattr(self, "improvement_listbox") else ()
@@ -5562,6 +5576,9 @@ class MoyaIshkaApp:
             if not silent:
                 messagebox.showerror("Саморазвитие", error)
             return
+        if bool(getattr(self, "improvement_analysis_busy", False)):
+            self.improve_status_var.set("Самоанализ уже выполняется. Дождись завершения текущей проверки.")
+            return
         try:
             source = target.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -5578,6 +5595,7 @@ class MoyaIshkaApp:
             if not silent:
                 messagebox.showerror("Саморазвитие", str(exc))
             return
+        self.improvement_analysis_busy = True
         self.improvement_suggestions = []
         self.improvement_listbox.delete(0, "end")
         self.improvement_preview.configure(state="normal")
