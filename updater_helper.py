@@ -19,6 +19,7 @@ from typing import Any
 
 
 WINDOWS_GENERATED_METADATA_FILES = frozenset({"desktop.ini", "thumbs.db", "ehthumbs.db"})
+FILE_HASH_CHUNK_BYTES = 50 * 1024 * 1024
 
 
 def user_install_dir() -> Path:
@@ -83,7 +84,7 @@ def sha256_file(path: str | Path) -> str:
     """Calculate SHA-256 without loading the whole EXE into RAM."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(FILE_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
