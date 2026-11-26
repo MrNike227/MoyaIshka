@@ -29,6 +29,10 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import tkinter as tk
 from typing import Any
 
+if __name__ == "__main__" and len(sys.argv) >= 4 and sys.argv[1] == "--run-proposal-tests":
+    from improvement_testing import run_proposal_tests_cli
+    raise SystemExit(run_proposal_tests_cli(sys.argv[2], sys.argv[3]))
+
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
 from intelligent_memory import (
@@ -49,7 +53,7 @@ from supabase_backup import (
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
-from improvement_testing import ProposalTestError, test_change_bundle
+from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
