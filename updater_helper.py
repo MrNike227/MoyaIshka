@@ -737,10 +737,16 @@ def _directory_updater_script() -> str:
     $TargetDir = [IO.Path]::GetFullPath($TargetDir)
     $Parent = Split-Path -Parent $TargetDir
     $Name = Split-Path -Leaf $TargetDir
-    $TempDir = Join-Path $Parent ($Name + '.installing')
-    $BackupDir = Join-Path $Parent ($Name + '.previous')
-    $NewInstalled = $false
+    # Keep TargetDir itself in place. Some Windows processes (Explorer,
+    # antivirus/indexers or shell handles) can hold a directory open and make
+    # renaming the whole installation folder fail with "folder is in use".
+    $AttemptId = [guid]::NewGuid().ToString('N')
+    $TempDir = Join-Path $Parent ($Name + '.installing.' + $AttemptId)
+    $BackupDir = Join-Path $Parent ($Name + '.previous.' + (Get-Date -Format 'yyyyMMddHHmmssfff') + '.' + $AttemptId)
+    $TargetChanged = $false
     $BackupReady = $false
+    $HadPrevious = $false
+    $PreviousExeHash = ''
     $NewProcess = $null
     $ExeHash = ''
 
@@ -838,6 +844,71 @@ def _directory_updater_script() -> str:
         return $exeHash
     }
 
+    function CopyDirectoryContents([string]$Source, [string]$Destination, [string]$Purpose) {
+        if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+            throw "$Purpose: не найдена исходная папка $Source"
+        }
+        New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+        $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+        & $copy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /MT:8 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+        $copyCode = $LASTEXITCODE
+        if ($copyCode -gt 7) {
+            throw "$Purpose: robocopy завершился с кодом $copyCode."
+        }
+        return $copyCode
+    }
+
+    function ClearDirectoryContents([string]$Folder) {
+        New-Item -ItemType Directory -Force -Path $Folder | Out-Null
+        $entries = @(Get-ChildItem -LiteralPath $Folder -Force -ErrorAction Stop)
+        foreach ($entry in $entries) {
+            $removed = $false
+            for ($attempt = 0; $attempt -lt 8; $attempt++) {
+                try {
+                    Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+                    $removed = $true
+                    break
+                } catch {
+                    if ($attempt -ge 7) { throw }
+                    Start-Sleep -Milliseconds 400
+                }
+            }
+            if (-not $removed -and (Test-Path -LiteralPath $entry.FullName)) {
+                throw "Не удалось освободить файл или папку: $($entry.FullName)"
+            }
+        }
+    }
+
+    function VerifyBackupCopy([string]$Source, [string]$Backup) {
+        $sourceBase = [IO.Path]::GetFullPath($Source).TrimEnd('\') + '\'
+        $backupBase = [IO.Path]::GetFullPath($Backup).TrimEnd('\') + '\'
+        $sourceFiles = @(Get-ChildItem -LiteralPath $Source -File -Force -Recurse -ErrorAction Stop)
+        $backupFiles = @(Get-ChildItem -LiteralPath $Backup -File -Force -Recurse -ErrorAction Stop)
+        if ($sourceFiles.Count -ne $backupFiles.Count) {
+            throw 'Число файлов в резервной копии не совпадает с исходной установкой.'
+        }
+        $backupPaths = [System.Collections.Generic.Dictionary[string,string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($file in $backupFiles) {
+            $relative = $file.FullName.Substring($backupBase.Length)
+            $backupPaths[$relative] = $file.FullName
+        }
+        foreach ($file in $sourceFiles) {
+            $relative = $file.FullName.Substring($sourceBase.Length)
+            if (-not $backupPaths.ContainsKey($relative)) {
+                throw "В резервной копии отсутствует файл: $relative"
+            }
+            $saved = Get-Item -LiteralPath $backupPaths[$relative] -ErrorAction Stop
+            if ([long]$saved.Length -ne [long]$file.Length) {
+                throw "Размер резервной копии не совпадает: $relative"
+            }
+            $sourceHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $backupHash = (Get-FileHash -LiteralPath $saved.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sourceHash -ne $backupHash) {
+                throw "SHA-256 резервной копии не совпадает: $relative"
+            }
+        }
+    }
+
     function Rollback([string]$Reason) {
         Log "Откат: $Reason"
         if ($NewProcess -and -not $NewProcess.HasExited) {
@@ -847,26 +918,34 @@ def _directory_updater_script() -> str:
             } catch {}
             try { $NewProcess.Refresh() } catch {}
         }
-        try {
-            if ($NewInstalled -and (Test-Path -LiteralPath $TargetDir)) {
-                Remove-Item -LiteralPath $TargetDir -Recurse -Force
+        if ($TargetChanged) {
+            try {
+                ClearDirectoryContents $TargetDir
+                if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
+                    [void](CopyDirectoryContents $BackupDir $TargetDir 'Восстановление резервной копии')
+                    $restoredExe = Join-Path $TargetDir 'MoyaIshka.exe'
+                    if (-not (Test-Path -LiteralPath $restoredExe -PathType Leaf)) {
+                        throw 'После отката не найден прежний MoyaIshka.exe.'
+                    }
+                    $restoredHash = (Get-FileHash -LiteralPath $restoredExe -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if ($PreviousExeHash -and $restoredHash -ne $PreviousExeHash) {
+                        throw 'SHA-256 прежнего EXE после отката не совпадает.'
+                    }
+                    Log "Резервная копия восстановлена внутри существующей папки: $TargetDir"
+                    Remove-Item Env:MOYA_UPDATE_RECEIPT -ErrorAction SilentlyContinue
+                    Remove-Item Env:MOYA_UPDATE_VERSION -ErrorAction SilentlyContinue
+                    Remove-Item Env:MOYA_UPDATE_SHA256 -ErrorAction SilentlyContinue
+                    Remove-Item Env:MOYA_UPDATE_TARGET -ErrorAction SilentlyContinue
+                    Start-Process -FilePath $restoredExe -WorkingDirectory $TargetDir | Out-Null
+                    Log 'Предыдущая версия восстановлена и запущена.'
+                } else {
+                    Log 'Предыдущей установки не было; временные файлы новой версии удалены.'
+                }
+            } catch {
+                Log "КРИТИЧЕСКАЯ ОШИБКА ОТКАТА: $($_.Exception.Message)"
             }
-            if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
-                if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
-                Move-Item -LiteralPath $BackupDir -Destination $TargetDir
-                Log 'Резервная папка восстановлена.'
-                Remove-Item Env:MOYA_UPDATE_RECEIPT -ErrorAction SilentlyContinue
-                Remove-Item Env:MOYA_UPDATE_VERSION -ErrorAction SilentlyContinue
-                Remove-Item Env:MOYA_UPDATE_SHA256 -ErrorAction SilentlyContinue
-                Remove-Item Env:MOYA_UPDATE_TARGET -ErrorAction SilentlyContinue
-                Start-Process -FilePath (Join-Path $TargetDir 'MoyaIshka.exe') -WorkingDirectory $TargetDir | Out-Null
-            } elseif (-not $BackupReady -and $NewInstalled) {
-                Log 'Старой установки не было; неудачная новая папка удалена.'
-            }
-        } catch { Log "КРИТИЧЕСКАЯ ОШИБКА ОТКАТА: $($_.Exception.Message)" }
-    }
-
-    try {
+        }
+    }    try {
         Log "Начата установка onedir ${ExpectedVersion}: $StagedDir -> $TargetDir"
         if (-not (Test-Path -LiteralPath $StagedDir -PathType Container)) { throw "Не найдена папка обновления: $StagedDir" }
         $runningDeadline = (Get-Date).AddSeconds(120)
@@ -918,26 +997,50 @@ def _directory_updater_script() -> str:
             }
         }
 
-        if ($hadPrevious) {
-            if (Test-Path -LiteralPath $BackupDir) {
-                $saved = $BackupDir + '.' + (Get-Date -Format 'yyyyMMddHHmmss')
-                Move-Item -LiteralPath $BackupDir -Destination $saved
-                Log "Старая резервная копия сохранена: $saved"
+        $HadPrevious = $false
+        if (Test-Path -LiteralPath $TargetDir -PathType Container) {
+            $oldItems = @(Get-ChildItem -LiteralPath $TargetDir -Force -ErrorAction Stop)
+            $HadPrevious = ($oldItems.Count -gt 0)
+            if ($HadPrevious -and -not (
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'MoyaIshka.exe') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'build_manifest.json') -PathType Leaf)
+            )) {
+                throw 'Целевая папка уже содержит другие файлы и не распознана как установка Моей ИИшки. Выбери отдельную папку.'
             }
-            Move-Item -LiteralPath $TargetDir -Destination $BackupDir
-            $BackupReady = $true
-        } elseif (Test-Path -LiteralPath $TargetDir) {
-            Remove-Item -LiteralPath $TargetDir -Recurse -Force
         }
 
-        # TempDir and TargetDir share the same parent/volume; Directory.Move is
-        # a fast metadata rename and does not recopy hundreds of runtime files.
-        [System.IO.Directory]::Move($TempDir, $TargetDir)
-        $NewInstalled = $true
+        # Take and verify a full backup before touching the current installation.
+        # The target directory itself is never moved or renamed.
+        if ($HadPrevious) {
+            $previousExe = Join-Path $TargetDir 'MoyaIshka.exe'
+            if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
+                throw 'В прежней установке отсутствует MoyaIshka.exe; замена отменена.'
+            }
+            $PreviousExeHash = (Get-FileHash -LiteralPath $previousExe -Algorithm SHA256).Hash.ToLowerInvariant()
+            [void](CopyDirectoryContents $TargetDir $BackupDir 'Создание резервной копии')
+            VerifyBackupCopy $TargetDir $BackupDir
+            $backupExe = Join-Path $BackupDir 'MoyaIshka.exe'
+            if ((Get-FileHash -LiteralPath $backupExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PreviousExeHash) {
+                throw 'Резервная копия EXE не прошла проверку SHA-256.'
+            }
+            $BackupReady = $true
+            Log "Проверенная резервная копия сохранена: $BackupDir"
+        }
+
+        # Replace the contents inside the stable installation folder. This avoids
+        # renaming D:\ISH itself, which can fail when Windows holds a directory
+        # handle even after the application's process has exited.
+        $TargetChanged = $true
+        ClearDirectoryContents $TargetDir
+        [void](CopyDirectoryContents $TempDir $TargetDir 'Установка новой версии')
         $targetExe = Join-Path $TargetDir 'MoyaIshka.exe'
-        if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) { throw 'После переключения папок не найден MoyaIshka.exe.' }
-        $ExeHash = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($ExeHash -ne $copiedHash) { throw 'SHA-256 установленного EXE после переключения папок не совпадает.' }
+        if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) {
+            throw 'После копирования в папку установки не найден MoyaIshka.exe.'
+        }
+        $ExeHash = VerifyFolder $TargetDir
+        if ($ExeHash -ne $copiedHash) {
+            throw 'SHA-256 установленного EXE после копирования не совпадает.'
+        }
 
         if (Test-Path -LiteralPath $ReceiptPath) { Remove-Item -LiteralPath $ReceiptPath -Force }
         $env:MOYA_UPDATE_RECEIPT = $ReceiptPath
