@@ -16,7 +16,7 @@ def _sha256(data: bytes) -> str:
 def _normalized_text_sha256(data: bytes) -> str:
     """Hash UTF-8 source text independently of Windows/Linux newline encoding."""
     text = data.decode("utf-8")
-    return _sha256(text.replace("\\r\\n", "\\n").replace("\\r", "\\n").encode("utf-8"))
+    return _sha256(text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
 
 def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeout_seconds: int = 240) -> dict[str, Any]:
     """Verify a saved proposal, then run unit tests against it in a temporary project copy."""
