@@ -666,6 +666,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         raise RuntimeError("Манифест содержит неверный список файлов.")
 
     seen: set[str] = set()
+    exe_hash = ""
     for item in files:
         if not isinstance(item, dict):
             raise RuntimeError("Повреждена запись файла в манифесте.")
@@ -684,8 +685,11 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         if path.stat().st_size != int(item.get("size", -1)):
             raise RuntimeError(f"Размер файла не совпадает: {relative}.")
         expected = str(item.get("sha256", "")).lower()
-        if len(expected) != 64 or sha256_file(path).lower() != expected:
+        actual_hash = sha256_file(path).lower()
+        if len(expected) != 64 or actual_hash != expected:
             raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
+        if key == "moyaishka.exe":
+            exe_hash = actual_hash
 
     actual_files: set[str] = set()
     for path in root.rglob("*"):
@@ -713,8 +717,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
             details.append("лишние: " + ", ".join(extra[:8]))
         raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
 
-    exe = root / "MoyaIshka.exe"
-    if not exe.is_file() or sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
+    if not exe_hash or exe_hash != str(manifest.get("exe_sha256", "")).lower():
         raise RuntimeError("Главный EXE не прошёл проверку SHA-256.")
     for name in ("python311.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
         if not (root / "_internal" / name).is_file():
