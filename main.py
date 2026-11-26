@@ -29,6 +29,10 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import tkinter as tk
 from typing import Any
 
+if __name__ == "__main__" and len(sys.argv) >= 4 and sys.argv[1] == "--run-proposal-tests":
+    from improvement_testing import run_proposal_tests_cli
+    raise SystemExit(run_proposal_tests_cli(sys.argv[2], sys.argv[3]))
+
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
 from intelligent_memory import (
@@ -48,6 +52,9 @@ from supabase_backup import (
 )
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
+from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
+from improvement_testing import test_change_bundle
+from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement, launch_windows_directory_replacement, validate_app_directory, sha256_file,
@@ -76,7 +83,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.0"
+APP_VERSION = "4.2.1"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -161,6 +168,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_update_check": True,
     "install_dir": "",
     "install_dir_user_selected": False,
+    "install_root_dir": "",
+    "updates_dir": "",
+    "github_pr_repo": "MrNike227/MoyaIshka",
+    "github_pr_base": "main",
+    "github_pr_token_protected": "",
+    "github_pr_token_plain": "",
     "web_search_enabled": True,
     "auto_search_current": True,
     "use_research_library": True,
@@ -201,13 +214,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py",
+            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.1_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_github_pr.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -295,6 +308,16 @@ def unprotect_api_key(config: dict[str, Any]) -> str:
         except Exception:
             return ""
     return str(config.get("online_api_key_plain", ""))
+
+
+def unprotect_github_pr_token(config: dict[str, Any]) -> str:
+    protected = str(config.get("github_pr_token_protected", ""))
+    if protected and os.name == "nt":
+        try:
+            return dpapi_transform(base64.b64decode(protected), False).decode("utf-8")
+        except Exception:
+            return ""
+    return str(config.get("github_pr_token_plain", ""))
 
 
 class Store:
@@ -638,9 +661,23 @@ class MoyaIshkaApp:
 
         # Remember the folder from which a packaged EXE is currently running.
         # Source/START.bat users get a suggested per-user folder until they choose one.
-        if not str(self.config.get("install_dir", "")).strip():
-            running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
-            self.config["install_dir"] = str(resolve_install_dir(running_exe=running_exe))
+        running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
+        if running_exe:
+            # The running EXE location is authoritative after a move or rollback.
+            self.config["install_dir"] = str(running_exe.parent)
+            if running_exe.parent.name.casefold() == "app":
+                self.config["install_root_dir"] = str(running_exe.parent.parent)
+                self.config["updates_dir"] = str(running_exe.parent.parent / "Updates")
+        elif not str(self.config.get("install_dir", "")).strip():
+            self.config["install_dir"] = str(resolve_install_dir())
+        if not str(self.config.get("install_root_dir", "")).strip():
+            self.config["install_root_dir"] = str(default_install_root(
+                legacy_install_dir=self.config.get("install_dir"), running_exe=running_exe
+            ))
+        if not str(self.config.get("updates_dir", "")).strip():
+            self.config["updates_dir"] = str(resolve_updates_directory(
+                install_root=self.config["install_root_dir"], data_dir=DATA_DIR
+            ))
 
         # Enable the requested background research profile when upgrading from releases
         # where it was opt-in by default and the user has not explicitly configured it.
@@ -2103,12 +2140,41 @@ class MoyaIshkaApp:
         ttk.Button(patch_actions, text="Сохранить diff", command=self.save_patch_file).pack(side="left")
         ttk.Button(patch_actions, text="Применить проверенный diff", style="Accent.TButton", command=self.apply_improvement).pack(side="left", padx=8)
         ttk.Button(patch_actions, text="Открыть папку исходников", command=lambda: self._open_local_folder(project_dir())).pack(side="left", padx=8)
+
+        delivery_actions = ttk.Frame(self_dev, style="Panel.TFrame")
+        delivery_actions.pack(fill="x", pady=(6, 2))
+        ttk.Button(delivery_actions, text="Сохранить изменённые файлы в Updates", command=self.save_improvement_bundle).pack(side="left")
+        ttk.Button(delivery_actions, text="Тестировать последнее предложение", command=self.test_latest_improvement_bundle).pack(side="left", padx=8)
+        ttk.Button(delivery_actions, text="Создать Draft PR на GitHub", style="Accent.TButton", command=self.create_improvement_pr).pack(side="left", padx=8)
+        ttk.Button(delivery_actions, text="Открыть Updates", command=self.open_updates_folder).pack(side="left", padx=8)
+
+        github_frame = ttk.LabelFrame(self_dev, text="GitHub Draft PR — настройки", padding=8)
+        github_frame.pack(fill="x", pady=(6, 6))
+        github_row = ttk.Frame(github_frame, style="Panel.TFrame")
+        github_row.pack(fill="x", pady=2)
+        ttk.Label(github_row, text="Репозиторий", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        self.github_pr_repo_var = tk.StringVar(value=str(self.config.get("github_pr_repo", "MrNike227/MoyaIshka")))
+        ttk.Entry(github_row, textvariable=self.github_pr_repo_var, width=30).pack(side="left")
+        ttk.Label(github_row, text="Базовая ветка", style="Panel.TLabel").pack(side="left", padx=(12, 6))
+        self.github_pr_base_var = tk.StringVar(value=str(self.config.get("github_pr_base", "main")))
+        ttk.Entry(github_row, textvariable=self.github_pr_base_var, width=14).pack(side="left")
+        token_row = ttk.Frame(github_frame, style="Panel.TFrame")
+        token_row.pack(fill="x", pady=2)
+        ttk.Label(token_row, text="GitHub token", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        self.github_pr_token_var = tk.StringVar(value=unprotect_github_pr_token(self.config))
+        ttk.Entry(token_row, textvariable=self.github_pr_token_var, show="*", width=52).pack(side="left", fill="x", expand=True)
+        ttk.Button(token_row, text="Сохранить настройки GitHub", command=self.save_github_pr_settings).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            github_frame,
+            text="Нужен Fine-grained Personal Access Token: Contents — Read and write, Pull requests — Read and write, Metadata — Read-only. Токен защищается DPAPI. Создаётся отдельная ветка и Draft PR; main не изменяется, релиз не создаётся.",
+            style="MutedPanel.TLabel", wraplength=860,
+        ).pack(anchor="w", pady=(4, 0))
         self.improve_status_var = tk.StringVar(value="Изменение кода требует подключения онлайн- или локальной модели.")
         ttk.Label(self_dev, textvariable=self.improve_status_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(8, 0))
 
         updates = ttk.LabelFrame(content, text="Автоматические обновления", padding=12)
         updates.pack(fill="x", pady=(0, 10))
-        ttk.Label(updates, text="Обновления загружаются из GitHub Releases и проверяются по SHA-256. Один раз выбери папку установки: ИИшка запомнит её и будет устанавливать следующие версии туда же. Временная папка используется только для скачивания.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
+        ttk.Label(updates, text="Выбери корневую папку контейнера. Внутри будут две независимые папки: App — установленная программа, Updates — предложения самоанализа и подготовленные изменения. Обновлятор заменяет только App и не затрагивает Updates.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
         self.update_repo_var = tk.StringVar(value=str(self.config.get("update_repo", "")))
         repo_row = ttk.Frame(updates, style="Panel.TFrame")
         repo_row.pack(fill="x", pady=(8, 4))
@@ -2116,19 +2182,20 @@ class MoyaIshkaApp:
         ttk.Entry(repo_row, textvariable=self.update_repo_var, width=38).pack(side="left")
         install_row = ttk.Frame(updates, style="Panel.TFrame")
         install_row.pack(fill="x", pady=(8, 2))
-        ttk.Label(install_row, text="Папка установки", style="Panel.TLabel").pack(side="left", padx=(0, 8))
-        initial_install_dir = str(self.config.get("install_dir", "")).strip()
+        ttk.Label(install_row, text="Корневая папка контейнера", style="Panel.TLabel").pack(side="left", padx=(0, 8))
+        initial_install_dir = str(self.config.get("install_root_dir", "")).strip()
         if not initial_install_dir:
-            initial_install_dir = str(resolve_install_dir(running_exe=Path(sys.executable) if getattr(sys, "frozen", False) else None))
+            initial_install_dir = str(default_install_root(legacy_install_dir=self.config.get("install_dir"), running_exe=Path(sys.executable) if getattr(sys, "frozen", False) else None))
         self.update_install_dir_var = tk.StringVar(value=initial_install_dir)
         ttk.Entry(install_row, textvariable=self.update_install_dir_var).pack(side="left", fill="x", expand=True)
         ttk.Button(install_row, text="Выбрать папку…", command=self.browse_install_dir).pack(side="left", padx=(8, 0))
-        ttk.Button(install_row, text="Открыть папку установки", command=self.open_install_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(install_row, text="Открыть App", command=self.open_install_folder).pack(side="left", padx=(6, 0))
         current_run_path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve()
         current_run_label = str(current_run_path if getattr(sys, "frozen", False) else current_run_path.parent)
-        target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "MoyaIshka.exe")
+        target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "App" / "MoyaIshka.exe")
+        updates_path_label = str(Path(initial_install_dir).expanduser().resolve() / "Updates")
         self.actual_run_path_var = tk.StringVar(
-            value=f"Фактически запущена: {current_run_label}\nЦелевой файл обновлений: {target_exe_label}"
+            value=f"Фактически запущена: {current_run_label}\nНовая папка App: {target_exe_label}\nПредложения: {updates_path_label}"
         )
         ttk.Label(updates, textvariable=self.actual_run_path_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(4, 2))
         self.auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_update_check", True)))
@@ -2137,7 +2204,8 @@ class MoyaIshkaApp:
         update_buttons.pack(fill="x")
         ttk.Button(update_buttons, text="Проверить обновления", command=self.check_for_updates).pack(side="left")
         ttk.Button(update_buttons, text="Сохранить настройки обновлений", command=self.save_update_settings).pack(side="left", padx=8)
-        ttk.Button(update_buttons, text="Установить текущую версию сюда", command=self.install_current_build_to_selected_folder).pack(side="left", padx=8)
+        ttk.Button(update_buttons, text="Перенести программу в App", command=self.install_current_build_to_selected_folder).pack(side="left", padx=8)
+        ttk.Button(update_buttons, text="Открыть Updates", command=self.open_updates_folder).pack(side="left", padx=8)
         ttk.Button(update_buttons, text="Поиск устаревших версий", command=self.search_old_versions).pack(side="left", padx=8)
         ttk.Button(update_buttons, text="Открыть журнал обновлений", command=self.open_update_log).pack(side="left", padx=8)
         self.update_status_var = tk.StringVar(value="Репозиторий не задан. Выбери папку установки и сохрани настройки.")
@@ -3487,6 +3555,30 @@ class MoyaIshkaApp:
                 elif event == "patch_error":
                     self.improve_status_var.set(str(payload))
                     messagebox.showerror("Саморазвитие", str(payload))
+                elif event == "improvement_test_completed":
+                    self.improve_status_var.set(
+                        f"Тестирование завершено: {'успешно' if payload.get('passed') else 'есть ошибки'}. Отчёт: {payload.get('report_path', '')}"
+                    )
+                    messagebox.showinfo(
+                        "Проверка саморазвития",
+                        f"Результат: {'УСПЕШНО' if payload.get('passed') else 'ОШИБКИ'}\n"
+                        f"Проверено файлов: {payload.get('checked_files', 0)}\n"
+                        f"Код завершения unit-тестов: {payload.get('tests_exit_code', 'не запускались')}\n\n"
+                        f"Отчёт: {payload.get('report_path', '')}\n\n"
+                        "Изменения не применялись к установленной программе."
+                    )
+                elif event == "improvement_test_error":
+                    self.improve_status_var.set(f"Проверка предложения не пройдена: {payload}")
+                    messagebox.showerror("Проверка саморазвития", str(payload))
+                elif event == "improvement_pr_created":
+                    self.improve_status_var.set(f"Draft PR создан: {payload.get('url', '')}")
+                    messagebox.showinfo(
+                        "GitHub Draft PR",
+                        f"Создан черновик PR #{payload.get('number')}.\nРелиз не создавался.\n\n{payload.get('url', '')}",
+                    )
+                elif event == "improvement_delivery_error":
+                    self.improve_status_var.set(str(payload))
+                    messagebox.showerror("Саморазвитие / GitHub", str(payload))
                 elif event == "update_check":
                     info = payload
                     if info.get("available"):
@@ -3513,56 +3605,53 @@ class MoyaIshkaApp:
                         messagebox.showerror("Обновление", "GitHub не передал номер версии релиза. Для безопасной установки нужна точная версия.")
                         continue
                     self.update_status_var.set(f"Обновление {self.staged_update_version} загружено и проверено: {self.staged_update_path.name}")
-                    # Ask for a permanent folder on the first install; afterwards always reuse it.
+                    # Keep the active App directory separate from the optional container root.
+                    # The folder picker here selects the actual application directory,
+                    # not the parent which contains App and Updates.
                     initial = self._selected_install_dir()
                     if bool(self.config.get("install_dir_user_selected", False)):
                         destination_dir = initial
                     else:
                         selected = filedialog.askdirectory(
                             parent=self.root,
-                            title="Выбери постоянную папку установки Моей ИИшки",
+                            title="Выбери постоянную папку программы (папку App)",
                             initialdir=str(initial),
                             mustexist=False,
                         )
                         if not selected:
                             messagebox.showinfo(
                                 "Обновление загружено",
-                                f"Установка отменена. Проверенный файл остаётся во временной папке:\n{self.staged_update_path}\n\nПапку установки можно выбрать позже в Настройках → Автоматические обновления.",
+                                f"Установка отменена. Проверенный пакет остаётся во временной папке:\n{self.staged_update_path}\n\nПапку программы можно выбрать позже в Настройках → Автоматические обновления.",
                             )
                             continue
                         destination_dir = Path(selected).expanduser().resolve()
-                        self.update_install_dir_var.set(str(destination_dir))
-                        self.save_update_settings(show_message=False)
 
                     try:
                         destination_dir = ensure_install_dir_writable(destination_dir)
                     except Exception as exc:
                         messagebox.showerror("Папка установки", str(exc))
                         continue
-                    self.config["install_dir"] = str(destination_dir)
-                    self.config["install_dir_user_selected"] = True
-                    atomic_json_save(CONFIG_PATH, self.config)
                     target = destination_dir / "MoyaIshka.exe"
                     if getattr(sys, "frozen", False):
                         current_exe = Path(sys.executable).resolve()
                         if target.resolve() != current_exe:
                             prompt = (
                                 "Контрольная сумма проверена.\n\nСтарая программа закроется, новая версия будет установлена в выбранную папку и запустится.\n\n"
-                                f"Папка установки:\n{destination_dir}\n\n"
+                                f"Папка App:\n{destination_dir}\n\n"
                                 "Старая копия в прежней папке останется. Её можно удалить после проверки новой версии.\n\nПродолжить?"
                             )
                         else:
                             prompt = (
-                                "Контрольная сумма проверена.\n\nТекущая программа закроется, EXE будет безопасно заменён и приложение запустится снова.\n\n"
-                                f"Папка установки:\n{destination_dir}\n\nПродолжить?"
+                                "Контрольная сумма проверена.\n\nТекущая программа закроется, папка App будет безопасно заменена и приложение запустится снова.\n\n"
+                                f"Папка App:\n{destination_dir}\n\nПродолжить?"
                             )
                         if messagebox.askyesno("Установить обновление", prompt):
-                            self._apply_staged_update()
+                            self._apply_staged_update(destination_dir)
                     else:
                         if messagebox.askyesno(
                             "Установить автономную версию",
                             "Сейчас ИИшка запущена через Python/START.bat. Будет установлена самостоятельная версия EXE.\n\n"
-                            f"Постоянная папка установки:\n{destination_dir}\n\n"
+                            f"Папка App:\n{destination_dir}\n\n"
                             "В дальнейшем обновления будут устанавливаться в эту же папку.\n"
                             "Текущая программа закроется, а новая версия запустится автоматически.\n\nПродолжить?",
                         ):
@@ -5241,6 +5330,14 @@ class MoyaIshkaApp:
         self._schedule_cloud_sync()
         self._set_status(f"Модель смыслового поиска сохранена: {model}")
 
+    def _updates_directory(self) -> Path:
+        return resolve_updates_directory(
+            configured_updates_dir=self.config.get("updates_dir"),
+            install_root=self.config.get("install_root_dir"),
+            app_dir=self.config.get("install_dir"),
+            data_dir=DATA_DIR,
+        )
+
     def _open_local_folder(self, path: Path) -> None:
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -5562,10 +5659,148 @@ class MoyaIshkaApp:
         patch = self.patch_preview.get("1.0", "end").strip()
         if not patch:
             return
-        path = DATA_DIR / "self_improve" / "pending.patch"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(patch + "\n", encoding="utf-8")
-        self.improve_status_var.set(f"Diff сохранён: {path}")
+        try:
+            inbox = self._updates_directory() / "Proposals" / "Inbox"
+            inbox.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            path = inbox / f"proposal_{stamp}.patch"
+            path.write_text(patch + "\n", encoding="utf-8", newline="")
+            self.improve_status_var.set(f"Diff сохранён в Updates: {path}")
+        except Exception as exc:
+            messagebox.showerror("Сохранение diff", str(exc))
+
+    def save_improvement_bundle(self) -> None:
+        patch = self.patch_preview.get("1.0", "end").strip()
+        relative = self.improve_target_var.get().strip()
+        if not patch:
+            messagebox.showwarning("Саморазвитие", "Сначала подготовь diff.")
+            return
+        try:
+            root = project_dir()
+            target = (root / relative).resolve()
+            if root.resolve() not in target.parents or not target.is_file() or target.suffix.lower() != ".py":
+                raise ValueError("Выбранный Python-файл не найден в папке исходников.")
+            original = target.read_text(encoding="utf-8")
+            updated = apply_unified_diff(original, patch, relative)
+            title = self.improve_prompt_box.get("1.0", "end").strip().splitlines()[0][:180] or "Предложение саморазвития"
+            bundle = save_change_bundle(
+                self._updates_directory(), relative, original, updated, patch,
+                title=title, version=APP_VERSION,
+            )
+            self.improve_status_var.set(f"Пакет изменений сохранён: {bundle}")
+            messagebox.showinfo(
+                "Саморазвитие",
+                f"Изменённый файл, diff и манифест сохранены отдельно от приложения:\n{bundle}\n\nРаботающая программа не изменена.",
+            )
+        except Exception as exc:
+            messagebox.showerror("Сохранение изменений", str(exc))
+            self.improve_status_var.set(f"Не удалось сохранить пакет: {exc}")
+
+    def test_latest_improvement_bundle(self) -> None:
+        """Test the latest proposal in a disposable copy, never in the installed app."""
+        try:
+            proposals = self._updates_directory() / "Proposals"
+            candidates = [
+                p for p in proposals.iterdir()
+                if p.is_dir() and not p.name.startswith(".") and p.name != "Inbox"
+                and (p / "manifest.json").is_file()
+            ]
+            if not candidates:
+                messagebox.showinfo("Проверка саморазвития", "В Updates пока нет сохранённых предложений.")
+                return
+            bundle = max(candidates, key=lambda p: p.stat().st_mtime)
+            if not messagebox.askyesno(
+                "Тестирование предложения",
+                f"Проверить последнее предложение?\n\n{bundle.name}\n\n"
+                "Будет создана временная копия проекта, проверены SHA-256 и синтаксис, "
+                "затем запущены unit-тесты. Установленная программа и исходники не изменяются. "
+                "Код предложения будет исполняться тестами в отдельном процессе. Продолжить?",
+            ):
+                return
+            self.improve_status_var.set(f"Тестирую предложение {bundle.name} в отдельной копии…")
+            source_root = project_dir()
+            def worker() -> None:
+                try:
+                    report = test_change_bundle(bundle, source_root)
+                    self.events.put(("improvement_test_completed", report))
+                except Exception as exc:
+                    self.events.put(("improvement_test_error", str(exc)))
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as exc:
+            messagebox.showerror("Проверка саморазвития", str(exc))
+
+    def save_github_pr_settings(self) -> None:
+        repository = self.github_pr_repo_var.get().strip()
+        base = self.github_pr_base_var.get().strip() or "main"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", repository):
+            messagebox.showerror("GitHub", "Укажи репозиторий в формате owner/repository.")
+            return
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,120}", base) or ".." in base.split("/"):
+            messagebox.showerror("GitHub", "Укажи корректное имя базовой ветки.")
+            return
+        self.config["github_pr_repo"] = repository
+        self.config["github_pr_base"] = base
+        token = self.github_pr_token_var.get().strip()
+        if token:
+            protected, plain = protect_api_key(token)
+            self.config["github_pr_token_protected"] = protected
+            self.config["github_pr_token_plain"] = plain
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.github_pr_token_var.set(unprotect_github_pr_token(self.config))
+        self._set_status("Настройки GitHub Draft PR сохранены.")
+        messagebox.showinfo(
+            "GitHub",
+            "Настройки сохранены. На Windows токен защищён DPAPI текущей учётной записи.",
+        )
+
+    def create_improvement_pr(self) -> None:
+        patch = self.patch_preview.get("1.0", "end").strip()
+        relative = self.improve_target_var.get().strip()
+        if not patch:
+            messagebox.showwarning("GitHub Draft PR", "Сначала подготовь diff.")
+            return
+        token = unprotect_github_pr_token(self.config)
+        if not token:
+            messagebox.showwarning("GitHub Draft PR", "Сначала добавь GitHub Personal Access Token и сохрани настройки.")
+            return
+        repository = self.github_pr_repo_var.get().strip() if hasattr(self, "github_pr_repo_var") else str(self.config.get("github_pr_repo", ""))
+        base = self.github_pr_base_var.get().strip() if hasattr(self, "github_pr_base_var") else str(self.config.get("github_pr_base", "main"))
+        prompt = self.improve_prompt_box.get("1.0", "end").strip()
+        title = prompt.splitlines()[0][:180] if prompt else f"Предложение саморазвития: {relative}"
+        if not messagebox.askyesno(
+            "Создать Draft PR",
+            f"Будет создана отдельная ветка и черновик Pull Request в {repository}, базовая ветка — {base}.\n\n"
+            f"Изменяемый файл: {relative}\n\n"
+            "Перед отправкой diff будет применён к текущей версии файла на GitHub. Если исходник изменился и diff больше не подходит, PR не будет создан.\n\n"
+            "Изменения не попадут прямо в main. Merge и Release не выполняются. Продолжить?",
+        ):
+            return
+        self.improve_status_var.set("Проверяю базовую версию файла на GitHub и создаю Draft PR…")
+
+        def worker() -> None:
+            try:
+                result = create_draft_pull_request(
+                    repository=repository,
+                    token=token,
+                    base_branch=base,
+                    file_path=relative,
+                    patch_text=patch,
+                    title=title,
+                    body=prompt,
+                )
+                self.events.put(("improvement_pr_created", result))
+            except Exception as exc:
+                self.events.put(("improvement_delivery_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_updates_folder(self) -> None:
+        try:
+            folder = self._updates_directory()
+            folder.mkdir(parents=True, exist_ok=True)
+            self._open_local_folder(folder)
+        except Exception as exc:
+            messagebox.showerror("Папка Updates", f"Не удалось открыть папку предложений.\n\n{exc}")
 
     def apply_improvement(self) -> None:
         patch = self.patch_preview.get("1.0", "end").strip()
@@ -5588,17 +5823,24 @@ class MoyaIshkaApp:
 
     # Updates are obtained from a user-configured GitHub Releases repository.
     def _selected_install_dir(self) -> Path:
-        raw = self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else str(self.config.get("install_dir", ""))
+        raw = str(self.config.get("install_dir", "")).strip()
+        if raw:
+            return resolve_install_dir(raw)
+        root = str(self.config.get("install_root_dir", "")).strip()
+        if root:
+            return resolve_install_layout(root)["app"]
         running_exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
-        return resolve_install_dir(raw, running_exe=running_exe)
+        return resolve_install_dir(running_exe=running_exe)
 
     def open_install_folder(self) -> None:
-        """Open the persisted installation directory, not the AppData staging folder."""
+        """Open the App directory in the selected container."""
         try:
-            folder = ensure_install_dir_writable(self._selected_install_dir())
+            root = self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else self.config.get("install_root_dir", "")
+            folder = resolve_install_layout(root)["app"] if root else self._selected_install_dir()
+            folder.mkdir(parents=True, exist_ok=True)
             self._open_local_folder(folder)
         except Exception as exc:
-            messagebox.showerror("Папка установки", f"Не удалось открыть папку установки.\n\n{exc}")
+            messagebox.showerror("Папка App", f"Не удалось открыть папку приложения.\n\n{exc}")
 
     def open_update_log(self) -> None:
         """Open the updater's diagnostic log from the user-data directory."""
@@ -5618,71 +5860,102 @@ class MoyaIshkaApp:
             messagebox.showerror("Журнал обновлений", f"Не удалось открыть журнал.\n\n{exc}\n\nФайл:\n{log_path}")
 
     def browse_install_dir(self) -> None:
-        current = self._selected_install_dir()
+        current = Path(self.update_install_dir_var.get().strip() or default_install_root()).expanduser()
         selected = filedialog.askdirectory(
             parent=self.root,
-            title="Выбери постоянную папку установки Моей ИИшки",
+            title="Выбери корневую папку контейнера Моей ИИшки",
             initialdir=str(current),
             mustexist=False,
         )
         if selected:
             self.update_install_dir_var.set(str(Path(selected).resolve()))
-            self.update_status_var.set("Папка выбрана. Нажми «Сохранить настройки обновлений».")
+            self.update_status_var.set("Корневая папка выбрана. App и Updates будут созданы внутри неё.")
 
     def save_update_settings(self, show_message: bool = True) -> None:
         try:
-            install_dir = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+            root = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+            layout = resolve_install_layout(root)
+            current_app = Path(str(self.config.get("install_dir", ""))).expanduser().resolve() if self.config.get("install_dir") else None
+            if current_app and (layout["updates"] == current_app or current_app in layout["updates"].parents):
+                raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
+            ensure_install_dir_writable(layout["updates"])
         except Exception as exc:
-            messagebox.showerror("Папка установки", f"Не удалось использовать выбранную папку.\n\n{exc}")
+            messagebox.showerror("Папка контейнера", f"Не удалось использовать выбранную папку.\n\n{exc}")
             return
         self.config["update_repo"] = self.update_repo_var.get().strip()
         self.config["auto_update_check"] = bool(self.auto_update_var.get())
-        self.config["install_dir"] = str(install_dir)
-        self.config["install_dir_user_selected"] = True
-        self.update_install_dir_var.set(str(install_dir))
+        self.config["install_root_dir"] = str(root)
+        self.config["updates_dir"] = str(layout["updates"])
+        # Keep the currently running installation as the update target until
+        # the user explicitly confirms migration into the new App directory.
+        self.update_install_dir_var.set(str(root))
         if hasattr(self, "actual_run_path_var"):
             current_run = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
             self.actual_run_path_var.set(
-                f"Фактически запущена: {current_run}\nЦелевой файл обновлений: {install_dir / 'MoyaIshka.exe'}"
+                f"Фактически запущена: {current_run}\nНовая папка App: {layout['app'] / 'MoyaIshka.exe'}\nПредложения: {layout['updates']}"
             )
         atomic_json_save(CONFIG_PATH, self.config)
-        self.update_status_var.set(f"Настройки сохранены. Обновления будут устанавливаться в: {install_dir / 'MoyaIshka.exe'}")
+        self.update_status_var.set(
+            f"Контейнер сохранён. Предложения: {layout['updates']}. Текущая установка не перемещалась; для переноса нажми «Перенести программу в App»."
+        )
         if show_message:
-            messagebox.showinfo("Настройки обновлений", f"Папка установки сохранена:\n{install_dir}")
+            messagebox.showinfo(
+                "Контейнер сохранён",
+                f"Корневая папка:\n{root}\n\nПапка приложения:\n{layout['app']}\nПапка предложений:\n{layout['updates']}\n\nТекущая установка пока не перемещалась.",
+            )
 
     def install_current_build_to_selected_folder(self) -> None:
-        """Move the complete onedir folder using the verified transactional installer."""
+        """Move the complete onedir folder into Container/App using the verified installer."""
+        previous_values = {
+            key: self.config.get(key)
+            for key in ("install_root_dir", "updates_dir", "install_dir", "install_dir_user_selected")
+        }
+        staged_dir: Path | None = None
         try:
-            destination = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
-            self.config["install_dir"] = str(destination)
-            self.config["install_dir_user_selected"] = True
-            atomic_json_save(CONFIG_PATH, self.config)
+            root = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
+            layout = resolve_install_layout(root)
+            current_app = Path(str(self.config.get("install_dir", ""))).expanduser().resolve() if self.config.get("install_dir") else None
+            if current_app and (layout["updates"] == current_app or current_app in layout["updates"].parents):
+                raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
+            ensure_install_dir_writable(layout["updates"])
+            destination = ensure_install_dir_writable(layout["app"])
 
             if not getattr(sys, "frozen", False):
+                self.config["install_root_dir"] = str(root)
+                self.config["updates_dir"] = str(layout["updates"])
+                self.config["install_dir"] = str(destination)
+                self.config["install_dir_user_selected"] = True
+                atomic_json_save(CONFIG_PATH, self.config)
                 self.update_status_var.set(
-                    f"Папка сохранена: {destination}. Автономная onedir-сборка будет установлена сюда."
+                    f"Контейнер настроен. App: {destination}. Updates: {layout['updates']}."
                 )
                 messagebox.showinfo(
-                    "Папка установки сохранена",
-                    "Сейчас приложение запущено из исходников. Переносить нечего.\n\n"
-                    f"Автономная версия будет установлена сюда:\n{destination}",
+                    "Контейнер сохранён",
+                    "Сейчас приложение запущено из исходников. Переносить готовую сборку нечего.\n\n"
+                    f"Папка для будущей установки:\n{destination}\n\n"
+                    f"Папка самоанализа:\n{layout['updates']}",
                 )
                 return
 
             current_dir = Path(sys.executable).resolve().parent
             if current_dir == destination:
+                self.config["install_root_dir"] = str(root)
+                self.config["updates_dir"] = str(layout["updates"])
+                self.config["install_dir"] = str(destination)
+                self.config["install_dir_user_selected"] = True
+                atomic_json_save(CONFIG_PATH, self.config)
                 self.update_status_var.set(f"Приложение уже установлено в {destination}")
-                messagebox.showinfo("Установка", "Текущая версия уже находится в выбранной папке.")
+                messagebox.showinfo("Установка", "Программа уже находится в App выбранного контейнера.")
                 return
 
-            # Never copy only MoyaIshka.exe: Python DLL, cryptography and all
-            # native extensions belong to the _internal directory.
+            # Validate the current installation before prompting or changing settings.
             validate_app_directory(current_dir, APP_VERSION)
             if not messagebox.askyesno(
                 "Переместить приложение",
                 "Будет скопирована вся папка приложения, включая _internal и DLL.\n\n"
-                f"Новая папка:\n{destination}\n\n"
-                "Текущая папка станет резервной, если там уже есть старая версия. "
+                f"Новая папка App:\n{destination}\n\n"
+                f"Папка Updates останется отдельно:\n{layout['updates']}\n\n"
+                "Старая установка останется на месте как резервная копия. "
                 "После проверки новая копия запустится автоматически. Продолжить?",
             ):
                 return
@@ -5694,24 +5967,44 @@ class MoyaIshkaApp:
             shutil.copytree(current_dir, staged_dir)
             validate_app_directory(staged_dir, APP_VERSION)
 
-            launch_windows_directory_replacement(
-                staged_app_dir=staged_dir,
-                target_dir=destination,
-                parent_pid=os.getpid(),
-                log_path=DATA_DIR / "update.log",
-                expected_version=APP_VERSION,
-                receipt_path=DATA_DIR / "update_confirmation.json",
-            )
+            # Persist the new target only after explicit confirmation and successful staging.
+            self.config["install_root_dir"] = str(root)
+            self.config["updates_dir"] = str(layout["updates"])
+            self.config["install_dir"] = str(destination)
+            self.config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+
+            try:
+                launch_windows_directory_replacement(
+                    staged_app_dir=staged_dir,
+                    target_dir=destination,
+                    parent_pid=os.getpid(),
+                    log_path=DATA_DIR / "update.log",
+                    expected_version=APP_VERSION,
+                    receipt_path=DATA_DIR / "update_confirmation.json",
+                )
+            except Exception:
+                for key, value in previous_values.items():
+                    if value is None:
+                        self.config.pop(key, None)
+                    else:
+                        self.config[key] = value
+                atomic_json_save(CONFIG_PATH, self.config)
+                raise
+
             self.update_status_var.set(
-                f"Перенос всей папки передан установщику. Новая копия: {destination}"
+                f"Перенос всей папки передан установщику. App: {destination}. Updates сохранён: {layout['updates']}"
             )
             if self.avatar is not None:
                 self.avatar.hide()
             self.on_close()
         except Exception as exc:
+            if staged_dir is not None and staged_dir.exists():
+                import shutil
+                shutil.rmtree(staged_dir, ignore_errors=True)
             messagebox.showerror(
                 "Установка",
-                f"Текущая версия не затронута. Проверь, что запускается onedir-сборка 4.1.8.5.\n\n{exc}",
+                f"Текущая версия не затронута. Проверь установленную onedir-сборку {APP_VERSION}.\n\n{exc}",
             )
 
     def search_old_versions(self) -> None:
@@ -5933,16 +6226,16 @@ class MoyaIshkaApp:
                 f"Текущая версия не затронута.\n\nПричина: {exc}\n\nПакет сохранён здесь:\n{self.staged_update_path.parent}",
             )
 
-    def _apply_staged_update(self) -> None:
+    def _apply_staged_update(self, install_dir: str | Path | None = None) -> None:
         if not self.staged_update_path or not self.staged_update_path.exists():
             messagebox.showerror("Обновление", "Папка обновления не найдена.")
             return
         try:
-            destination = ensure_install_dir_writable(self._selected_install_dir())
+            destination = ensure_install_dir_writable(install_dir or self._selected_install_dir())
+            # This method is called only after the user accepts installation.
             self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
-            self.update_install_dir_var.set(str(destination))
             launch_windows_directory_replacement(
                 staged_app_dir=self.staged_update_path.parent,
                 target_dir=destination,
@@ -6297,8 +6590,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.0-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.0-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.1-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.1-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
