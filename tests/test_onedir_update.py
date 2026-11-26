@@ -179,10 +179,14 @@ class OnedirUpdateTests(unittest.TestCase):
         self.assertNotIn("/MT:8", script)
 
     def test_download_extract_and_hash_buffers_are_fifty_megabytes(self):
-        from updater import DOWNLOAD_CHUNK_BYTES, FILE_HASH_CHUNK_BYTES, EXTRACT_CHUNK_BYTES
+        from updater import (
+            DOWNLOAD_CHUNK_BYTES, FILE_HASH_CHUNK_BYTES,
+            EXTRACT_CHUNK_BYTES, MAX_PACKAGE_BYTES,
+        )
         from updater_helper import FILE_HASH_CHUNK_BYTES as INSTALL_HASH_CHUNK_BYTES
 
         expected = 50 * 1024 * 1024
+        self.assertEqual(MAX_PACKAGE_BYTES, 2 * 1024 * 1024 * 1024)
         self.assertEqual(DOWNLOAD_CHUNK_BYTES, expected)
         self.assertEqual(FILE_HASH_CHUNK_BYTES, expected)
         self.assertEqual(EXTRACT_CHUNK_BYTES, expected)
