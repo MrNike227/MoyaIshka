@@ -6,7 +6,10 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from backup_manager import BackupError, create_backup, inspect_backup, maybe_create_daily_backup, restore_backup
+from backup_manager import (
+    BackupError, copy_verified_backups, create_backup, inspect_backup,
+    maybe_create_daily_backup, restore_backup,
+)
 
 
 class BackupManagerTests(unittest.TestCase):
@@ -109,6 +112,28 @@ class BackupManagerTests(unittest.TestCase):
         with self.assertRaises(BackupError):
             inspect_backup(archive)
         self.assertFalse((Path(self.temp.name) / "outside.txt").exists())
+
+    def test_legacy_backups_are_copied_and_originals_are_kept(self):
+        legacy = Path(self.temp.name) / "legacy"
+        destination = Path(self.temp.name) / "new_backups"
+        archive = create_backup(self.root, app_version="4.1.9", backup_dir=legacy)
+        copied, skipped = copy_verified_backups(legacy, destination)
+        self.assertEqual((copied, skipped), (1, 0))
+        migrated = destination / archive.name
+        self.assertTrue(migrated.is_file())
+        self.assertTrue(archive.is_file())
+        self.assertEqual(inspect_backup(migrated)["app_version"], "4.1.9")
+        copied_again, skipped_again = copy_verified_backups(legacy, destination)
+        self.assertEqual((copied_again, skipped_again), (0, 0))
+
+    def test_legacy_migration_skips_corrupt_archives(self):
+        legacy = Path(self.temp.name) / "legacy_corrupt"
+        destination = Path(self.temp.name) / "new_corrupt"
+        legacy.mkdir()
+        (legacy / "MoyaIshka_backup_corrupt.zip").write_bytes(b"not-a-zip")
+        copied, skipped = copy_verified_backups(legacy, destination)
+        self.assertEqual((copied, skipped), (0, 1))
+        self.assertFalse(any(destination.glob("*.zip")))
 
     def test_daily_backup_honors_custom_directory(self):
         target = Path(self.temp.name) / "custom_daily"

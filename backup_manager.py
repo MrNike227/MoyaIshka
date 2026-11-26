@@ -198,6 +198,47 @@ def inspect_backup(archive_path: str | Path) -> dict[str, Any]:
         raise BackupError(f"Не удалось прочитать резервную копию: {exc}") from exc
 
 
+
+def copy_verified_backups(source_folder: str | Path, destination_folder: str | Path) -> tuple[int, int]:
+    """Copy valid legacy ZIP archives without deleting originals or overwriting conflicts."""
+    source = Path(source_folder).expanduser().resolve()
+    destination = Path(destination_folder).expanduser().resolve()
+    if not source.is_dir() or source == destination:
+        return 0, 0
+    destination.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    skipped = 0
+    for candidate in sorted(source.glob(f"{BACKUP_PREFIX}*.zip"), key=lambda item: item.name):
+        if candidate.is_symlink() or not candidate.is_file():
+            skipped += 1
+            continue
+        try:
+            inspect_backup(candidate)
+        except BackupError:
+            skipped += 1
+            continue
+        target = destination / candidate.name
+        if target.exists():
+            try:
+                if target.is_file() and not target.is_symlink() and _sha256_file(target) == _sha256_file(candidate):
+                    continue
+            except OSError:
+                skipped += 1
+                continue
+            target = destination / f"{candidate.stem}_legacy_{uuid.uuid4().hex[:8]}.zip"
+        temporary = destination / f".{target.stem}.{uuid.uuid4().hex}.tmp.zip"
+        try:
+            shutil.copy2(candidate, temporary)
+            if _sha256_file(temporary) != _sha256_file(candidate):
+                raise BackupError("Контрольная сумма старой резервной копии не совпала после копирования.")
+            inspect_backup(temporary)
+            os.replace(temporary, target)
+            copied += 1
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            skipped += 1
+    return copied, skipped
+
 def _prune_backups(folder: Path, retention_count: int) -> None:
     keep = max(1, min(50, int(retention_count)))
     archives = sorted(
