@@ -3662,31 +3662,45 @@ class MoyaIshkaApp:
                         messagebox.showerror("Обновление", "GitHub не передал номер версии релиза. Для безопасной установки нужна точная версия.")
                         continue
                     self.update_status_var.set(f"Обновление {self.staged_update_version} загружено и проверено: {self.staged_update_path.name}")
-                    # Keep the active App directory separate from the optional container root.
-                    # The folder picker here selects the actual application directory,
-                    # not the parent which contains App and Updates.
-                    initial = self._selected_install_dir()
-                    if bool(self.config.get("install_dir_user_selected", False)):
-                        destination_dir = initial
+                    # The saved container is authoritative: updates always install to
+                    # Container/App and create Container/Updates next to it.
+                    root_value = str(self.config.get("install_root_dir", "")).strip()
+                    initial_root = (
+                        Path(root_value).expanduser().resolve()
+                        if root_value
+                        else default_install_root(
+                            legacy_install_dir=self.config.get("install_dir"),
+                            running_exe=Path(sys.executable) if getattr(sys, "frozen", False) else None,
+                        )
+                    )
+                    if bool(self.config.get("install_dir_user_selected", False)) or root_value:
+                        container_root = initial_root
                     else:
                         selected = filedialog.askdirectory(
                             parent=self.root,
-                            title="Выбери постоянную папку программы (папку App)",
-                            initialdir=str(initial),
+                            title="Выбери корневую папку контейнера (в ней будут App и Updates)",
+                            initialdir=str(initial_root),
                             mustexist=False,
                         )
                         if not selected:
                             messagebox.showinfo(
                                 "Обновление загружено",
-                                f"Установка отменена. Проверенный пакет остаётся во временной папке:\n{self.staged_update_path}\n\nПапку программы можно выбрать позже в Настройках → Автоматические обновления.",
+                                f"Установка отменена. Проверенный пакет остаётся во временной папке:\n{self.staged_update_path}\n\nПапку контейнера можно выбрать позже в Настройках → Автоматические обновления.",
                             )
                             continue
-                        destination_dir = Path(selected).expanduser().resolve()
+                        container_root = Path(selected).expanduser().resolve()
 
                     try:
-                        destination_dir = ensure_install_dir_writable(destination_dir)
+                        layout = ensure_install_layout(container_root)
+                        destination_dir = ensure_install_dir_writable(layout["app"])
+                        ensure_install_dir_writable(layout["updates"])
+                        self.config["install_root_dir"] = str(layout["root"])
+                        self.config["updates_dir"] = str(layout["updates"])
+                        self.config["install_dir"] = str(destination_dir)
+                        self.config["install_dir_user_selected"] = True
+                        atomic_json_save(CONFIG_PATH, self.config)
                     except Exception as exc:
-                        messagebox.showerror("Папка установки", str(exc))
+                        messagebox.showerror("Папка контейнера", str(exc))
                         continue
                     target = destination_dir / "MoyaIshka.exe"
                     if getattr(sys, "frozen", False):
