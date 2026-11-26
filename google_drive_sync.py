@@ -34,6 +34,12 @@ BACKUP_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_BACKUP_FILE_BYTES = 2 * 1024 * 1024 * 1024 + 1024 * 1024
 
 
+def _validate_resumable_upload_ack(headers: Any, expected_end: int) -> None:
+    accepted_range = str(headers.get("Range", "") or "")
+    if not accepted_range or not accepted_range.endswith(f"-{expected_end}"):
+        raise GoogleDriveError("Google Drive не подтвердил полный блок загрузки. Локальная копия сохранена.")
+
+
 class _NoRedirectResumableUploadHandler(urllib.request.HTTPRedirectHandler):
     """Treat Drive's HTTP 308 Resume Incomplete response as an upload ACK, not a redirect."""
 
@@ -529,9 +535,10 @@ class GoogleDriveVaultClient:
                         raise GoogleDriveError(f"Google Drive вернул неожиданный статус загрузки: HTTP {status}.")
                 except urllib.error.HTTPError as exc:
                     if exc.code == 308:
-                        accepted_range = str(exc.headers.get("Range", ""))
-                        if accepted_range and not accepted_range.endswith(f"-{end}"):
-                            raise GoogleDriveError("Google Drive подтвердил не весь блок загрузки. Локальная копия сохранена.") from exc
+                        try:
+                            _validate_resumable_upload_ack(exc.headers, end)
+                        except GoogleDriveError as ack_error:
+                            raise ack_error from exc
                         offset = end + 1
                         continue
                     raise GoogleDriveError(f"Не удалось загрузить блок резервной копии (HTTP {exc.code}): {_google_error(exc.read())}") from exc
