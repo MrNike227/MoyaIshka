@@ -342,6 +342,20 @@ class UtilityTests(unittest.TestCase):
         from main import APP_VERSION
         self.assertEqual(APP_VERSION, "4.2.3")
 
+    def test_saved_container_overrides_legacy_install_directory(self):
+        import main
+        with tempfile.TemporaryDirectory() as temp:
+            container = Path(temp) / "SelectedContainer"
+            app = object.__new__(main.MoyaIshkaApp)
+            app.config = {
+                "install_root_dir": str(container),
+                "install_dir": str(Path(temp) / "OldInstall"),
+            }
+            self.assertEqual(
+                app._selected_install_dir(),
+                (container / "App").resolve(),
+            )
+
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
 
