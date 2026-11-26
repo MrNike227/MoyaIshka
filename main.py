@@ -31,7 +31,10 @@ from typing import Any
 
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
-from backup_manager import create_backup, maybe_create_daily_backup, restore_backup, inspect_backup
+from backup_manager import (
+    create_backup, maybe_create_daily_backup, restore_backup, inspect_backup,
+    copy_verified_backups,
+)
 from backup_cloud import (
     BackupEncryptionError, decrypt_backup_file, encrypt_backup_file, sha256_file as backup_sha256_file,
 )
@@ -133,6 +136,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "backup_dir": "",
     "backup_cloud_enabled": True,
     "backup_cloud_retention_count": 7,
+    "backup_legacy_migrated": False,
     "voice_tts": False,
     "voice_engine": "system",
     "tts_voice_id": "",
@@ -3797,6 +3801,8 @@ class MoyaIshkaApp:
             self.save_backup_settings()
 
     def save_backup_settings(self) -> bool:
+        legacy_copied = 0
+        legacy_skipped = 0
         try:
             retention = max(3, min(30, int(self.backup_retention_var.get())))
             cloud_retention = max(3, min(30, int(self.backup_cloud_retention_var.get())))
@@ -3811,7 +3817,9 @@ class MoyaIshkaApp:
             backup_dir.mkdir(parents=True, exist_ok=True)
             if not backup_dir.is_dir():
                 raise OSError("Выбранный путь не является папкой.")
-        except (ValueError, AttributeError, OSError) as exc:
+            if not bool(self.config.get("backup_legacy_migrated", False)):
+                legacy_copied, legacy_skipped = copy_verified_backups(DATA_DIR / "backups", backup_dir)
+        except Exception as exc:
             messagebox.showerror("Резервное копирование", f"Не удалось сохранить папку копий или параметры: {exc}")
             return False
         self.config["auto_backup_enabled"] = bool(self.auto_backup_var.get())
@@ -3819,10 +3827,14 @@ class MoyaIshkaApp:
         self.config["backup_dir"] = str(backup_dir)
         self.config["backup_cloud_enabled"] = bool(self.backup_cloud_enabled_var.get())
         self.config["backup_cloud_retention_count"] = cloud_retention
+        self.config["backup_legacy_migrated"] = True
         atomic_json_save(CONFIG_PATH, self.config)
+        migration_note = f" · перенесено старых копий: {legacy_copied}" if legacy_copied else ""
+        if legacy_skipped:
+            migration_note += f" · пропущено повреждённых: {legacy_skipped}"
         self.backup_status_var.set(
             f"Папка: {backup_dir} · локально: {retention} · Google Drive: "
-            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · облако: {cloud_retention}"
+            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · облако: {cloud_retention}{migration_note}"
         )
         return True
 
