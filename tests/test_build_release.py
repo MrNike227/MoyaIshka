@@ -30,6 +30,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-binary "build_runtime\\python_runtime;."', build)
         self.assertIn("vcruntime140.dll", helper)
         self.assertIn("vcruntime140_1.dll", helper)
+        self.assertIn("discover_visual_c_runtime_roots", helper)
+        self.assertIn("Microsoft Visual Studio", helper)
         self.assertIn('"vcruntime140.dll"', helper)
         self.assertIn('"vcruntime140_1.dll"', helper)
         self.assertIn('"msvcp140.dll"', helper)
