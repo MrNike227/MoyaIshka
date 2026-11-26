@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Test self-improvement proposals in a disposable project copy."""
 from __future__ import annotations
-import hashlib, json, shutil, subprocess, sys, tempfile
+import hashlib, json, re, shutil, subprocess, sys, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -98,7 +98,7 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
     report: dict[str, Any] = {
         "schema": 1, "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "passed": False, "checked_files": len(checked), "tests_exit_code": None,
-        "stdout": "", "stderr": "", "error": "",
+        "tests_run": 0, "stdout": "", "stderr": "", "error": "",
     }
     try:
         with tempfile.TemporaryDirectory(prefix="moya_proposal_test_") as temporary:
@@ -121,22 +121,32 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
                     timeout=max(30, min(int(timeout_seconds), 600)),
                 )
                 runner_data = json.loads(runner_result.read_text(encoding="utf-8")) if runner_result.is_file() else {}
+                tests_run = int(runner_data.get("tests_run", 0) or 0) if isinstance(runner_data, dict) else 0
                 report.update(
                     tests_exit_code=process.returncode,
-                    stdout=str(runner_data.get("stdout", process.stdout))[-12000:],
-                    stderr=str(runner_data.get("stderr", process.stderr))[-12000:],
-                    passed=process.returncode == 0 and bool(runner_data.get("passed")),
+                    tests_run=tests_run,
+                    stdout=str(runner_data.get("stdout", process.stdout))[-12000:] if isinstance(runner_data, dict) else process.stdout[-12000:],
+                    stderr=str(runner_data.get("stderr", process.stderr))[-12000:] if isinstance(runner_data, dict) else process.stderr[-12000:],
+                    passed=process.returncode == 0 and bool(runner_data.get("passed")) and tests_run > 0 if isinstance(runner_data, dict) else False,
                 )
+                if not tests_run:
+                    report["error"] = "В копии проекта не найдено ни одного unit-теста."
             else:
                 process = subprocess.run(
                     [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
                     cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace",
                     timeout=max(30, min(int(timeout_seconds), 600)),
                 )
+                combined_output = process.stdout + "\\n" + process.stderr
+                match = re.search(r"Ran\\s+(\\d+)\\s+tests?", combined_output)
+                tests_run = int(match.group(1)) if match else 0
                 report.update(
-                    tests_exit_code=process.returncode, stdout=process.stdout[-12000:],
-                    stderr=process.stderr[-12000:], passed=process.returncode == 0,
+                    tests_exit_code=process.returncode, tests_run=tests_run,
+                    stdout=process.stdout[-12000:], stderr=process.stderr[-12000:],
+                    passed=process.returncode == 0 and tests_run > 0,
                 )
+                if not tests_run:
+                    report["error"] = "В копии проекта не найдено ни одного unit-теста."
     except subprocess.TimeoutExpired as exc:
         report["error"] = f"Превышено время выполнения тестов ({exc.timeout} секунд)."
         report["stdout"] = str(exc.stdout or "")[-12000:]
@@ -175,7 +185,7 @@ def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) ->
         runner = unittest.TextTestRunner(stream=stream, verbosity=2)
         result = runner.run(suite)
         result_data.update(
-            passed=result.wasSuccessful(), tests_run=result.testsRun,
+            passed=result.wasSuccessful() and result.testsRun > 0, tests_run=result.testsRun,
             failures=len(result.failures), errors=len(result.errors), stdout=stream.getvalue(),
         )
     except Exception as exc:
