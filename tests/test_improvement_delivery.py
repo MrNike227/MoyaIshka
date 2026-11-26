@@ -27,6 +27,15 @@ class ImprovementDeliveryTests(unittest.TestCase):
             self.assertEqual(layout["app"].parent, layout["updates"].parent)
             self.assertNotEqual(layout["app"], layout["updates"])
 
+    def test_ensure_install_layout_creates_app_and_updates_siblings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "Container"
+            layout = ensure_install_layout(root)
+            self.assertTrue(layout["app"].is_dir())
+            self.assertTrue(layout["updates"].is_dir())
+            self.assertEqual(layout["app"].parent, layout["updates"].parent)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["App", "Updates"])
+
     def test_default_root_does_not_reuse_legacy_install_folder(self):
         with tempfile.TemporaryDirectory() as temp:
             legacy = Path(temp) / "OldInstall"
