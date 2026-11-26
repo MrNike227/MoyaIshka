@@ -55,6 +55,37 @@ class GoogleDriveSyncTests(unittest.TestCase):
         client.ensure_fresh_session()
         self.assertEqual(client.session["access_token"], "access")
 
+    def test_backup_folder_is_created_under_app_folder(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._folder = lambda: "app-folder"
+        queries = []
+        def fake_list(query, **_kwargs):
+            queries.append(query)
+            return []
+        client._list = fake_list
+        client._api = lambda *_args, **_kwargs: (b'{"id":"backup-folder"}', {})
+        self.assertEqual(client._backup_folder(), "backup-folder")
+        self.assertIn("'app-folder' in parents", queries[0])
+
+    def test_backup_listing_filters_to_encrypted_app_backups(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._backup_folder = lambda: "backup-folder"
+        client._list = lambda *_args, **_kwargs: [
+            {"id": "ok", "name": "a.mibak", "size": "123", "appProperties": {
+                "moya_backup_format": "1", "moya_backup_sha256": "a" * 64}},
+            {"id": "unrelated", "name": "other.zip", "size": "30", "appProperties": {}},
+        ]
+        rows = client.list_backup_files()
+        self.assertEqual([row["id"] for row in rows], ["ok"])
+        self.assertEqual(rows[0]["sha256"], "a" * 64)
+
+    def test_backup_upload_rejects_bad_hash_without_network(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        with patch("google_drive_sync.urllib.request.urlopen") as opener:
+            with self.assertRaisesRegex(GoogleDriveError, "SHA-256"):
+                client.upload_backup_file(__file__, remote_name="bad.mibak", sha256="wrong")
+            opener.assert_not_called()
+
     def test_quota_usage_sums_only_app_folder_files(self):
         client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
         client._folder = lambda: "folder-id"
