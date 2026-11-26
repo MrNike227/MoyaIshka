@@ -437,8 +437,9 @@ def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
     )
 
 def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> str:
-    """Apply a single-file unified diff, checking every context/deletion line."""
-    patch_lines = patch_text.splitlines(keepends=True)
+    """Apply a single-file unified diff, relocating unique exact hunks safely."""
+    normalized_patch = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    patch_lines = normalized_patch.splitlines(keepends=True)
     headers = []
     first_hunk = None
     for i, line in enumerate(patch_lines):
@@ -454,10 +455,9 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
         raise ValueError("Diff пытается изменить другой файл. Разрешён только выбранный файл.")
 
     source_lines = original.splitlines(keepends=True)
-    output: list[str] = []
-    source_index = 0
+    newline = "\r\n" if "\r\n" in original else "\n"
+    hunks: list[tuple[int, int, int, list[tuple[str, str]]]] = []
     i = first_hunk
-    hunk_count = 0
     while i < len(patch_lines):
         line = patch_lines[i]
         if not line.startswith("@@ "):
@@ -469,11 +469,7 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
         old_start = int(match.group(1))
         old_count = int(match.group(2) or 1)
         new_count = int(match.group(4) or 1)
-        target_index = old_start if old_count == 0 else max(0, old_start - 1)
-        if target_index < source_index:
-            raise ValueError("Блоки diff идут не по порядку.")
-        output.extend(source_lines[source_index:target_index])
-        source_index = target_index
+        operations: list[tuple[str, str]] = []
         consumed_old = 0
         produced_new = 0
         i += 1
@@ -487,32 +483,94 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
             if not item or item[0] not in " +-":
                 raise ValueError(f"Некорректная строка в diff: {item[:80]!r}")
             marker, content = item[0], item[1:]
+            operations.append((marker, content))
             if marker in " -":
                 consumed_old += 1
-                if marker == " ":
-                    produced_new += 1
-                if source_index >= len(source_lines):
-                    raise ValueError("Diff не совпадает с текущим файлом (ожидалась строка, но файл закончился).")
-                if _normal(source_lines[source_index]) != _normal(content):
-                    raise ValueError(
-                        "Diff не совпадает с текущим содержимым файла. "
-                        f"Ожидалось: {_normal(content)[:100]!r}; найдено: {_normal(source_lines[source_index])[:100]!r}"
-                    )
-                if marker == " ":
-                    output.append(source_lines[source_index])
-                source_index += 1
-            elif marker == "+":
+            if marker in " +":
                 produced_new += 1
-                output.append(content)
             i += 1
         if consumed_old != old_count or produced_new != new_count:
             raise ValueError(
                 "Неполный блок diff: количество строк не совпадает с заголовком @@. "
                 "Повтори генерацию изменений."
             )
-        hunk_count += 1
-    if hunk_count == 0:
+        hunks.append((old_start, old_count, new_count, operations))
+
+    if not hunks:
         raise ValueError("В diff нет применимых изменений.")
+
+    output: list[str] = []
+    source_index = 0
+
+    def patch_line_matches(source_index: int, expected_lines: list[str]) -> bool:
+        if source_index < 0 or source_index + len(expected_lines) > len(source_lines):
+            return False
+        return all(
+            _normal(source_lines[source_index + offset]) == _normal(expected)
+            for offset, expected in enumerate(expected_lines)
+        )
+
+    def format_added_line(content: str) -> str:
+        if content.endswith("\n") and newline == "\r\n":
+            return content[:-1] + "\r\n"
+        return content
+
+    for old_start, old_count, _new_count, operations in hunks:
+        old_lines = [content for marker, content in operations if marker in " -"]
+        if old_count:
+            expected_index = max(0, old_start - 1)
+            if expected_index >= source_index and patch_line_matches(expected_index, old_lines):
+                actual_index = expected_index
+            else:
+                matches = [
+                    candidate
+                    for candidate in range(source_index, len(source_lines) - len(old_lines) + 1)
+                    if patch_line_matches(candidate, old_lines)
+                ]
+                if len(matches) == 1:
+                    actual_index = matches[0]
+                elif not matches:
+                    expected_line = old_lines[0] if old_lines else ""
+                    found_line = (
+                        _normal(source_lines[expected_index])
+                        if expected_index < len(source_lines)
+                        else "<конец файла>"
+                    )
+                    raise ValueError(
+                        "Diff не совпадает с текущим содержимым файла: точный блок исходных строк не найден. "
+                        "Возможно, модель использовала шаблонный или устаревший текст. "
+                        f"Ожидалось: {_normal(expected_line)[:100]!r}; "
+                        f"в указанной позиции найдено: {found_line[:100]!r}. "
+                        "Изменения не применены."
+                    )
+                else:
+                    raise ValueError(
+                        "Diff неоднозначен: одинаковый блок исходных строк встречается в файле несколько раз. "
+                        "Уточни фрагмент и повтори генерацию; изменения не применены."
+                    )
+            output.extend(source_lines[source_index:actual_index])
+            cursor = actual_index
+            for marker, content in operations:
+                if marker == " ":
+                    output.append(source_lines[cursor])
+                    cursor += 1
+                elif marker == "-":
+                    cursor += 1
+                else:
+                    output.append(format_added_line(content))
+            source_index = actual_index + old_count
+        else:
+            # For a pure insertion, the old line number is an anchor (number of
+            # source lines before insertion), not a context block to relocate.
+            actual_index = old_start
+            if actual_index < source_index or actual_index > len(source_lines):
+                raise ValueError("Позиция вставки в diff выходит за пределы текущего файла.")
+            output.extend(source_lines[source_index:actual_index])
+            for marker, content in operations:
+                if marker == "+":
+                    output.append(format_added_line(content))
+            source_index = actual_index
+
     output.extend(source_lines[source_index:])
     return "".join(output)
 
