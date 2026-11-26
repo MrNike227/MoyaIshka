@@ -41,10 +41,10 @@ class ImprovementTestingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
             bundle = self.make_bundle(temp, 2)
-            (root / "sample.py").write_bytes(b"VALUE = 1\\r\\n")
+            (root / "sample.py").write_bytes(b"VALUE = 1\r\n")
             result = test_change_bundle(bundle, root)
             self.assertTrue(result["passed"], result)
-            self.assertEqual((root / "sample.py").read_bytes(), b"VALUE = 1\\r\\n")
+            self.assertEqual((root / "sample.py").read_bytes(), b"VALUE = 1\r\n")
 
     def test_stale_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
