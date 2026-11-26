@@ -770,7 +770,7 @@ def _directory_updater_script() -> str:
     }
 
     try {
-        Log "Начата установка onedir $ExpectedVersion: $StagedDir -> $TargetDir"
+        Log "Начата установка onedir ${ExpectedVersion}: $StagedDir -> $TargetDir"
         if (-not (Test-Path -LiteralPath $StagedDir -PathType Container)) { throw "Не найдена папка обновления: $StagedDir" }
         $runningDeadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $runningDeadline -and (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
@@ -873,7 +873,7 @@ def _directory_updater_script() -> str:
         if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
         exit 1
     }
-
+    '''
 
 
 def launch_windows_directory_replacement(
