@@ -19,7 +19,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "improvement_delivery.py;source_project"', build)
         self.assertIn('--add-data "improvement_testing.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
-        self.assertIn('--add-data "PLAN_4.2.2_RU.md;source_project"', build)
+        self.assertIn('--add-data "PLAN_4.2.3_RU.md;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)
@@ -36,7 +36,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_application_version_is_422(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.2.2"', source)
+        self.assertIn('APP_VERSION = "4.2.3"', source)
 
     def test_legacy_update_repository_is_migrated(self):
         from main import migrate_update_repository
@@ -322,6 +322,16 @@ class ReleaseBuildTests(unittest.TestCase):
             source = (ROOT / "main.py").read_text(encoding="utf-8")
             self.assertIn('return resolve_install_layout(root)["app"]', source)
 
+    def test_staged_update_modes_share_one_install_implementation(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index("    def _start_staged_update_install(")
+        end = source.index("    # ---------- memory ----------", start)
+        installer = source[start:end]
+        self.assertEqual(installer.count("launch_windows_directory_replacement("), 1)
+        self.assertIn("staged_verified=True", installer)
+        self.assertIn("self._start_staged_update_install(install_dir, source_process=True)", installer)
+        self.assertIn("self._start_staged_update_install(install_dir, source_process=False)", installer)
+
     def test_move_current_build_copies_complete_onedir_folder(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
@@ -339,15 +349,16 @@ class ReleaseBuildTests(unittest.TestCase):
         end = helper.index("def launch_windows_directory_replacement", start)
         script = helper[start:end]
         self.assertIn("$stagedHash = VerifyFolder $StagedDir", script)
-        self.assertIn("$copiedHash = VerifyFolder $TempDir", script)
+        self.assertNotIn("$copiedHash", script)
         self.assertIn("$ExeHash = VerifyFolder $TargetDir", script)
         self.assertIn("CopyDirectoryContents $TargetDir $BackupDir", script)
         self.assertIn("VerifyBackupCopy $TargetDir $BackupDir", script)
         self.assertIn("ClearDirectoryContents $TargetDir", script)
-        self.assertIn("CopyDirectoryContents $TempDir $TargetDir", script)
+        self.assertIn("CopyDirectoryContents $StagedDir $TargetDir", script)
+        self.assertNotIn("$TempDir", script)
         self.assertNotIn("Move-Item -LiteralPath $TargetDir -Destination $BackupDir", script)
-        self.assertNotIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
-        self.assertIn("/MT:8", script)
+        self.assertIn("/MT:16", script)
+        self.assertNotIn("/MT:8", script)
         self.assertIn("Stopwatch]::StartNew()", script)
 
     def test_directory_updater_uses_one_recursive_tree_scan(self):
@@ -387,7 +398,7 @@ class ReleaseBuildTests(unittest.TestCase):
                 })
             manifest = {
                 "schema": 1,
-                "version": "4.2.2",
+                "version": "4.2.3",
                 "entrypoint": "MoyaIshka.exe",
                 "exe_sha256": hashlib.sha256(payloads["MoyaIshka.exe"]).hexdigest(),
                 "files": entries,
@@ -397,11 +408,11 @@ class ReleaseBuildTests(unittest.TestCase):
             (app / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
             (internal / "Thumbs.db").write_bytes(b"cache")
             (internal / "ehthumbs.db").write_bytes(b"cache")
-            self.assertEqual(validate_app_directory(app, "4.2.2")["version"], "4.2.2")
+            self.assertEqual(validate_app_directory(app, "4.2.3")["version"], "4.2.3")
 
             (internal / "unexpected.dll").write_bytes(b"unexpected")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
-                validate_app_directory(app, "4.2.2")
+                validate_app_directory(app, "4.2.3")
 
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
@@ -442,8 +453,8 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4, 2, 2, 0)", source)
         self.assertIn("prodvers=(4, 2, 2, 0)", source)
-        self.assertIn("FileVersion', '4.2.2'", source)
-        self.assertIn("ProductVersion', '4.2.2'", source)
+        self.assertIn("FileVersion', '4.2.3'", source)
+        self.assertIn("ProductVersion', '4.2.3'", source)
 
 
 
@@ -455,7 +466,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.2.2 onedir", workflow)
+        self.assertIn("Build Windows release — verified 4.2.3 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
@@ -494,19 +505,19 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.2]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.3]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
     def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.2' }}", workflow)
-        self.assertIn("- name: Update v4.2.2 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.2.2", workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.3' }}", workflow)
+        self.assertIn("- name: Update v4.2.3 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.2.3", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.2 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.3 tag to validated root source"))
     def test_windows10_script_checks_exact_target_os_without_python(self):
         script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
         self.assertIn("19045", script)
