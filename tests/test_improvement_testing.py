@@ -26,7 +26,7 @@ class ImprovementTestingTests(unittest.TestCase):
             self.assertTrue(result["passed"], result)
             self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
             self.assertTrue((bundle / "test_report.json").is_file())
-            self.assertEqual(json.loads((bundle / "manifest.json").read_text())["test"]["status"], "passed")
+            self.assertEqual(json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))["test"]["status"], "passed")
 
     def test_failed_proposal_is_reported_without_source_changes(self):
         with tempfile.TemporaryDirectory() as temp:
