@@ -1,4 +1,4 @@
-# Dependencies bundled into the single-file Windows EXE by BUILD_EXE.bat
+# Dependencies bundled into the onedir Windows package by BUILD_EXE.bat
 pypdf>=4.0
 python-docx>=1.1
 SpeechRecognition>=3.10
