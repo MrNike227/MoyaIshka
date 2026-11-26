@@ -1,4 +1,4 @@
-name: Build Windows release — verified 4.1.8.3
+name: Build Windows release — verified 4.1.8.5 onedir
 
 on:
   push:
@@ -8,12 +8,9 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
 
 concurrency:
-  group: moyaishka-release-${{ github.ref }}
+  group: moyaishka-onedir-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -21,7 +18,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build and verify Windows EXE
+    name: Build and verify Windows onedir package
     runs-on: windows-2022
     steps:
       - name: Checkout source
@@ -44,92 +41,120 @@ jobs:
           python -m pip install --upgrade -r requirements.txt
           python -c "import cryptography, cffi, _cffi_backend; from cryptography.exceptions import InvalidTag; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from cryptography.hazmat.primitives.kdf.scrypt import Scrypt; print('cryptography preflight OK:', cryptography.__version__)"
 
-      - name: Run release configuration tests
+      - name: Run release configuration and unit tests
         shell: pwsh
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Build standalone EXE
+      - name: Build standalone onedir application
         shell: cmd
         env:
           MOYA_BUILD_PYTHON: python
           GITHUB_ACTIONS: 'true'
         run: BUILD_EXE.bat
 
-      - name: Verify app-local VC runtime DLLs are embedded
+      - name: Verify app-local VC runtime DLLs are present
         shell: pwsh
         run: |
-          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
-          $archiveListing = (& pyi-archive_viewer -l $exePath 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Could not inspect the PyInstaller archive.'
-          }
+          $runtime = 'dist/MoyaIshka/_internal'
           foreach ($dll in @('python311.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')) {
-            if ($archiveListing -notmatch [regex]::Escape($dll)) {
-              throw "Required app-local runtime DLL is missing from the EXE archive: $dll"
+            if (-not (Test-Path (Join-Path $runtime $dll))) {
+              throw "Required app-local runtime DLL is missing: $dll"
             }
+          }
+
+      - name: Validate PowerShell folder updater syntax
+        shell: powershell
+        run: |
+          python -c "from pathlib import Path; from updater_helper import _directory_updater_script; Path('updater_directory_helper.ps1').write_text(_directory_updater_script(), encoding='utf-8-sig')"
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'updater_directory_helper.ps1').Path, [ref]$tokens, [ref]$errors)
+          Remove-Item 'updater_directory_helper.ps1' -Force
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'PowerShell folder updater has syntax errors.'
+          }
+
+      - name: Ensure Windows UCRT is not bundled
+        shell: pwsh
+        run: |
+          $runtime = 'dist/MoyaIshka/_internal'
+          if (Test-Path (Join-Path $runtime 'ucrtbase.dll')) {
+            throw 'ucrtbase.dll must be resolved from Windows, not the application folder.'
+          }
+          $apiSet = @(Get-ChildItem -LiteralPath $runtime -Filter 'api-ms-win-crt-*.dll' -File -Recurse)
+          if ($apiSet.Count -gt 0) {
+            throw 'Windows API-set DLLs must not be copied from the build host.'
           }
 
       - name: Audit python311.dll PE dependency tree on Windows
         shell: pwsh
-        run: python verify_pe_dependencies.py dist/MoyaIshka.exe
+        run: python verify_pe_dependencies.py dist/MoyaIshka
 
-      - name: Verify EXE starts without Python on PATH
+      - name: Verify package manifest and all file hashes
+        shell: pwsh
+        run: python -c "from updater_helper import validate_app_directory; print('Validated package:', validate_app_directory('dist/MoyaIshka', '4.1.8.5')['version'])"
+
+      - name: Verify onedir EXE starts without Python on PATH
         shell: pwsh
         run: |
-          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
+          $exePath = (Resolve-Path 'dist/MoyaIshka/MoyaIshka.exe').Path
           $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
           $startInfo.FileName = $exePath
           $startInfo.Arguments = '--self-test-imports'
+          $startInfo.WorkingDirectory = (Split-Path -Parent $exePath)
           $startInfo.UseShellExecute = $false
           $startInfo.CreateNoWindow = $true
-          # Keep only Windows system folders in PATH; Python and its Scripts directory are excluded.
           $startInfo.Environment['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot"
+          $startInfo.Environment.Remove('PYTHONHOME')
+          $startInfo.Environment.Remove('PYTHONPATH')
           $process = [System.Diagnostics.Process]::Start($startInfo)
           if (-not $process.WaitForExit(120000)) {
             $process.Kill()
-            throw 'Standalone EXE did not finish its isolated startup test within 120 seconds.'
+            throw 'Standalone onedir EXE did not finish its isolated startup test within 120 seconds.'
           }
           if ($process.ExitCode -ne 0) {
-            throw "Standalone EXE failed without Python on PATH (exit code $($process.ExitCode))."
+            throw "Onedir EXE failed without Python on PATH (exit code $($process.ExitCode))."
           }
 
-      - name: Verify frozen EXE imports and encryption round-trip
+      - name: Verify onedir package contains all runtime files
         shell: pwsh
         run: |
-          if (-not (Test-Path 'dist/MoyaIshka.exe')) {
-            throw 'PyInstaller did not create dist/MoyaIshka.exe'
-          }
-          $exePath = (Resolve-Path 'dist/MoyaIshka.exe').Path
-          $process = Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "Frozen EXE cryptography smoke test failed with exit code $($process.ExitCode)"
-          }
+          if (-not (Test-Path 'dist/MoyaIshka.zip')) { throw 'Onedir ZIP package was not created.' }
+          if (-not (Test-Path 'dist/MoyaIshka.zip.sha256')) { throw 'ZIP SHA-256 sidecar was not created.' }
+          $manifest = Get-Content 'dist/MoyaIshka/build_manifest.json' -Raw | ConvertFrom-Json
+          if ($manifest.version -ne '4.1.8.5') { throw "Unexpected package version: $($manifest.version)" }
+          if (@($manifest.files).Count -lt 100) { throw 'Onedir manifest unexpectedly contains too few runtime files.' }
 
-      - name: Create SHA-256 checksum
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash -Path 'dist/MoyaIshka.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  MoyaIshka.exe" | Set-Content -Path 'dist/MoyaIshka.exe.sha256' -Encoding ascii
+      - name: Upload onedir package artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MoyaIshka-4.1.8.5-onedir
+          path: |
+            dist/MoyaIshka.zip
+            dist/MoyaIshka.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Create release or replace assets
-        if: startsWith(github.ref, 'refs/tags/') || (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[refresh-v4.1.8.3]'))
+        if: github.ref == 'refs/tags/v4.1.8.5' || (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[refresh-v4.1.8.5]'))
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.3' }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.5' }}
         run: |
           $tag = $env:RELEASE_TAG
           gh release view "$tag" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "$tag" 'dist/MoyaIshka.exe' 'dist/MoyaIshka.exe.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
+            gh release upload "$tag" 'dist/MoyaIshka.zip' 'dist/MoyaIshka.zip.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
           } elseif ($env:GITHUB_REF -eq 'refs/heads/main') {
             throw "Existing release $tag was not found. Refusing to create a new release from main."
           } else {
-            gh release create "$tag" 'dist/MoyaIshka.exe' 'dist/MoyaIshka.exe.sha256' --title "Моя ИИшка $tag" --generate-notes --repo "$env:GITHUB_REPOSITORY"
+            gh release create "$tag" 'dist/MoyaIshka.zip' 'dist/MoyaIshka.zip.sha256' --title "Моя ИИшка $tag" --generate-notes --repo "$env:GITHUB_REPOSITORY"
           }
 
-      - name: Update v4.1.8.3 tag to validated root source
-        if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[refresh-v4.1.8.3]')
+      - name: Update v4.1.8.5 tag to validated root source
+        if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[refresh-v4.1.8.5]')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,5 +162,5 @@ jobs:
           gh auth setup-git
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force --annotate --message "MoyaIshka 4.1.8.3 — validated Python DLL load fix" v4.1.8.3 $env:GITHUB_SHA
-          git push --force origin refs/tags/v4.1.8.3
+          git tag --force --annotate --message "MoyaIshka 4.1.8.5 — onedir Windows 10 package" v4.1.8.5 $env:GITHUB_SHA
+          git push --force origin refs/tags/v4.1.8.5

@@ -7,13 +7,41 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_build_uses_onedir_and_manifested_zip(self):
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        self.assertIn("--onedir --contents-directory _internal", build)
+        self.assertNotIn("--onefile", build)
+        self.assertIn("dist\\MoyaIshka\\MoyaIshka.exe", build)
+        self.assertIn("package_onedir.py", build)
+        self.assertIn("dist\\MoyaIshka.zip", build)
+        self.assertIn("api-ms-win-crt-", build)
+        self.assertIn("ucrtbase.dll", build)
+
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyinstaller==6.22.3", requirements)
 
-    def test_application_version_is_4183(self):
+    def test_application_version_is_4185(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.8.3"', source)
+        self.assertIn('APP_VERSION = "4.1.8.5"', source)
+
+    def test_legacy_update_repository_is_migrated(self):
+        from main import migrate_update_repository
+        config = {"update_repo": "MrNike227/MoyaIshka_v4.1.1"}
+        self.assertTrue(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "MrNike227/MoyaIshka")
+
+    def test_custom_update_repository_is_preserved(self):
+        from main import migrate_update_repository
+        config = {"update_repo": "someone/custom-fork"}
+        self.assertFalse(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "someone/custom-fork")
+
+    def test_empty_update_repository_gets_current_default(self):
+        from main import migrate_update_repository
+        config = {"update_repo": " "}
+        self.assertTrue(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "MrNike227/MoyaIshka")
 
     def test_python_vc_runtime_is_bundled_without_redundant_windows_ucrt(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
@@ -22,13 +50,15 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-binary "build_runtime\\python_runtime;."', build)
         self.assertIn("vcruntime140.dll", helper)
         self.assertIn("vcruntime140_1.dll", helper)
+        self.assertIn("discover_visual_c_runtime_roots", helper)
+        self.assertIn("Microsoft Visual Studio", helper)
         self.assertIn('"vcruntime140.dll"', helper)
         self.assertIn('"vcruntime140_1.dll"', helper)
         self.assertIn('"msvcp140.dll"', helper)
         self.assertNotIn('"ucrtbase.dll"', helper)
         self.assertNotIn('"api-ms-win-crt-*.dll"', helper)
         audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
-        self.assertIn("CArchiveReader", audit)
+        self.assertIn("runtime.rglob", audit)
         self.assertIn("DIRECTORY_ENTRY_DELAY_IMPORT", audit)
         self.assertIn("LoadLibraryExW", audit)
         self.assertIn("LOAD_LIBRARY_SEARCH_SYSTEM32", audit)
@@ -90,6 +120,51 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "vcruntime140.dll"):
                 collect_runtime_dlls([source], root / "bundle")
 
+
+    def test_runtime_dll_collector_finds_missing_python_dlls_in_visual_studio_redist(self):
+        import os
+        from unittest.mock import patch
+        from prepare_python_runtime import collect_runtime_dlls, discover_visual_c_runtime_roots
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            python = root / "python311"
+            python.mkdir()
+            redist = (
+                root / "Microsoft Visual Studio" / "2022" / "BuildTools" / "VC" / "Redist"
+                / "MSVC" / "14.42.34433" / "x64" / "Microsoft.VC143.CRT"
+            )
+            redist.mkdir(parents=True)
+
+            def write_pe(path):
+                data = bytearray(0x86)
+                data[:2] = b"MZ"
+                data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+                data[0x80:0x84] = b"PE\0\0"
+                data[0x84:0x86] = (0x8664).to_bytes(2, "little")
+                path.write_bytes(data)
+
+            for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+                write_pe(redist / name)
+
+            environment = {
+                "ProgramFiles": str(root),
+                "ProgramFiles(x86)": str(root),
+                "VCToolsRedistDir": "",
+                "VSINSTALLDIR": "",
+            }
+            with patch.dict(os.environ, environment):
+                roots = discover_visual_c_runtime_roots()
+                self.assertIn(redist.resolve(), roots)
+                copied = collect_runtime_dlls([python, *roots], root / "bundle")
+
+            self.assertEqual(
+                {path.name for path in copied},
+                {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"},
+            )
+            for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+                self.assertEqual((root / "bundle" / name).read_bytes()[:2], b"MZ")
+
     def test_cryptography_is_explicitly_collected(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         self.assertIn("--additional-hooks-dir hooks", build)
@@ -137,10 +212,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
-        self.assertIn("Verify app-local VC runtime DLLs are embedded", workflow)
-        self.assertIn("pyi-archive_viewer -l", workflow)
-        self.assertIn("Verify frozen EXE imports and encryption round-trip", workflow)
-        self.assertIn("Start-Process -FilePath $exePath -ArgumentList '--self-test-imports' -Wait -PassThru", workflow)
+        self.assertIn("Verify app-local VC runtime DLLs are present", workflow)
+        self.assertIn("dist/MoyaIshka/_internal", workflow)
+        self.assertIn("Verify onedir EXE starts without Python on PATH", workflow)
+        self.assertIn("[System.Diagnostics.Process]::Start($startInfo)", workflow)
         self.assertIn("$process.ExitCode", workflow)
         self.assertIn("if ($process.ExitCode -ne 0)", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
@@ -165,13 +240,62 @@ class ReleaseBuildTests(unittest.TestCase):
         audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("CArchiveReader", audit)
+        self.assertIn("runtime.rglob", audit)
         self.assertIn("DIRECTORY_ENTRY_DELAY_IMPORT", audit)
         self.assertIn("LoadLibraryExW", audit)
         self.assertIn("LOAD_WITH_ALTERED_SEARCH_PATH", audit)
         self.assertIn("%PY% verify_pe_dependencies.py", build)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
-        self.assertIn("python verify_pe_dependencies.py dist/MoyaIshka.exe", workflow)
+        self.assertIn("python verify_pe_dependencies.py dist/MoyaIshka", workflow)
+
+    def test_context_engine_is_bundled_and_used(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("select_relevant_memories", source)
+        self.assertIn("trim_conversation_context", source)
+        self.assertIn("context_engine.py", source)
+        self.assertTrue((ROOT / "tests" / "test_context_engine.py").is_file())
+
+    def test_workflow_parses_folder_updater_with_windows_powershell(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("Validate PowerShell folder updater syntax", workflow)
+        self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", workflow)
+
+    def test_directory_updater_sets_base_before_relative_path_enumeration(self):
+        helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
+        script_start = helper.index("def _directory_updater_script")
+        script_end = helper.index("def launch_windows_directory_replacement", script_start)
+        script = helper[script_start:script_end]
+        self.assertLess(
+            script.index("$base = [IO.Path]::GetFullPath($Folder)"),
+            script.index("$actualPaths = @("),
+        )
+
+    def test_move_current_build_copies_complete_onedir_folder(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
+        end = source.index("    def search_old_versions(self) -> None:", start)
+        method = source[start:end]
+        self.assertIn("shutil.copytree(current_dir, staged_dir)", method)
+        self.assertIn("validate_app_directory(current_dir, APP_VERSION)", method)
+        self.assertIn("launch_windows_directory_replacement(", method)
+        self.assertNotIn("os.replace(temporary, target)", method)
+        self.assertIn("_internal", method)
+
+    def test_directory_updater_has_verified_folder_swap_and_rollback(self):
+        helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
+        self.assertIn("validate_app_directory", helper)
+        self.assertIn("launch_windows_directory_replacement", helper)
+        self.assertIn("$BackupDir", helper)
+        self.assertIn("Rollback", helper)
+        self.assertIn("robocopy", helper)
+        self.assertIn("MOYA_UPDATE_RECEIPT", helper)
+
+    def test_package_generator_creates_manifest_and_zip_checksum(self):
+        source = (ROOT / "package_onedir.py").read_text(encoding="utf-8")
+        self.assertIn("build_manifest.json", source)
+        self.assertIn("sha256", source)
+        self.assertIn('stream.reconfigure(encoding="utf-8"', source)
+        self.assertIn("MoyaIshka.zip", (ROOT / "updater.py").read_text(encoding="utf-8"))
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
@@ -192,12 +316,12 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_418(self):
+    def test_windows_version_resource_is_4185(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4,1,8,3)", source)
-        self.assertIn("prodvers=(4,1,8,3)", source)
-        self.assertIn("FileVersion', '4.1.8.3'", source)
-        self.assertIn("ProductVersion', '4.1.8.3'", source)
+        self.assertIn("filevers=(4,1,8,5)", source)
+        self.assertIn("prodvers=(4,1,8,5)", source)
+        self.assertIn("FileVersion', '4.1.8.5'", source)
+        self.assertIn("ProductVersion', '4.1.8.5'", source)
 
 
 
@@ -209,21 +333,26 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.8.3", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8.5 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
+
+    def test_feature_branch_uses_single_push_ci_trigger(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("- 'feature/**'", workflow)
+        self.assertNotIn("pull_request:", workflow)
         self.assertIn("actions/checkout@v7", workflow)
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("actions/checkout@v4", workflow)
         self.assertNotIn("actions/setup-python@v5", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
 
-    def test_workflow_publishes_only_after_frozen_exe_smoke_test(self):
+    def test_workflow_publishes_only_after_onedir_smoke_test(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertLess(workflow.index("Verify app-local VC runtime DLLs are embedded"), workflow.index("Verify frozen EXE imports"))
-        self.assertLess(workflow.index("Verify frozen EXE imports"), workflow.index("Create release or replace assets"))
-        self.assertIn("MoyaIshka.exe.sha256", workflow)
+        self.assertLess(workflow.index("Verify app-local VC runtime DLLs are present"), workflow.index("Verify onedir EXE starts without Python on PATH"))
+        self.assertLess(workflow.index("Verify onedir EXE starts without Python on PATH"), workflow.index("Create release or replace assets"))
+        self.assertIn("MoyaIshka.zip.sha256", workflow)
 
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -233,7 +362,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_portable_exe_is_checked_without_python_on_path(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Verify EXE starts without Python on PATH", workflow)
+        self.assertIn("Verify onedir EXE starts without Python on PATH", workflow)
         self.assertIn("$startInfo.Environment['PATH'] = ", workflow)
         self.assertIn("'python311.dll'", workflow)
 
@@ -243,19 +372,26 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.8.3]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.8.5]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
-    def test_hotfix_marker_refreshes_existing_v4183_release_and_tag_only(self):
+    def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.3' }}", workflow)
-        self.assertIn("- name: Update v4.1.8.3 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.1.8.3", workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.5' }}", workflow)
+        self.assertIn("- name: Update v4.1.8.5 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.1.8.5", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.3 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.5 tag to validated root source"))
+    def test_windows10_script_checks_exact_target_os_without_python(self):
+        script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
+        self.assertIn("19045", script)
+        self.assertIn("--self-test-imports", script)
+        self.assertIn("PYTHONHOME", script)
+        self.assertIn("PYTHONPATH", script)
+
 if __name__ == "__main__":
     unittest.main()
 

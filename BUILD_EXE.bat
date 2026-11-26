@@ -1,8 +1,9 @@
-﻿@echo off
+@echo off
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.8.3 single-file Windows application...
+echo Building Moya Ishka 4.1.8.5 onedir Windows application...
+
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
   goto have_python
@@ -15,10 +16,13 @@ if not errorlevel 1 (
 where py >nul 2>nul
 if not errorlevel 1 goto use_py
 goto no_python
+
 :use_py
 set "PY=py -3.11"
+
 :have_python
 %PY% --version
+if errorlevel 1 goto failed
 %PY% -c "import struct; assert struct.calcsize('P') * 8 == 64, '64-bit Python is required'"
 if errorlevel 1 goto failed
 %PY% -m pip install --upgrade pip
@@ -31,7 +35,13 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto crypto_failed
 %PY% prepare_python_runtime.py
 if errorlevel 1 goto runtime_failed
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
+
+if exist "dist\MoyaIshka" rmdir /s /q "dist\MoyaIshka"
+if exist "build\MoyaIshka" rmdir /s /q "build\MoyaIshka"
+if exist "dist\MoyaIshka.zip" del /q "dist\MoyaIshka.zip"
+if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
+
+%PY% -m PyInstaller --noconfirm --clean --onedir --contents-directory _internal --windowed --noupx --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
@@ -40,6 +50,9 @@ if errorlevel 1 goto runtime_failed
   --add-data "app_icon_32.png;." ^
   --add-data "app_icon_16.png;." ^
   --add-data "main.py;source_project" ^
+  --add-data "context_engine.py;source_project" ^
+  --add-data "package_onedir.py;source_project" ^
+  --add-data "TEST_WINDOWS10.ps1;source_project" ^
   --add-data "windows_control.py;source_project" ^
   --add-data "voice_assistant.py;source_project" ^
   --add-data "voice_manager.py;source_project" ^
@@ -81,6 +94,7 @@ if errorlevel 1 goto runtime_failed
   --collect-all pyaudio --collect-all pyttsx3 --collect-all comtypes ^
   --collect-all cryptography --collect-submodules cryptography --collect-binaries cryptography --collect-data cryptography ^
   --collect-all cffi --hidden-import=cffi --hidden-import=_cffi_backend --collect-all psutil ^
+  --hidden-import=context_engine ^
   --hidden-import=cryptography --hidden-import=cryptography.exceptions ^
   --hidden-import=cryptography.hazmat.primitives.ciphers.aead ^
   --hidden-import=cryptography.hazmat.primitives.kdf.scrypt ^
@@ -90,42 +104,60 @@ if errorlevel 1 goto runtime_failed
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
-if not exist "dist\MoyaIshka.exe" goto failed
-%PY% verify_pe_dependencies.py "dist\MoyaIshka.exe"
+if not exist "dist\MoyaIshka\MoyaIshka.exe" goto failed
+%PY% -c "from pathlib import Path; root=Path('dist/MoyaIshka/_internal'); removed=[p for p in root.rglob('*.dll') if p.name.casefold() == 'ucrtbase.dll' or p.name.casefold().startswith('api-ms-win-crt-')]; [p.unlink() for p in removed]; print('Removed build-host UCRT/API-set DLLs:', len(removed))"
+if errorlevel 1 goto failed
+
+%PY% verify_pe_dependencies.py "dist\MoyaIshka"
 if errorlevel 1 goto dependency_failed
-"dist\MoyaIshka.exe" --self-test-imports
+"dist\MoyaIshka\MoyaIshka.exe" --self-test-imports
 if errorlevel 1 goto crypto_bundle_failed
+%PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/MoyaIshka/TEST_WINDOWS10.ps1')"
+if errorlevel 1 goto failed
+%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.1.8.5
+if errorlevel 1 goto failed
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.1.8.5')"
+if errorlevel 1 goto failed
+
 echo.
-echo BUILD COMPLETE: dist\MoyaIshka.exe
-echo This EXE includes Python, Windows SAPI and Piper voice engines; download a voice pack from the app. A model/API is still needed for AI replies.
+echo BUILD COMPLETE: dist\MoyaIshka\MoyaIshka.exe + dist\MoyaIshka.zip
+echo Python 3.11, VC runtime and application dependencies are bundled in _internal.
+echo Run TEST_WINDOWS10.ps1 on Windows 10 Pro 22H2 to validate the target PC.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 0
+
 :failed
 echo.
-echo EXE build failed. Use 64-bit Python 3.11 and check internet access.
+echo BUILD FAILED. Check the first error above. Use 64-bit Python 3.11 on the build PC.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
+
 :crypto_failed
 echo.
-echo CRYPTOGRAPHY PREFLIGHT FAILED. Verify that cryptography is installed in the Python 3.11 build environment.
+echo CRYPTOGRAPHY PREFLIGHT FAILED. Verify cryptography, cffi and _cffi_backend in build Python.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
+
 :crypto_bundle_failed
 echo.
-echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. The EXE is not safe to publish.
+echo CRYPTOGRAPHY BUNDLE SMOKE TEST FAILED. Package must not be published.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
+
 :dependency_failed
 echo.
-echo Python DLL dependency graph audit failed. EXE is not safe to publish.
+echo Python DLL dependency audit failed. Package must not be published.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
+
 :runtime_failed
 echo.
-echo Python DLL runtime preparation failed. Check the Microsoft Visual C++ runtime files from the build Python installation.
+echo Python DLL runtime preparation failed. Check Microsoft Visual C++ runtime DLLs.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1
+
 :no_python
+echo.
 echo Python 3.11 x64 was not found. Install it on the build computer only.
 if not defined GITHUB_ACTIONS pause
 endlocal & exit /b 1

@@ -1,18 +1,64 @@
 # -*- coding: utf-8 -*-
-"""GitHub Releases update checker with SHA-256 verification."""
+"""Verified ZIP updater for the PyInstaller onedir distribution."""
 from __future__ import annotations
+
 import hashlib
 import json
 import re
+import shutil
 import urllib.request
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PACKAGE_FILES = 20000
 
-def _get(url: str, binary: bool = False) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "MoyaIshka-Updater/3", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=25) as response:
+
+def _get(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "MoyaIshka-Updater/4", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=90) as response:
         return response.read()
+
+
+def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES) -> tuple[str, int]:
+    """Stream package bytes to disk and hash incrementally instead of holding a ZIP in RAM."""
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "MoyaIshka-Updater/4", "Accept": "application/octet-stream"},
+    )
+    digest = hashlib.sha256()
+    total = 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response, destination.open("wb") as output:
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    announced = int(content_length)
+                except (TypeError, ValueError):
+                    announced = 0
+                if announced > max_bytes:
+                    raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+        if total <= 0:
+            raise RuntimeError("Сервер вернул пустой пакет обновления.")
+        return digest.hexdigest(), total
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def version_tuple(value: str) -> tuple[int, ...]:
@@ -29,33 +75,158 @@ def check_latest_release(repository: str, current_version: str) -> dict[str, Any
     data = json.loads(_get(f"https://api.github.com/repos/{repository}/releases/latest").decode("utf-8"))
     tag = str(data.get("tag_name", ""))
     assets = data.get("assets", [])
-    exe_asset = next((a for a in assets if str(a.get("name", "")).lower() == "моя иишка.exe" or str(a.get("name", "")).lower() == "moyaishka.exe"), None)
-    checksum_asset = next((a for a in assets if str(a.get("name", "")).lower() in {"moyaishka.exe.sha256", "моя иишка.exe.sha256"}), None)
+    package = next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
+    checksum = next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
     return {
         "version": tag.lstrip("v"),
         "url": data.get("html_url", ""),
         "body": str(data.get("body", ""))[:4000],
         "available": version_tuple(tag) > version_tuple(current_version),
-        "exe_url": exe_asset.get("browser_download_url") if exe_asset else None,
-        "checksum_url": checksum_asset.get("browser_download_url") if checksum_asset else None,
-        "asset_name": exe_asset.get("name") if exe_asset else None,
+        "package_url": package.get("browser_download_url") if package else None,
+        "checksum_url": checksum.get("browser_download_url") if checksum else None,
+        "asset_name": package.get("name") if package else None,
     }
 
 
+def _safe_member_path(name: str) -> tuple[str, ...]:
+    raw = name.replace("\\", "/")
+    if raw.startswith("/") or "\x00" in raw or ":" in raw:
+        raise RuntimeError("Архив содержит абсолютный или недопустимый путь.")
+    parts = tuple(part for part in raw.rstrip("/").split("/") if part)
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise RuntimeError("Архив содержит небезопасный путь.")
+    if parts[0].casefold() != "moyaishka":
+        raise RuntimeError("Архив должен содержать только корневую папку MoyaIshka.")
+    return parts
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> dict[str, Any]:
+    root = app_dir.resolve()
+    try:
+        manifest = json.loads((root / "build_manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Манифест сборки отсутствует или повреждён: {exc}") from exc
+    version = str(manifest.get("version", "")).strip()
+    if not version or (expected_version and version != expected_version.lstrip("v")):
+        raise RuntimeError(f"Версия пакета не совпадает: {version or 'не указана'}.")
+    if manifest.get("entrypoint") != "MoyaIshka.exe":
+        raise RuntimeError("Неверная точка входа пакета обновления.")
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_PACKAGE_FILES:
+        raise RuntimeError("Манифест содержит неверный список файлов.")
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError("Повреждён элемент манифеста.")
+        relative = PurePosixPath(str(entry.get("path", "")).replace("\\", "/"))
+        if relative.is_absolute() or not relative.parts or any(
+            part in {"", ".", ".."} or ":" in part for part in relative.parts
+        ):
+            raise RuntimeError("Манифест содержит небезопасный путь.")
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise RuntimeError(f"Повтор файла в манифесте: {relative}.")
+        seen.add(key)
+        path = root.joinpath(*relative.parts).resolve()
+        if root not in path.parents or not path.is_file():
+            raise RuntimeError(f"Файл пакета отсутствует или выходит за пределы папки: {relative}.")
+        if path.stat().st_size != int(entry.get("size", -1)):
+            raise RuntimeError(f"Размер файла пакета не совпадает: {relative}.")
+        expected_hash = str(entry.get("sha256", "")).lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or _sha256_file(path) != expected_hash:
+            raise RuntimeError(f"Контрольная сумма файла пакета не совпадает: {relative}.")
+    actual_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
+        if path.is_file() and path.relative_to(root).as_posix() != "build_manifest.json":
+            actual_files.add(path.relative_to(root).as_posix().casefold())
+    if actual_files != seen:
+        missing = sorted(seen - actual_files)
+        extra = sorted(actual_files - seen)
+        details = []
+        if missing:
+            details.append("отсутствуют: " + ", ".join(missing[:8]))
+        if extra:
+            details.append("лишние: " + ", ".join(extra[:8]))
+        raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
+    exe = root / "MoyaIshka.exe"
+    if not exe.is_file() or _sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
+        raise RuntimeError("SHA-256 главного EXE не совпадает с манифестом.")
+    for name in ("python311.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+        if not (root / "_internal" / name).is_file():
+            raise RuntimeError(f"В пакете отсутствует _internal/{name}.")
+    return manifest
+
+
+def _extract_package(archive: Path, destination: Path, expected_version: str) -> Path:
+    extracting = destination / "MoyaIshka.extracting"
+    app_dir = extracting / "MoyaIshka"
+    final_dir = destination / "MoyaIshka"
+    if extracting.exists():
+        shutil.rmtree(extracting)
+    extracting.mkdir(parents=True)
+    names: set[str] = set()
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            members = bundle.infolist()
+            if not members or len(members) > MAX_PACKAGE_FILES:
+                raise RuntimeError("Архив обновления пуст или содержит слишком много файлов.")
+            if sum(item.file_size for item in members) > MAX_PACKAGE_BYTES:
+                raise RuntimeError("Размер распакованного обновления превышает 2 ГБ.")
+            for item in members:
+                parts = _safe_member_path(item.filename)
+                key = "/".join(parts).casefold()
+                if key in names:
+                    raise RuntimeError(f"В архиве повторяется путь: {item.filename}")
+                names.add(key)
+                mode = (item.external_attr >> 16) & 0xFFFF
+                if (mode & 0o170000) not in (0, 0o040000, 0o100000):
+                    raise RuntimeError("Архив содержит неподдерживаемый тип файла.")
+                target = extracting.joinpath(*parts)
+                if item.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(item) as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+        validate_app_folder(app_dir, expected_version)
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        app_dir.replace(final_dir)
+        return final_dir / "MoyaIshka.exe"
+    finally:
+        if extracting.exists():
+            shutil.rmtree(extracting, ignore_errors=True)
+
+
 def download_verified_update(info: dict[str, Any], target_dir: Path) -> Path:
-    if not info.get("exe_url") or not info.get("checksum_url"):
-        raise RuntimeError("В релизе не найдены Моя ИИшка.exe и Моя ИИшка.exe.sha256. Сборка релиза должна приложить оба файла.")
-    binary = _get(str(info["exe_url"]), binary=True)
+    if not info.get("package_url") or not info.get("checksum_url"):
+        raise RuntimeError("В релизе не найдены MoyaIshka.zip и MoyaIshka.zip.sha256.")
     checksum_text = _get(str(info["checksum_url"])).decode("utf-8", errors="replace").strip()
     match = re.search(r"\b([a-fA-F0-9]{64})\b", checksum_text)
     if not match:
         raise RuntimeError("Файл контрольной суммы имеет неверный формат.")
-    actual = hashlib.sha256(binary).hexdigest()
-    if actual.lower() != match.group(1).lower():
-        raise RuntimeError("Контрольная сумма не совпадает. Обновление отклонено.")
     target_dir.mkdir(parents=True, exist_ok=True)
-    staged = target_dir / "MoyaIshka_update.exe"
-    temporary = staged.with_suffix(".tmp")
-    temporary.write_bytes(binary)
-    temporary.replace(staged)
-    return staged
+    archive = target_dir / "MoyaIshka_update.zip"
+    temporary = archive.with_suffix(".tmp")
+    try:
+        actual, _ = _download_to(str(info["package_url"]), temporary, MAX_PACKAGE_BYTES)
+        if actual.lower() != match.group(1).lower():
+            raise RuntimeError("Контрольная сумма пакета не совпадает. Обновление отклонено.")
+        temporary.replace(archive)
+        staged_exe = _extract_package(archive, target_dir, str(info.get("version", "")))
+        archive.unlink(missing_ok=True)
+        return staged_exe
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        archive.unlink(missing_ok=True)
+        raise

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Audit the real PE dependency tree of python311.dll inside a PyInstaller EXE."""
+"""Audit x64 DLL dependencies of the Python runtime in a PyInstaller onedir folder."""
 from __future__ import annotations
 
 import argparse
@@ -8,12 +8,10 @@ import ctypes
 import hashlib
 import os
 import sys
-import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import pefile
-from PyInstaller.archive.readers import CArchiveReader
 
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008
@@ -21,13 +19,9 @@ LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
 REQUIRED_APP_LOCAL = {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"}
 
 
-def _basename(name: str) -> str:
-    return name.replace("\\", "/").rsplit("/", 1)[-1].casefold()
-
-
-def _imports(data: bytes, display_name: str) -> list[str]:
+def _imports(path: Path) -> list[str]:
     try:
-        image = pefile.PE(data=data, fast_load=False)
+        image = pefile.PE(str(path), fast_load=False)
         machine = image.FILE_HEADER.Machine
         imports: list[str] = []
         for attr in ("DIRECTORY_ENTRY_IMPORT", "DIRECTORY_ENTRY_DELAY_IMPORT"):
@@ -37,174 +31,128 @@ def _imports(data: bytes, display_name: str) -> list[str]:
                     imports.append(name)
         image.close()
     except Exception as exc:
-        raise RuntimeError(f"Не удалось прочитать PE-зависимости {display_name}: {exc}") from exc
+        raise RuntimeError(f"Не удалось прочитать PE-зависимости {path.name}: {exc}") from exc
     if machine != IMAGE_FILE_MACHINE_AMD64:
-        raise RuntimeError(f"{display_name}: требуется x64 PE (0x8664), найдено 0x{machine:04X}")
+        raise RuntimeError(f"{path.name}: требуется x64 PE, найдено 0x{machine:04X}")
     return list(dict.fromkeys(imports))
-
-
-def _assert_exe_x64(exe_path: Path) -> None:
-    try:
-        image = pefile.PE(str(exe_path), fast_load=True)
-        machine = image.FILE_HEADER.Machine
-        image.close()
-    except Exception as exc:
-        raise RuntimeError(f"Не удалось прочитать PE-заголовок EXE {exe_path}: {exc}") from exc
-    if machine != IMAGE_FILE_MACHINE_AMD64:
-        raise RuntimeError(f"{exe_path.name}: EXE должен быть x64 (0x8664), найдено 0x{machine:04X}")
 
 
 def _load_system_module(name: str) -> tuple[bool, int]:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    load_library = kernel32.LoadLibraryExW
-    load_library.argtypes = (ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32)
-    load_library.restype = ctypes.c_void_p
-    free_library = kernel32.FreeLibrary
-    free_library.argtypes = (ctypes.c_void_p,)
-    free_library.restype = ctypes.c_int
-    handle = load_library(name, None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+    load = kernel32.LoadLibraryExW
+    load.argtypes = (ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32)
+    load.restype = ctypes.c_void_p
+    free = kernel32.FreeLibrary
+    free.argtypes = (ctypes.c_void_p,)
+    free.restype = ctypes.c_int
+    handle = load(name, None, LOAD_LIBRARY_SEARCH_SYSTEM32)
     if not handle:
         return False, ctypes.get_last_error()
-    free_library(handle)
+    free(handle)
     return True, 0
 
 
-def _extract_native_dlls(exe_path: Path, destination: Path) -> tuple[dict[str, tuple[Path, bytes, str]], int]:
-    archive = CArchiveReader(str(exe_path))
-    root_dlls: dict[str, tuple[Path, bytes, str]] = {}
-    total_dlls = 0
-    duplicates: list[str] = []
-    for archive_name in archive.toc:
-        normalised = archive_name.replace("\\", "/")
-        if PurePosixPath(normalised).suffix.casefold() != ".dll":
-            continue
-        total_dlls += 1
-        parts = PurePosixPath(normalised).parts
-        if not parts or any(part in {"", ".", ".."} for part in parts):
-            raise RuntimeError(f"Недопустимый путь DLL в EXE-архиве: {archive_name}")
-        data = archive.extract(archive_name)
-        output = destination.joinpath(*parts)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(data)
-        # Bare DLL imports are resolved from _MEIPASS, not arbitrary subfolders.
-        if output.parent != destination:
-            continue
-        key = _basename(archive_name)
-        if key in root_dlls:
-            _, old_data, old_archive_name = root_dlls[key]
-            if hashlib.sha256(old_data).digest() != hashlib.sha256(data).digest():
-                duplicates.append(f"{key}: {old_archive_name} / {archive_name}")
-            continue
-        root_dlls[key] = (output, data, archive_name)
-    if duplicates:
-        raise RuntimeError("В корне EXE обнаружены конфликтующие одноимённые DLL:\n  " + "\n  ".join(duplicates))
-    return root_dlls, total_dlls
-
-
-def verify_dependency_tree(exe_path: str | Path) -> dict[str, Any]:
+def verify_dependency_tree(app_dir: str | Path) -> dict[str, Any]:
     if os.name != "nt":
         raise RuntimeError("Проверка загрузчика DLL выполняется только на Windows.")
-    exe = Path(exe_path).resolve()
-    if not exe.is_file():
-        raise FileNotFoundError(exe)
-    _assert_exe_x64(exe)
+    root = Path(app_dir).resolve()
+    exe = root / "MoyaIshka.exe"
+    runtime = root / "_internal"
+    python_dll = runtime / "python311.dll"
+    if not exe.is_file() or not python_dll.is_file():
+        raise RuntimeError("Ожидается onedir-папка с MoyaIshka.exe и _internal/python311.dll.")
+    image = pefile.PE(str(exe), fast_load=True)
+    machine = image.FILE_HEADER.Machine
+    image.close()
+    if machine != IMAGE_FILE_MACHINE_AMD64:
+        raise RuntimeError("MoyaIshka.exe должен быть x64.")
 
-    with tempfile.TemporaryDirectory(prefix="moya_pe_audit_") as temp:
-        temp_dir = Path(temp)
-        native, total_dlls = _extract_native_dlls(exe, temp_dir)
-        python_entry = native.get("python311.dll")
-        if python_entry is None:
-            raise RuntimeError("В корне PyInstaller-архива отсутствует python311.dll.")
-        for required in sorted(REQUIRED_APP_LOCAL):
-            if required not in native:
-                raise RuntimeError(f"Обязательная app-local VC runtime DLL отсутствует в EXE: {required}")
+    dll_map: dict[str, Path] = {}
+    for path in sorted(
+        runtime.rglob("*.dll"),
+        key=lambda item: (len(item.relative_to(runtime).parts), str(item).casefold()),
+    ):
+        _imports(path)
+        dll_map.setdefault(path.name.casefold(), path)
+    for required in REQUIRED_APP_LOCAL | {"python311.dll"}:
+        if required not in dll_map:
+            raise RuntimeError(f"В _internal отсутствует обязательная DLL: {required}")
 
-        dll_directory = os.add_dll_directory(str(temp_dir))
-        try:
-            visited: set[str] = {"python311.dll"}
-            system_checked: dict[str, tuple[bool, int]] = {}
-            graph_lines = ["[APP] python311.dll"]
-            failures: list[str] = []
+    directory_cookie = os.add_dll_directory(str(runtime))
+    try:
+        visited: set[str] = {"python311.dll"}
+        system_checked: dict[str, tuple[bool, int]] = {}
+        graph = ["[APP] python311.dll"]
+        failures: list[str] = []
 
-            def walk(module_name: str, chain: tuple[str, ...]) -> None:
-                key = module_name.casefold()
-                if key in visited:
-                    return
-                visited.add(key)
-                bundled = native.get(key)
-                if bundled is not None:
-                    _, data, archive_name = bundled
-                    imports = _imports(data, archive_name)
-                    graph_lines.append("[APP] " + " -> ".join(chain + (module_name,)))
-                    for dependency in imports:
-                        walk(dependency, chain + (module_name,))
-                    return
-
-                if key not in system_checked:
-                    system_checked[key] = _load_system_module(module_name)
-                ok, error_code = system_checked[key]
-                if ok:
-                    graph_lines.append("[OS ] " + " -> ".join(chain + (module_name,)))
-                else:
-                    failures.append(
-                        "Не разрешена системная/API-set зависимость "
-                        + " -> ".join(chain + (module_name,))
-                        + f" (Windows error {error_code})"
-                    )
-
-            for dependency in _imports(python_entry[1], python_entry[2]):
-                walk(dependency, ("python311.dll",))
-            if failures:
-                raise RuntimeError(
-                    "Проверка дерева DLL python311.dll завершилась ошибкой:\n"
-                    + "\n".join("  " + item for item in failures)
-                    + "\n\nПроверено:\n"
-                    + "\n".join("  " + item for item in graph_lines)
+        def walk(name: str, chain: tuple[str, ...]) -> None:
+            key = name.casefold()
+            if key in visited:
+                return
+            visited.add(key)
+            local = dll_map.get(key)
+            if local:
+                graph.append("[APP] " + " -> ".join(chain + (name,)))
+                for dependency in _imports(local):
+                    walk(dependency, chain + (name,))
+                return
+            if key not in system_checked:
+                system_checked[key] = _load_system_module(name)
+            ok, error = system_checked[key]
+            if ok:
+                graph.append("[OS ] " + " -> ".join(chain + (name,)))
+            else:
+                failures.append(
+                    "Не разрешена зависимость " + " -> ".join(chain + (name,))
+                    + f" (Windows error {error})"
                 )
 
-            # Perform the actual load using PyInstaller's LOAD_WITH_ALTERED_SEARCH_PATH flag.
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            load_library = kernel32.LoadLibraryExW
-            load_library.argtypes = (ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32)
-            load_library.restype = ctypes.c_void_p
-            free_library = kernel32.FreeLibrary
-            free_library.argtypes = (ctypes.c_void_p,)
-            free_library.restype = ctypes.c_int
-            handle = load_library(str(python_entry[0]), None, LOAD_WITH_ALTERED_SEARCH_PATH)
-            if not handle:
-                error_code = ctypes.get_last_error()
-                raise RuntimeError(
-                    f"Windows не смогла загрузить извлечённый python311.dll "
-                    f"(ошибка {error_code}). Проверь дерево импортов выше."
-                )
-            free_library(handle)
+        for dependency in _imports(python_dll):
+            walk(dependency, ("python311.dll",))
+        if failures:
+            raise RuntimeError(
+                "Дерево DLL не разрешено:\n" + "\n".join("  " + item for item in failures)
+            )
 
-            return {
-                "python311_sha256": hashlib.sha256(python_entry[1]).hexdigest(),
-                "native_dlls": total_dlls,
-                "dependencies": len(graph_lines) - 1,
-                "system_build": sys.getwindowsversion().build,
-                "graph": graph_lines,
-            }
-        finally:
-            dll_directory.close()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        load = kernel32.LoadLibraryExW
+        load.argtypes = (ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32)
+        load.restype = ctypes.c_void_p
+        free = kernel32.FreeLibrary
+        free.argtypes = (ctypes.c_void_p,)
+        free.restype = ctypes.c_int
+        loaded = load(str(python_dll), None, LOAD_WITH_ALTERED_SEARCH_PATH)
+        if not loaded:
+            raise RuntimeError(
+                f"Windows не смогла загрузить _internal/python311.dll (ошибка {ctypes.get_last_error()})."
+            )
+        free(loaded)
+        return {
+            "python311_sha256": hashlib.sha256(python_dll.read_bytes()).hexdigest(),
+            "dll_count": len(dll_map),
+            "dependency_count": len(graph) - 1,
+            "system_build": sys.getwindowsversion().build,
+            "graph": graph,
+        }
+    finally:
+        directory_cookie.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("exe", help="путь к собранному PyInstaller EXE")
+    parser.add_argument("app_dir", help="путь к папке dist/MoyaIshka")
     args = parser.parse_args()
     try:
-        result = verify_dependency_tree(args.exe)
+        result = verify_dependency_tree(args.app_dir)
     except Exception as exc:
         print(f"ОШИБКА PE/DLL-аудита: {exc}", file=sys.stderr)
         return 1
     print(f"PE/DLL audit: OK (Windows build {result['system_build']})")
     print(f"python311.dll SHA-256: {result['python311_sha256']}")
-    print(f"DLL files in EXE: {result['native_dlls']}")
-    print(f"Resolved dependency edges: {result['dependencies']}")
+    print(f"App-local DLL files: {result['dll_count']}")
+    print(f"Resolved dependency edges: {result['dependency_count']}")
     for line in result["graph"]:
-        print(f"  {line}")
+        print("  " + line)
     return 0
 
 

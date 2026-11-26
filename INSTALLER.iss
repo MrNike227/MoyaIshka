@@ -4,7 +4,7 @@
 [Setup]
 AppId={{C6DBA092-A00B-4E45-9C02-67B8D543A2A1}
 AppName=Моя ИИшка
-AppVersion=4.1.8.3
+AppVersion=4.1.8.5
 AppPublisher=Моя ИИшка
 DisableProgramGroupPage=yes
 DefaultDirName={localappdata}\Programs\MoyaIshka
@@ -26,9 +26,11 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные значки:"; Flags: unchecked
 
 [Files]
-Source: "dist\MoyaIshka.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\MoyaIshka\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "licenses\GPL-3.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+
+Source: "TEST_WINDOWS10.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Моя ИИшка"; Filename: "{app}\MoyaIshka.exe"

@@ -8,6 +8,8 @@ never asked to replace itself while it is locked by Windows.
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import PurePosixPath
 import os
 import shutil
 import subprocess
@@ -639,3 +641,352 @@ def delete_application_copy(path: str | Path, current_exe: str | Path | None = N
     if not target.is_file() or not _looks_like_moya_executable(target.name):
         raise ValueError("Выбранный файл не распознан как исполняемый файл Моей ИИшки.")
     target.unlink()
+
+
+
+
+
+def validate_app_directory(app_dir: str | Path, expected_version: str | None = None) -> dict[str, Any]:
+    """Verify every staged file against the build manifest before any install action."""
+    root = Path(app_dir).resolve()
+    try:
+        manifest = json.loads((root / "build_manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Манифест сборки отсутствует или повреждён: {exc}") from exc
+    version = str(manifest.get("version", "")).strip()
+    if not version or (expected_version and version != expected_version.lstrip("v")):
+        raise RuntimeError(f"Версия папки не совпадает с ожидаемой: {version or 'не указана'}.")
+    if manifest.get("entrypoint") != "MoyaIshka.exe":
+        raise RuntimeError("Неверная точка входа в манифесте.")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files or len(files) > 20000:
+        raise RuntimeError("Манифест содержит неверный список файлов.")
+    seen: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict):
+            raise RuntimeError("Повреждена запись файла в манифесте.")
+        relative = PurePosixPath(str(item.get("path", "")).replace("\\", "/"))
+        if relative.is_absolute() or not relative.parts or any(
+            part in {"", ".", ".."} or ":" in part for part in relative.parts
+        ):
+            raise RuntimeError("Манифест содержит небезопасный путь.")
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise RuntimeError(f"Повторяющийся файл в манифесте: {relative}.")
+        seen.add(key)
+        path = root.joinpath(*relative.parts).resolve()
+        if root not in path.parents or not path.is_file():
+            raise RuntimeError(f"Файл отсутствует или выходит за пределы папки: {relative}.")
+        if path.stat().st_size != int(item.get("size", -1)):
+            raise RuntimeError(f"Размер файла не совпадает: {relative}.")
+        expected = str(item.get("sha256", "")).lower()
+        if len(expected) != 64 or sha256_file(path).lower() != expected:
+            raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
+    actual_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
+        if path.is_file() and path.relative_to(root).as_posix() != "build_manifest.json":
+            actual_files.add(path.relative_to(root).as_posix().casefold())
+    if actual_files != seen:
+        missing = sorted(seen - actual_files)
+        extra = sorted(actual_files - seen)
+        details = []
+        if missing:
+            details.append("отсутствуют: " + ", ".join(missing[:8]))
+        if extra:
+            details.append("лишние: " + ", ".join(extra[:8]))
+        raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
+    exe = root / "MoyaIshka.exe"
+    if not exe.is_file() or sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
+        raise RuntimeError("Главный EXE не прошёл проверку SHA-256.")
+    for name in ("python311.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+        if not (root / "_internal" / name).is_file():
+            raise RuntimeError(f"В папке отсутствует _internal/{name}.")
+    return manifest
+
+
+def _directory_updater_script() -> str:
+    """PowerShell 5.1 transaction for folder replacement with backup and rollback."""
+    return r'''param(
+        [Parameter(Mandatory=$true)][string]$StagedDir,
+        [Parameter(Mandatory=$true)][string]$TargetDir,
+        [Parameter(Mandatory=$true)][int]$ParentPid,
+        [Parameter(Mandatory=$true)][string]$ExpectedVersion,
+        [Parameter(Mandatory=$true)][string]$LogPath,
+        [Parameter(Mandatory=$true)][string]$ReceiptPath
+    )
+    $ErrorActionPreference = 'Stop'
+    $StagedDir = [IO.Path]::GetFullPath($StagedDir)
+    $TargetDir = [IO.Path]::GetFullPath($TargetDir)
+    $Parent = Split-Path -Parent $TargetDir
+    $Name = Split-Path -Leaf $TargetDir
+    $TempDir = Join-Path $Parent ($Name + '.installing')
+    $BackupDir = Join-Path $Parent ($Name + '.previous')
+    $NewInstalled = $false
+    $BackupReady = $false
+    $NewProcess = $null
+    $ExeHash = ''
+
+    function Log([string]$Message) {
+        try {
+            Add-Content -LiteralPath $LogPath -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) -Encoding UTF8
+        } catch {}
+    }
+
+    function VerifyFolder([string]$Folder) {
+        $manifestPath = Join-Path $Folder 'build_manifest.json'
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Не найден build_manifest.json.' }
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$manifest.version -ne $ExpectedVersion) { throw "Ожидалась версия $ExpectedVersion, получена $($manifest.version)." }
+        if ([string]$manifest.entrypoint -ne 'MoyaIshka.exe') { throw 'Неверная точка входа.' }
+        $items = @($manifest.files)
+        if ($items.Count -lt 1 -or $items.Count -gt 20000) { throw 'Неверное число файлов в манифесте.' }
+        $manifestFullPath = [IO.Path]::GetFullPath($manifestPath)
+        $expectedPaths = @($items | ForEach-Object { ([string]$_.path).Replace('/', '\').ToLowerInvariant() } | Sort-Object -Unique)
+        $treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse)
+        $reparsePoints = @($treeItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+        if ($reparsePoints.Count -gt 0) { throw 'Символические ссылки и reparse points в папке приложения запрещены.' }
+        $base = [IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
+        $actualPaths = @(
+            Get-ChildItem -LiteralPath $Folder -File -Force -Recurse |
+                Where-Object { [IO.Path]::GetFullPath($_.FullName) -ine $manifestFullPath } |
+                ForEach-Object { $_.FullName.Substring($base.Length).Replace('\', '/').ToLowerInvariant() } |
+                Sort-Object -Unique
+        )
+        if ($actualPaths.Count -ne $expectedPaths.Count -or
+            @(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $actualPaths).Count -gt 0) {
+            throw 'Фактический состав папки не совпадает с build_manifest.json.'
+        }
+        foreach ($item in $items) {
+            $relative = ([string]$item.path).Replace('/', '\')
+            if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|\\)\.\.(\\|$)|:') {
+                throw "Небезопасный путь: $relative"
+            }
+            $path = [IO.Path]::GetFullPath((Join-Path $Folder $relative))
+            if (-not $path.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)) { throw "Путь вне пакета: $relative" }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Отсутствует файл: $relative" }
+            if ([long](Get-Item -LiteralPath $path).Length -ne [long]$item.size) { throw "Размер не совпадает: $relative" }
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne ([string]$item.sha256).ToLowerInvariant()) { throw "SHA-256 не совпадает: $relative" }
+        }
+        $exe = Join-Path $Folder 'MoyaIshka.exe'
+        $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne ([string]$manifest.exe_sha256).ToLowerInvariant()) { throw 'SHA-256 EXE не совпадает.' }
+        foreach ($dll in @('python311.dll','vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Folder ('_internal\' + $dll)) -PathType Leaf)) { throw "Не найден _internal\$dll" }
+        }
+        return $hash
+    }
+
+    function Rollback([string]$Reason) {
+        Log "Откат: $Reason"
+        if ($NewProcess -and -not $NewProcess.HasExited) {
+            try {
+                Stop-Process -Id $NewProcess.Id -Force -ErrorAction SilentlyContinue
+                [void]$NewProcess.WaitForExit(15000)
+            } catch {}
+            try { $NewProcess.Refresh() } catch {}
+        }
+        try {
+            if ($NewInstalled -and (Test-Path -LiteralPath $TargetDir)) {
+                Remove-Item -LiteralPath $TargetDir -Recurse -Force
+            }
+            if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
+                if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
+                Move-Item -LiteralPath $BackupDir -Destination $TargetDir
+                Log 'Резервная папка восстановлена.'
+                Remove-Item Env:MOYA_UPDATE_RECEIPT -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_VERSION -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_SHA256 -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_TARGET -ErrorAction SilentlyContinue
+                Start-Process -FilePath (Join-Path $TargetDir 'MoyaIshka.exe') -WorkingDirectory $TargetDir | Out-Null
+            } elseif (-not $BackupReady -and $NewInstalled) {
+                Log 'Старой установки не было; неудачная новая папка удалена.'
+            }
+        } catch { Log "КРИТИЧЕСКАЯ ОШИБКА ОТКАТА: $($_.Exception.Message)" }
+    }
+
+    try {
+        Log "Начата установка onedir ${ExpectedVersion}: $StagedDir -> $TargetDir"
+        if (-not (Test-Path -LiteralPath $StagedDir -PathType Container)) { throw "Не найдена папка обновления: $StagedDir" }
+        $runningDeadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $runningDeadline -and (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Milliseconds 300
+        }
+        if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { throw 'Программа не закрылась за 120 секунд.' }
+
+        $running = Get-CimInstance Win32_Process -Filter "Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) }
+        foreach ($entry in @($running)) {
+            if (-not $entry) { continue }
+            $proc = Get-Process -Id ([int]$entry.ProcessId) -ErrorAction SilentlyContinue
+            if ($proc) {
+                [void]$proc.CloseMainWindow()
+                if (-not $proc.WaitForExit(20000)) { throw 'Другой экземпляр не закрылся; обновление отменено.' }
+            }
+        }
+
+        $stagedHash = VerifyFolder $StagedDir
+        if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+        $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+        & $copy $StagedDir $TempDir /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -gt 7) { throw "Не удалось скопировать папку (robocopy $LASTEXITCODE)." }
+        $copiedHash = VerifyFolder $TempDir
+        if ($copiedHash -ne $stagedHash) { throw 'Контрольная сумма главного EXE после копирования не совпала.' }
+
+        $hadPrevious = $false
+        if (Test-Path -LiteralPath $TargetDir -PathType Container) {
+            $oldItems = @(Get-ChildItem -LiteralPath $TargetDir -Force -ErrorAction Stop)
+            $hadPrevious = ($oldItems.Count -gt 0)
+            if ($hadPrevious -and -not (
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'MoyaIshka.exe') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'build_manifest.json') -PathType Leaf)
+            )) {
+                throw 'Целевая папка уже содержит другие файлы и не распознана как установка Моей ИИшки. Выбери отдельную папку.'
+            }
+        }
+
+        if ($hadPrevious) {
+            if (Test-Path -LiteralPath $BackupDir) {
+                $saved = $BackupDir + '.' + (Get-Date -Format 'yyyyMMddHHmmss')
+                Move-Item -LiteralPath $BackupDir -Destination $saved
+                Log "Старая резервная копия сохранена: $saved"
+            }
+            Move-Item -LiteralPath $TargetDir -Destination $BackupDir
+            $BackupReady = $true
+        } elseif (Test-Path -LiteralPath $TargetDir) {
+            Remove-Item -LiteralPath $TargetDir -Recurse -Force
+        }
+
+        Move-Item -LiteralPath $TempDir -Destination $TargetDir
+        $NewInstalled = $true
+        $ExeHash = VerifyFolder $TargetDir
+
+        if (Test-Path -LiteralPath $ReceiptPath) { Remove-Item -LiteralPath $ReceiptPath -Force }
+        $env:MOYA_UPDATE_RECEIPT = $ReceiptPath
+        $env:MOYA_UPDATE_VERSION = $ExpectedVersion
+        $env:MOYA_UPDATE_SHA256 = $ExeHash
+        $env:MOYA_UPDATE_TARGET = Join-Path $TargetDir 'MoyaIshka.exe'
+        $NewProcess = Start-Process -FilePath $env:MOYA_UPDATE_TARGET -WorkingDirectory $TargetDir -PassThru -ErrorAction Stop
+        Log "Новая программа запущена PID $($NewProcess.Id); проверяю подтверждение."
+        $limit = (Get-Date).AddSeconds(90)
+        $confirmed = $false
+        while ((Get-Date) -lt $limit) {
+            if (Test-Path -LiteralPath $ReceiptPath -PathType Leaf) {
+                try {
+                    $receipt = Get-Content -LiteralPath $ReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    if ($receipt.confirmed -eq $true -and [string]$receipt.version -eq $ExpectedVersion -and
+                        [string]$receipt.sha256 -eq $ExeHash -and [string]$receipt.target -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) {
+                        $confirmed = $true
+                        break
+                    }
+                    if ($receipt.confirmed -eq $false) { throw "Приложение отклонило запуск: $($receipt.message)" }
+                } catch {
+                    if ($_.Exception.Message -like 'Приложение отклонило запуск:*') { throw }
+                }
+            }
+            if ($NewProcess.HasExited) { throw "Новая версия завершилась до подтверждения (код $($NewProcess.ExitCode))." }
+            Start-Sleep -Milliseconds 400
+        }
+        if (-not $confirmed) { throw 'Новая версия не подтвердила запуск за 90 секунд.' }
+        Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $StagedDir -Recurse -Force -ErrorAction SilentlyContinue
+        Log "УСПЕХ: версия $ExpectedVersion работает. Резервная копия: $BackupDir"
+        try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
+        exit 0
+    } catch {
+        $message = $_.Exception.Message
+        Log "ОШИБКА установки: $message"
+        try {
+            $failed = [ordered]@{
+                confirmed = $false; version = $ExpectedVersion; target = $TargetDir
+                sha256 = $ExeHash; message = $message; timestamp = (Get-Date).ToString('o')
+            }
+            $tempReceipt = "$ReceiptPath.tmp"
+            [IO.File]::WriteAllText($tempReceipt, ($failed | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath $tempReceipt -Destination $ReceiptPath -Force
+        } catch {}
+        Rollback $message
+        if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
+        try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
+        exit 1
+    }
+    '''
+
+
+def launch_windows_directory_replacement(
+    staged_app_dir: str | Path,
+    target_dir: str | Path,
+    parent_pid: int,
+    log_path: str | Path,
+    expected_version: str,
+    receipt_path: str | Path | None = None,
+    *,
+    platform_name: str | None = None,
+) -> Path:
+    """Launch a detached Windows helper to replace the entire onedir folder."""
+    if (platform_name or os.name) != "nt":
+        raise OSError("Замена папки приложения поддерживается только в Windows.")
+    staged = Path(staged_app_dir).resolve()
+    target = ensure_install_dir_writable(target_dir)
+    if staged == target or target in staged.parents or staged in target.parents:
+        raise ValueError("Папка обновления и папка установки должны быть разными.")
+    if not expected_version.strip():
+        raise ValueError("Не указана ожидаемая версия.")
+    validate_app_directory(staged, expected_version)
+
+    log = Path(log_path).resolve()
+    receipt = Path(receipt_path).resolve() if receipt_path else log.with_name("update_confirmation.json")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.unlink(missing_ok=True)
+    helper_fd, helper_name = tempfile.mkstemp(prefix="MoyaIshka_DirUpdater_", suffix=".ps1")
+    os.close(helper_fd)
+    helper = Path(helper_name)
+    try:
+        with helper.open("w", encoding="utf-8-sig", newline="\r\n") as stream:
+            stream.write(_directory_updater_script())
+        payload = helper.read_bytes()
+        if b"\r\n" not in payload or b"\n" in payload.replace(b"\r\n", b""):
+            raise OSError("Не удалось создать PowerShell-скрипт с CRLF.")
+
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        candidates = [
+            system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+            system_root / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+        ]
+        powershell = next((str(path) for path in candidates if path.is_file()), shutil.which("powershell.exe"))
+        if not powershell:
+            raise FileNotFoundError("Windows PowerShell не найден.")
+        command = [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(helper),
+            str(staged), str(target), str(int(parent_pid)), expected_version.lstrip("v"),
+            str(log), str(receipt),
+        ]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            subprocess.Popen(command, close_fds=True, creationflags=creation_flags)
+        except OSError:
+            if not creation_flags:
+                raise
+            subprocess.Popen(command, close_fds=True, creationflags=0)
+        with log.open("a", encoding="utf-8") as stream:
+            from datetime import datetime
+            stream.write(
+                f"{datetime.now().astimezone().isoformat()}  "
+                f"Запущена безопасная замена всей папки версии {expected_version}.\n"
+            )
+            stream.write(f"Источник: {staged}\nПапка установки: {target}\n")
+        return helper
+    except Exception as exc:
+        helper.unlink(missing_ok=True)
+        try:
+            with log.open("a", encoding="utf-8") as stream:
+                from datetime import datetime
+                stream.write(f"{datetime.now().astimezone().isoformat()}  Ошибка запуска установщика: {exc}\n")
+        except OSError:
+            pass
+        raise

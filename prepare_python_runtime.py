@@ -8,6 +8,7 @@ Windows 10/11 always uses its system UCRT, even if an app-local copy is present.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -60,31 +61,42 @@ def _normalise_roots(search_roots: Iterable[str | Path]) -> list[Path]:
 
 
 def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | Path) -> list[Path]:
-    """Copy x64 VC runtime from the Python toolchain; never bundle Windows UCRT."""
+    """Copy one consistent x64 VC runtime set from Python or Visual Studio redist."""
     roots = _normalise_roots(search_roots)
-    found: dict[str, Path] = {}
-    for name in RUNTIME_DLL_NAMES:
-        match = None
-        for root in roots:
-            candidates = (root / name, root / "DLLs" / name)
-            match = next((candidate for candidate in candidates if candidate.is_file()), None)
-            if match is not None:
-                break
-        if match is not None:
-            found[name.casefold()] = match
+    selected_root: Path | None = None
+    selected_files: dict[str, Path] = {}
 
-    missing = [name for name in REQUIRED_RUNTIME_DLLS if name.casefold() not in found]
-    if missing:
+    for root in roots:
+        candidates = (root, root / "DLLs")
+        for candidate_root in candidates:
+            current = {
+                name.casefold(): candidate_root / name
+                for name in REQUIRED_RUNTIME_DLLS
+                if (candidate_root / name).is_file()
+            }
+            if len(current) == len(REQUIRED_RUNTIME_DLLS):
+                selected_root = candidate_root
+                selected_files = current
+                break
+        if selected_root is not None:
+            break
+
+    if selected_root is None:
         searched = "\n".join(f"  {root}" for root in roots) or "  (папки не найдены)"
         raise RuntimeError(
-            "В сборке 64-bit Python не найден обязательный Microsoft VC Runtime: "
-            + ", ".join(missing)
-            + ". Нужен официальный 64-bit Python 3.11 вместе с VC runtime. "
-            + "Системные папки Windows намеренно не используются как источник приватных VC DLL.\n"
-            + "Проверены папки:\n" + searched
+            "Не найден полный набор Microsoft VC Runtime x64: "
+            + ", ".join(REQUIRED_RUNTIME_DLLS)
+            + ". Проверены Python и каталоги официального Visual Studio VC Redistributable. "
+            + "System32 намеренно не используется как источник файлов для упаковки.\n"
+            + "Проверенные каталоги:\n" + searched
         )
 
-    for dll_path in found.values():
+    for name in OPTIONAL_RUNTIME_DLLS:
+        candidate = selected_root / name
+        if candidate.is_file():
+            selected_files[name.casefold()] = candidate
+
+    for dll_path in selected_files.values():
         try:
             machine = read_pe_machine(dll_path)
         except (OSError, ValueError) as exc:
@@ -100,22 +112,72 @@ def collect_runtime_dlls(search_roots: Iterable[str | Path], destination: str | 
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
-    for source in found.values():
+    for source in selected_files.values():
         output = target / source.name
         shutil.copy2(source, output)
         copied.append(output)
     return copied
 
 
+def discover_visual_c_runtime_roots() -> list[Path]:
+    """Find redistributable DLL folders shipped with installed Visual Studio."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            candidate = path.resolve()
+        except OSError:
+            return
+        key = os.path.normcase(str(candidate))
+        if candidate.is_dir() and key not in seen:
+            roots.append(candidate)
+            seen.add(key)
+
+    for variable in ("VCToolsRedistDir", "VSINSTALLDIR"):
+        value = os.environ.get(variable, "").strip()
+        if not value:
+            continue
+        base = Path(value)
+        if variable == "VCToolsRedistDir":
+            for candidate in base.glob("x64/Microsoft.VC*.CRT"):
+                add(candidate)
+        else:
+            for candidate in base.glob("VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT"):
+                add(candidate)
+
+    program_roots = {
+        Path(value)
+        for value in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        )
+        if value
+    }
+    for program_root in program_roots:
+        for year in ("2022", "2019", "2017"):
+            visual_studio = program_root / "Microsoft Visual Studio" / year
+            if not visual_studio.is_dir():
+                continue
+            for edition in visual_studio.iterdir():
+                redist = edition / "VC" / "Redist" / "MSVC"
+                if not redist.is_dir():
+                    continue
+                for candidate in redist.glob("*/x64/Microsoft.VC*.CRT"):
+                    add(candidate)
+    return roots
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-    roots = (
+    roots = [
         Path(sys.executable).resolve().parent,
         Path(sys.base_prefix),
         Path(sys.prefix),
-    )
+        *discover_visual_c_runtime_roots(),
+    ]
     destination = Path(__file__).resolve().parent / "build_runtime" / "python_runtime"
     try:
         copied = collect_runtime_dlls(roots, destination)
