@@ -742,6 +742,8 @@ class MoyaIshkaApp:
         self._last_update_check_day = ""
         self.backup_working = False
         self.backup_upload_working = False
+        self._database_restore_in_progress = False
+        self._deferred_restore_events: list[tuple[str, Any]] = []
         self.backup_migration_lock = threading.Lock()
         self.cloud_backup_dialog: tk.Toplevel | None = None
         self.cloud_backup_listbox: tk.Listbox | None = None
@@ -1716,6 +1718,9 @@ class MoyaIshkaApp:
 
     def _start_cloud_sync(self, force: bool = False) -> None:
         self.cloud_sync_after_id = None
+        if self._database_restore_in_progress:
+            self.cloud_sync_dirty = True
+            return
         package = self._preferred_cloud_package()
         if not package:
             if force and hasattr(self, "cloud_status_var"):
@@ -3090,6 +3095,9 @@ class MoyaIshkaApp:
 
     def _run_auto_research(self) -> None:
         self._auto_research_after_id = None
+        if self._database_restore_in_progress:
+            self._auto_research_after_id = self.root.after(60000, self._run_auto_research)
+            return
         if self.research_busy or not bool(self.config.get("research_auto_enabled", False)) or not bool(self.config.get("web_search_enabled", True)):
             self._schedule_auto_research_next()
             return
@@ -3407,6 +3415,12 @@ class MoyaIshkaApp:
         try:
             while True:
                 event, payload = self.events.get_nowait()
+                if (
+                    self._database_restore_in_progress
+                    and event != "backup_restore_complete"
+                ):
+                    self._deferred_restore_events.append((event, payload))
+                    continue
                 if event == "backup_created":
                     self.backup_working = False
                     details = payload if isinstance(payload, dict) else {"path": str(payload), "cloud_status": ""}
@@ -3477,11 +3491,13 @@ class MoyaIshkaApp:
                     try:
                         self._reload_after_backup_restore()
                     except Exception as exc:
+                        self._finish_database_restore(replay_events=False)
                         messagebox.showerror(
                             "Восстановление данных",
                             "Не удалось перечитать восстановленные данные. Закрой и снова запусти Мою ИИшку.\n\n" + str(exc),
                         )
                     else:
+                        self._finish_database_restore(replay_events=True)
                         if restored:
                             self.backup_status_var.set("Данные успешно восстановлены.")
                             self._set_status("Резервная копия восстановлена")
@@ -4754,10 +4770,8 @@ class MoyaIshkaApp:
             return
         self.backup_working = True
         self.backup_status_var.set("Проверяю архив и подготавливаю безопасное восстановление…")
-        try:
-            self.store.close()
-        except Exception:
-            pass
+        if not self._begin_database_restore():
+            return
         retention = int(self.config.get("backup_retention_count", 7))
         threading.Thread(
             target=self._restore_backup_worker,
@@ -4877,10 +4891,8 @@ class MoyaIshkaApp:
         if not self.save_backup_settings():
             return
         self.backup_working = True
-        try:
-            self.store.close()
-        except Exception:
-            pass
+        if not self._begin_database_restore():
+            return
         backup_dir = self._backup_directory()
         retention = int(self.config.get("backup_retention_count", 7))
         package = dict(self.google_drive_session)
@@ -5023,10 +5035,8 @@ class MoyaIshkaApp:
         if not self.save_backup_settings():
             return
         self.backup_working = True
-        try:
-            self.store.close()
-        except Exception:
-            pass
+        if not self._begin_database_restore():
+            return
         backup_dir = self._backup_directory()
         retention = int(self.config.get("backup_retention_count", 7))
         package = dict(self.cloud_session)
@@ -5066,6 +5076,57 @@ class MoyaIshkaApp:
         finally:
             if temp_root is not None:
                 shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _begin_database_restore(self) -> bool:
+        """Close SQLite safely and pause UI/background work during data replacement."""
+        if self._database_restore_in_progress:
+            return False
+        self._database_restore_in_progress = True
+        self._deferred_restore_events.clear()
+        try:
+            self.store.close()
+        except Exception as exc:
+            self._database_restore_in_progress = False
+            self.backup_working = False
+            messagebox.showerror(
+                "Восстановление данных",
+                "Не удалось безопасно закрыть базу данных. Восстановление отменено.\n\n" + str(exc),
+            )
+            return False
+
+        # A previously scheduled sync must not read the database while the
+        # restore worker replaces files. Its next attempt is scheduled later.
+        if self.cloud_sync_after_id:
+            try:
+                self.root.after_cancel(self.cloud_sync_after_id)
+            except Exception:
+                pass
+            self.cloud_sync_after_id = None
+
+        # Prevent clicks that could call Store methods before the worker finishes.
+        try:
+            self.root.attributes("-disabled", True)
+        except Exception:
+            pass
+        return True
+
+    def _finish_database_restore(self, *, replay_events: bool) -> None:
+        """Unlock the window and resume queued work after a new Store is ready."""
+        self._database_restore_in_progress = False
+        try:
+            self.root.attributes("-disabled", False)
+        except Exception:
+            pass
+
+        deferred = self._deferred_restore_events
+        self._deferred_restore_events = []
+        if replay_events:
+            for event, payload in deferred:
+                self.events.put((event, payload))
+
+        if replay_events and self.cloud_sync_dirty:
+            self.cloud_sync_dirty = False
+            self._schedule_cloud_sync()
 
     def _reload_after_backup_restore(self) -> None:
         saved = load_json(CONFIG_PATH, {})
@@ -5555,6 +5616,11 @@ class MoyaIshkaApp:
 
     def _run_scheduled_improvement_analysis(self) -> None:
         self._auto_improvement_after_id = None
+        if self._database_restore_in_progress:
+            self._auto_improvement_after_id = self.root.after(
+                10 * 60 * 1000, self._run_scheduled_improvement_analysis,
+            )
+            return
         if not bool(self.config.get("self_improve_auto_enabled", False)):
             return
         if (
