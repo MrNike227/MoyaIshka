@@ -15,6 +15,7 @@ EDITABLE_SUFFIXES = {".py"}
 
 
 MAX_MODEL_CONTEXT_CHARS = 90_000
+MAX_SELF_IMPROVEMENT_CONTEXT_CHARS = 28_000
 MAX_SINGLE_DEFINITION_CHARS = 36_000
 
 _PROMPT_STOP_WORDS = {
@@ -149,8 +150,9 @@ def build_model_source_context(
     symbol_index = "\n".join(
         f"{line}: {name}" for line, name in sorted(symbol_rows, key=lambda row: row[0])
     )
-    if len(symbol_index) > 18_000:
-        symbol_index = symbol_index[:17_700] + "\n… список сокращён"
+    symbol_index_limit = min(18_000, max(1_200, max_chars // 5))
+    if len(symbol_index) > symbol_index_limit:
+        symbol_index = symbol_index[:symbol_index_limit - 300] + "\n… список сокращён"
     parts = [
         "Файл больше лимита полного контекста. Ниже — индекс и точные фрагменты исходника.",
         "Номера строк в заголовках диапазонов — реальные номера строк файла; не добавляй их в сам diff.",
