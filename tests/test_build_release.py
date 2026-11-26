@@ -333,15 +333,20 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertNotIn("os.replace(temporary, target)", method)
         self.assertIn("_internal", method)
 
-    def test_directory_updater_validates_once_per_copy_and_skips_final_full_hash(self):
+    def test_directory_updater_verifies_final_in_place_install_and_keeps_folder(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
         start = helper.index("def _directory_updater_script")
         end = helper.index("def launch_windows_directory_replacement", start)
         script = helper[start:end]
         self.assertIn("$stagedHash = VerifyFolder $StagedDir", script)
         self.assertIn("$copiedHash = VerifyFolder $TempDir", script)
-        self.assertNotIn("VerifyFolder $TargetDir", script)
-        self.assertIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
+        self.assertIn("$ExeHash = VerifyFolder $TargetDir", script)
+        self.assertIn("CopyDirectoryContents $TargetDir $BackupDir", script)
+        self.assertIn("VerifyBackupCopy $TargetDir $BackupDir", script)
+        self.assertIn("ClearDirectoryContents $TargetDir", script)
+        self.assertIn("CopyDirectoryContents $TempDir $TargetDir", script)
+        self.assertNotIn("Move-Item -LiteralPath $TargetDir -Destination $BackupDir", script)
+        self.assertNotIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
         self.assertIn("/MT:8", script)
         self.assertIn("Stopwatch]::StartNew()", script)
 
