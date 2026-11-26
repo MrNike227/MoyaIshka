@@ -63,6 +63,21 @@ APP_VERSION = "4.1.8.4"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
+LEGACY_UPDATE_REPOSITORIES = frozenset({
+    "MrNike227/MoyaIshka_v4.1.1",
+})
+
+
+def migrate_update_repository(config: dict[str, Any]) -> bool:
+    """Migrate only known obsolete defaults; preserve user-selected repositories."""
+    current = str(config.get("update_repo", "")).strip()
+    if not current or current in LEGACY_UPDATE_REPOSITORIES:
+        target = str(DEFAULT_CONFIG["update_repo"])
+        changed = current != target
+        config["update_repo"] = target
+        return changed
+    return False
+
 
 def user_data_dir() -> Path:
     base = os.environ.get("APPDATA")
@@ -544,8 +559,8 @@ class MoyaIshkaApp:
         self.config: dict[str, Any] = dict(DEFAULT_CONFIG)
         if isinstance(legacy_config, dict):
             self.config.update(legacy_config)
-        if not str(self.config.get("update_repo", "")).strip():
-            self.config["update_repo"] = DEFAULT_CONFIG["update_repo"]
+        if migrate_update_repository(self.config):
+            atomic_json_save(CONFIG_PATH, self.config)
         # Improve readability for users upgrading from the former 10pt default.
         # Keep an explicitly selected font family and any larger custom size.
         if isinstance(legacy_config, dict) and "font_family" not in legacy_config:

@@ -25,6 +25,24 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.1.8.4"', source)
 
+    def test_legacy_update_repository_is_migrated(self):
+        from main import migrate_update_repository
+        config = {"update_repo": "MrNike227/MoyaIshka_v4.1.1"}
+        self.assertTrue(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "MrNike227/MoyaIshka")
+
+    def test_custom_update_repository_is_preserved(self):
+        from main import migrate_update_repository
+        config = {"update_repo": "someone/custom-fork"}
+        self.assertFalse(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "someone/custom-fork")
+
+    def test_empty_update_repository_gets_current_default(self):
+        from main import migrate_update_repository
+        config = {"update_repo": " "}
+        self.assertTrue(migrate_update_repository(config))
+        self.assertEqual(config["update_repo"], "MrNike227/MoyaIshka")
+
     def test_python_vc_runtime_is_bundled_without_redundant_windows_ucrt(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         helper = (ROOT / "prepare_python_runtime.py").read_text(encoding="utf-8")
