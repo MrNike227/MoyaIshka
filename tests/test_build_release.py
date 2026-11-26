@@ -259,7 +259,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_context_engine_is_bundled_and_used(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn("select_relevant_memories", source)
+        self.assertIn("select_memory_records", source)
+        self.assertIn("MEMORY_CONTEXT_START", source)
         self.assertIn("trim_conversation_context", source)
         self.assertIn("context_engine.py", source)
         self.assertTrue((ROOT / "tests" / "test_context_engine.py").is_file())
