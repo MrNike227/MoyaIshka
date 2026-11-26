@@ -106,6 +106,19 @@ class IntelligentMemoryTests(unittest.TestCase):
             self.assertIsNone(_embed_texts("https://example.com", "nomic-embed-text", ["тест"]))
             opener.assert_not_called()
 
+    def test_legacy_sensitive_memory_is_never_selected(self):
+        selected = select_memory_records(
+            ["Секретный API key: abc123", "Пользователь предпочитает короткие ответы."],
+            [], "помни API key короткие ответы", semantic_enabled=False,
+        )
+        self.assertEqual([item["text"] for item in selected], ["Пользователь предпочитает короткие ответы."])
+
+    def test_expired_memory_is_not_selected(self):
+        facts = ["Завтра нужно проверить сборку."]
+        metadata = [{"expires_at": "2000-01-01T00:00:00+00:00", "status": "active"}]
+        selected = select_memory_records(facts, metadata, "проверить сборку", semantic_enabled=False)
+        self.assertEqual(selected, [])
+
 
 if __name__ == "__main__":
     unittest.main()

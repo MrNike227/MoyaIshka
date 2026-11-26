@@ -73,7 +73,7 @@ from cloud_sync import (
 )
 from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient, backup_file_md5
 from resource_governor import ResourceGovernor
-from context_engine import select_relevant_memories, trim_conversation_context
+from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
 APP_VERSION = "4.1.9"
@@ -3096,10 +3096,9 @@ class MoyaIshkaApp:
             self.research_status_var.set("Локальная библиотека очищена.")
 
     def _build_system_prompt(self, current_query: str = "") -> str:
-        memories = select_relevant_memories(
-            self.config.get("memory", []), current_query, max_items=10, max_chars=3600
-        )
-        memory_text = "\n".join(f"- {item}" for item in memories)
+        # The worker fills this block with vetted, ranked memory. Keep the UI-thread
+        # preview empty so a retrieval failure can never leak legacy sensitive text.
+        memory_text = ""
         parts = [
             f"Твоё имя: {self.config.get('assistant_name', 'Ишка')}.",
             f"Твоя роль: {self.config.get('role', '')}.",
