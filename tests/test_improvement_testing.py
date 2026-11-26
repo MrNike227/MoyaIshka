@@ -74,6 +74,16 @@ class ImprovementTestingTests(unittest.TestCase):
             with self.assertRaisesRegex(ProposalTestError, "diff не соответствует"):
                 test_change_bundle(bundle, root)
 
+    def test_empty_test_suite_is_not_reported_as_passed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
+            (root / "tests" / "test_sample.py").unlink()
+            bundle = self.make_bundle(temp, 2)
+            result = test_change_bundle(bundle, root)
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["tests_run"], 0)
+            self.assertIn("не найдено", result["error"])
+
     def test_non_object_manifest_is_rejected_cleanly(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
