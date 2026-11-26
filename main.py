@@ -6281,10 +6281,10 @@ class MoyaIshkaApp:
             if source_process:
                 messagebox.showerror(
                     "Не удалось установить обновление",
-                    f"Текущая версия не затронута.\\n\\nПричина: {exc}\\n\\nПакет сохранён здесь:\\n{staged.parent}",
+                    f"Текущая версия не затронута.\n\nПричина: {exc}\n\nПакет сохранён здесь:\n{staged.parent}",
                 )
             else:
-                messagebox.showerror("Обновление", f"Текущая версия продолжает работать.\\n\\n{exc}")
+                messagebox.showerror("Обновление", f"Текущая версия продолжает работать.\n\n{exc}")
 
     def _install_staged_update_from_source(self, install_dir: str | Path | None = None) -> None:
         self._start_staged_update_install(install_dir, source_process=True)
@@ -6602,7 +6602,7 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
         def show_failure() -> None:
             messagebox.showwarning(
                 "Обновление отменено — восстановлена предыдущая версия",
-                f"Новая версия не прошла проверку. Предыдущая версия восстановлена.\\n\\nПричина: {reason}\\n\\nЖурнал установки:\\n{log_path}",
+                f"Новая версия не прошла проверку. Предыдущая версия восстановлена.\n\nПричина: {reason}\n\nЖурнал установки:\n{log_path}",
                 parent=root,
             )
         root.after(1200, show_failure)
