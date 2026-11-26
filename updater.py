@@ -16,6 +16,9 @@ from typing import Any
 
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PACKAGE_FILES = 20000
+DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+FILE_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+EXTRACT_CHUNK_BYTES = 4 * 1024 * 1024
 _RETRYABLE_WINDOWS_LOCK_ERRORS = {5, 32, 33}
 
 
@@ -88,7 +91,7 @@ def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES
                 if announced > max_bytes:
                     raise RuntimeError("Размер пакета обновления превышает допустимый лимит.")
             while True:
-                chunk = response.read(1024 * 1024)
+                chunk = response.read(DOWNLOAD_CHUNK_BYTES)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -148,7 +151,7 @@ def _safe_member_path(name: str) -> tuple[str, ...]:
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        for chunk in iter(lambda: stream.read(FILE_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -242,7 +245,7 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(item) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    shutil.copyfileobj(source, output, length=EXTRACT_CHUNK_BYTES)
         validate_app_folder(app_dir, expected_version)
         if final_dir.exists():
             shutil.rmtree(final_dir)
