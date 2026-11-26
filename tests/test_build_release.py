@@ -21,9 +21,9 @@ class ReleaseBuildTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyinstaller==6.22.3", requirements)
 
-    def test_application_version_is_4184(self):
+    def test_application_version_is_4185(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.8.4"', source)
+        self.assertIn('APP_VERSION = "4.1.8.5"', source)
 
     def test_legacy_update_repository_is_migrated(self):
         from main import migrate_update_repository
@@ -260,6 +260,16 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("Validate PowerShell folder updater syntax", workflow)
         self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", workflow)
 
+    def test_directory_updater_sets_base_before_relative_path_enumeration(self):
+        helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
+        script_start = helper.index("def _directory_updater_script")
+        script_end = helper.index("def launch_windows_directory_replacement", script_start)
+        script = helper[script_start:script_end]
+        self.assertLess(
+            script.index("$base = [IO.Path]::GetFullPath($Folder)"),
+            script.index("$actualPaths = @("),
+        )
+
     def test_move_current_build_copies_complete_onedir_folder(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
@@ -306,12 +316,12 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_4184(self):
+    def test_windows_version_resource_is_4185(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4,1,8,4)", source)
         self.assertIn("prodvers=(4,1,8,4)", source)
-        self.assertIn("FileVersion', '4.1.8.4'", source)
-        self.assertIn("ProductVersion', '4.1.8.4'", source)
+        self.assertIn("FileVersion', '4.1.8.5'", source)
+        self.assertIn("ProductVersion', '4.1.8.5'", source)
 
 
 
@@ -323,7 +333,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.8.4 onedir", workflow)
+        self.assertIn("Build Windows release — verified 4.1.8.5 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
@@ -357,19 +367,19 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.8.4]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.8.5]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
-    def test_hotfix_marker_refreshes_existing_v4184_release_and_tag_only(self):
+    def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.4' }}", workflow)
-        self.assertIn("- name: Update v4.1.8.4 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.1.8.4", workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.8.5' }}", workflow)
+        self.assertIn("- name: Update v4.1.8.5 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.1.8.5", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.4 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.8.5 tag to validated root source"))
     def test_windows10_script_checks_exact_target_os_without_python(self):
         script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
         self.assertIn("19045", script)

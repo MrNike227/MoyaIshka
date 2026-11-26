@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.1.8.4 onedir Windows application...
+echo Building Moya Ishka 4.1.8.5 onedir Windows application...
 
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
@@ -114,9 +114,9 @@ if errorlevel 1 goto dependency_failed
 if errorlevel 1 goto crypto_bundle_failed
 %PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/MoyaIshka/TEST_WINDOWS10.ps1')"
 if errorlevel 1 goto failed
-%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.1.8.4
+%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.1.8.5
 if errorlevel 1 goto failed
-%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.1.8.4')"
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.1.8.5')"
 if errorlevel 1 goto failed
 
 echo.

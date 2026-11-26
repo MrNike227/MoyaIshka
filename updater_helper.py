@@ -747,6 +747,7 @@ def _directory_updater_script() -> str:
         $treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse)
         $reparsePoints = @($treeItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
         if ($reparsePoints.Count -gt 0) { throw 'Символические ссылки и reparse points в папке приложения запрещены.' }
+        $base = [IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
         $actualPaths = @(
             Get-ChildItem -LiteralPath $Folder -File -Force -Recurse |
                 Where-Object { [IO.Path]::GetFullPath($_.FullName) -ine $manifestFullPath } |
@@ -757,7 +758,6 @@ def _directory_updater_script() -> str:
             @(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $actualPaths).Count -gt 0) {
             throw 'Фактический состав папки не совпадает с build_manifest.json.'
         }
-        $base = [IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
         foreach ($item in $items) {
             $relative = ([string]$item.path).Replace('/', '\')
             if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|\\)\.\.(\\|$)|:') {

@@ -59,7 +59,7 @@ from resource_governor import ResourceGovernor
 from context_engine import select_relevant_memories, trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.8.4"
+APP_VERSION = "4.1.8.5"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -4377,7 +4377,7 @@ class MoyaIshkaApp:
         except Exception as exc:
             messagebox.showerror(
                 "Установка",
-                f"Текущая версия не затронута. Проверь, что запускается onedir-сборка 4.1.8.4.\n\n{exc}",
+                f"Текущая версия не затронута. Проверь, что запускается onedir-сборка 4.1.8.5.\n\n{exc}",
             )
 
     def search_old_versions(self) -> None:
@@ -4926,8 +4926,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.4-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.4-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.5-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.5-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
