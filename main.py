@@ -51,8 +51,8 @@ from supabase_backup import (
     MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
 )
 from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
-from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
+from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
+from improvement_delivery import (default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions)
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
@@ -83,7 +83,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.1"
+APP_VERSION = "4.2.2"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -218,7 +218,7 @@ def prepare_source_workspace() -> Path:
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.1_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.2_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
             "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_github_pr.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
@@ -3232,6 +3232,19 @@ class MoyaIshkaApp:
             (item["content"] for item in reversed(history) if item["role"] == "user"), ""
         )
         messages = [{"role": "system", "content": self._build_system_prompt(current_query)}]
+        try:
+            proposal_context = build_improvement_chat_context(
+                self._updates_directory(),
+                current_query,
+                history=history[-8:],
+                current_suggestions=self.improvement_suggestions,
+                current_patch_text=str(getattr(self, "pending_patch_text", "") or ""),
+            )
+            if proposal_context:
+                messages[0]["content"] += "\n\n" + proposal_context
+        except Exception:
+            # Proposal context is optional; a missing Updates folder must not break chat.
+            pass
         messages.extend(history)
         if bool(self.config.get("use_research_library", True)) and current_query:
             last_user = next((item for item in reversed(messages) if item["role"] == "user"), None)
@@ -3291,11 +3304,21 @@ class MoyaIshkaApp:
         if not base.startswith("http://") and not base.startswith("https://"):
             raise RuntimeError("Адрес Ollama должен начинаться с http:// или https://")
         pressure = bool(settings.get("resource_pressure", False))
+        self_improvement = str(settings.get("task_profile", "")).casefold() == "self_improvement"
         cpu_count = os.cpu_count() or 4
         logical_threads = 2 if pressure else max(3, min(6, cpu_count // 2))
-        context_window = 4096 if pressure else 6144
-        max_tokens = 1024 if pressure else 2048
-        num_batch = 128 if pressure else 256
+        if self_improvement:
+            # Large source-code prompts need more context; reduce batch size for
+            # 8 GB GPUs and allow enough time for a local 3B model to answer.
+            context_window = 4096 if pressure else 8192
+            max_tokens = 1024 if pressure else 2048
+            num_batch = 128
+            request_timeout = 900
+        else:
+            context_window = 4096 if pressure else 6144
+            max_tokens = 1024 if pressure else 2048
+            num_batch = 128 if pressure else 256
+            request_timeout = 240
         conversation = [dict(message) for message in messages]
         parts: list[str] = []
         for attempt in range(3):
@@ -3312,7 +3335,7 @@ class MoyaIshkaApp:
                     "num_predict": max_tokens,
                 },
             }
-            data = post_json(base + "/api/chat", payload, timeout=240)
+            data = post_json(base + "/api/chat", payload, timeout=request_timeout)
             try:
                 piece = str(data["message"]["content"]).strip()
             except (KeyError, TypeError) as exc:
@@ -3529,6 +3552,15 @@ class MoyaIshkaApp:
                 elif event == "improvement_analysis":
                     suggestions, automatic = payload
                     self.improvement_suggestions = list(suggestions)
+                    try:
+                        save_improvement_suggestions(
+                            self._updates_directory(),
+                            self.improvement_suggestions,
+                            source="automatic" if automatic else "manual",
+                        )
+                    except Exception:
+                        # Keep current suggestions available in this session even if disk is read-only.
+                        pass
                     self.improvement_listbox.delete(0, "end")
                     for index, item in enumerate(self.improvement_suggestions, 1):
                         self.improvement_listbox.insert("end", f"{index}. {item['title']}")
@@ -5441,6 +5473,8 @@ class MoyaIshkaApp:
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": 0.15,
+            "task_profile": "self_improvement",
+            "resource_pressure": bool(self.resource_governor.snapshot().system_pressure),
         }
         mode = str(self.config.get("mode", "Авто"))
         errors = []
@@ -5516,7 +5550,7 @@ class MoyaIshkaApp:
         source = target.read_text(encoding="utf-8")
         review_prompt = "Проведи автоматический анализ качества, надёжности, безопасности и производительности кода. Предложи улучшения."
         try:
-            model_context = build_model_source_context(source, review_prompt)
+            model_context = build_model_source_context(source, review_prompt, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
         except ValueError as exc:
             self.improve_status_var.set(str(exc))
             if not silent:
@@ -5604,7 +5638,7 @@ class MoyaIshkaApp:
             return
         source = target.read_text(encoding="utf-8")
         try:
-            model_context = build_model_source_context(source, prompt_text)
+            model_context = build_model_source_context(source, prompt_text, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
         except ValueError as exc:
             messagebox.showerror("Саморазвитие", str(exc))
             return
@@ -5618,7 +5652,10 @@ class MoyaIshkaApp:
             "Вход может содержать полный файл или только точные фрагменты большого файла. "
             "Если показаны фрагменты, изменяй только их; номера строк в заголовках диапазонов — "
             "абсолютные номера исходного файла, используй их в @@. Все строки контекста и удаления "
-            "копируй без изменений. Не придумывай отсутствующий код. "
+            "копируй посимвольно из переданного фрагмента. Запрещены заглушки вроде "
+            "'# main.py original content', '# остальной код без изменений' и вымышленные строки. "
+            "Каждый блок @@ должен содержать минимум одну точную строку исходника; если её нет в контексте, "
+            "не выдумывай diff, а верни строку UNABLE_TO_CREATE_PATCH. "
             "Выводи только diff, начиная строками --- a/ИМЯ_ФАЙЛА и +++ b/ИМЯ_ФАЙЛА, затем блоки @@. "
             "Сохраняй совместимость с Python 3.10 и Windows 10."
         )
@@ -5642,7 +5679,10 @@ class MoyaIshkaApp:
                                 f"Верни исправленный diff только для файла {relative}. "
                                 "Не добавляй пояснений, Markdown или полный файл. "
                                 "Используй строки --- a/путь и +++ b/путь, затем стандартные заголовки @@ -N,N +N,N @@. "
-                                "Строки контекста и удаления должны точно совпадать с переданным исходником. "
+                                "Строки контекста и удаления должны посимвольно совпадать с переданным исходником. "
+                                "Не используй заглушки вроде '# main.py original content', '# остальной код без изменений' "
+                                "или вымышленные строки. Если нужного фрагмента нет в переданном контексте, "
+                                "не создавай diff и сообщи, что нужен более точный фрагмент. "
                                 "Не меняй задачу и не добавляй новых изменений."
                             ),
                         },
@@ -6590,8 +6630,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.1-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.1-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.2-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.2-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0

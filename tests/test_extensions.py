@@ -170,6 +170,96 @@ class PatchTests(unittest.TestCase):
 """
         self.assertEqual(apply_unified_diff(original, patch, "main.py"), "first\nSECOND\nthird\n")
 
+    def test_apply_diff_relocates_unique_exact_context_when_hunk_line_is_stale(self):
+        original = "#!/usr/bin/env python3\n# module header\nVALUE = 1\n"
+        patch = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-VALUE = 1\n+VALUE = 2\n"
+        )
+        updated = apply_unified_diff(original, patch, "main.py")
+        self.assertEqual(updated, "#!/usr/bin/env python3\n# module header\nVALUE = 2\n")
+
+    def test_apply_diff_rejects_placeholder_context_not_in_source(self):
+        original = "#!/usr/bin/env python3\nVALUE = 1\n"
+        patch = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-# main.py original content\n+# updated file\n"
+        )
+        with self.assertRaisesRegex(ValueError, "шаблонный или устаревший текст"):
+            apply_unified_diff(original, patch, "main.py")
+
+    def test_apply_diff_rejects_ambiguous_context(self):
+        original = "def one():\n    return 1\n\ndef two():\n    return 1\n"
+        patch = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-    return 1\n+    return 2\n"
+        )
+        with self.assertRaisesRegex(ValueError, "неоднозначен"):
+            apply_unified_diff(original, patch, "main.py")
+
+    def test_apply_diff_preserves_windows_crlf(self):
+        original = "first\r\nsecond\r\nthird\r\n"
+        patch = (
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " first\n-second\n+SECOND\n third\n"
+        )
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "first\r\nSECOND\r\nthird\r\n",
+        )
+
+    def test_local_self_improvement_uses_longer_ollama_timeout_and_larger_context(self):
+        from unittest.mock import patch
+        import main
+
+        captured = {}
+        def fake_post_json(url, payload, headers=None, timeout=180):
+            captured.update(url=url, payload=payload, timeout=timeout)
+            return {"message": {"content": "diff"}}
+
+        with patch.object(main, "post_json", side_effect=fake_post_json):
+            result = main.MoyaIshkaApp._call_ollama(
+                {
+                    "ollama_url": "http://localhost:11434",
+                    "ollama_model": "qwen2.5:3b",
+                    "task_profile": "self_improvement",
+                    "resource_pressure": False,
+                    "temperature": 0.15,
+                },
+                [{"role": "user", "content": "prepare a small diff"}],
+            )
+        self.assertEqual(result, "diff")
+        self.assertEqual(captured["timeout"], 900)
+        self.assertEqual(captured["payload"]["options"]["num_ctx"], 8192)
+        self.assertEqual(captured["payload"]["options"]["num_batch"], 128)
+
+    def test_local_self_improvement_reduces_context_when_system_is_under_pressure(self):
+        from unittest.mock import patch
+        import main
+
+        captured = {}
+        def fake_post_json(url, payload, headers=None, timeout=180):
+            captured.update(payload=payload, timeout=timeout)
+            return {"message": {"content": "ok"}}
+
+        with patch.object(main, "post_json", side_effect=fake_post_json):
+            main.MoyaIshkaApp._call_ollama(
+                {
+                    "ollama_url": "http://localhost:11434",
+                    "ollama_model": "qwen2.5:3b",
+                    "task_profile": "self_improvement",
+                    "resource_pressure": True,
+                },
+                [{"role": "user", "content": "prepare a diff"}],
+            )
+        self.assertEqual(captured["timeout"], 900)
+        self.assertEqual(captured["payload"]["options"]["num_ctx"], 4096)
+        self.assertEqual(captured["payload"]["options"]["num_predict"], 1024)
+
     def test_reject_other_file(self):
         with self.assertRaises(ValueError):
             apply_unified_diff("a\n", "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-a\n+b\n", "main.py")
@@ -198,12 +288,12 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_421(self):
+    def test_application_release_version_is_422(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.1")
+        self.assertEqual(APP_VERSION, "4.2.2")
 
     def test_version_tuple(self):
         self.assertGreater(version_tuple("v3.1.0"), version_tuple("3.0.9"))
