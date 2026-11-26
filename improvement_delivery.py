@@ -237,20 +237,20 @@ _IMPROVEMENT_FOLLOW_UP = (
 MAX_CHAT_IMPROVEMENT_IDEAS = 20
 MAX_CHAT_IMPROVEMENT_IDEA_CHARS = 2_000
 _CHAT_IDEA_MARKERS = (
-    re.compile(r"\\bпредлагаю\\b", re.IGNORECASE),
-    re.compile(r"\\bпредложени[еяю]\\b", re.IGNORECASE),
-    re.compile(r"\\bидея\\b", re.IGNORECASE),
-    re.compile(r"\\bчто\\s+можно\\s+улучшить\\b", re.IGNORECASE),
-    re.compile(r"\\bможно\\s+(?:ли\\s+)?(?:улучшить|добавить|доработать|оптимизировать)\\b", re.IGNORECASE),
-    re.compile(r"\\b(?:нужно|надо|стоит)\\s+(?:добавить|улучшить|доработать|исправить)\\b", re.IGNORECASE),
-    re.compile(r"\\b(?:хочу\\s*,?\\s*чтобы|хотелось\\s+бы)\\b", re.IGNORECASE),
-    re.compile(r"\\bбыло\\s+бы\\s+(?:удобно|полезно|хорошо)\\b", re.IGNORECASE),
-    re.compile(r"\\bне\\s+хватает\\b", re.IGNORECASE),
+    re.compile(r"\bпредлагаю\b", re.IGNORECASE),
+    re.compile(r"\bпредложени[еяю]\b", re.IGNORECASE),
+    re.compile(r"\bидея\b", re.IGNORECASE),
+    re.compile(r"\bчто\s+можно\s+улучшить\b", re.IGNORECASE),
+    re.compile(r"\bможно\s+(?:ли\s+)?(?:улучшить|добавить|доработать|оптимизировать)\b", re.IGNORECASE),
+    re.compile(r"\b(?:нужно|надо|стоит)\s+(?:добавить|улучшить|доработать|исправить)\b", re.IGNORECASE),
+    re.compile(r"\b(?:хочу\s*,?\s*чтобы|хотелось\s+бы)\b", re.IGNORECASE),
+    re.compile(r"\bбыло\s+бы\s+(?:удобно|полезно|хорошо)\b", re.IGNORECASE),
+    re.compile(r"\bне\s+хватает\b", re.IGNORECASE),
 )
 _CHAT_IDEA_COMMAND = re.compile(
     r"^(?:добавь(?:те)?|добавить|улучши(?:те)?|улучшить|исправь(?:те)?|исправить|"
     r"доработай(?:те)?|доработать|сделай(?:те)?|сделать|реализуй(?:те)?|реализовать|"
-    r"оптимизируй(?:те)?|оптимизировать)\\b",
+    r"оптимизируй(?:те)?|оптимизировать)\b",
     re.IGNORECASE,
 )
 
@@ -316,11 +316,12 @@ def save_chat_improvement_idea(
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "items": items[-MAX_CHAT_IMPROVEMENT_IDEAS:],
     }
-    encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\\n"
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     if len(encoded.encode("utf-8")) > 128 * 1024:
         raise ValueError("Список идей из чата слишком велик для сохранения.")
     _write_text_atomic(path, encoded)
     return path
+
 
 def _is_improvement_related_query(query: str, history: Any = ()) -> bool:
     current = str(query or "").casefold()
