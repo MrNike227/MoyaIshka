@@ -4,15 +4,58 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import time
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PACKAGE_FILES = 20000
+_RETRYABLE_WINDOWS_LOCK_ERRORS = {5, 32, 33}
+
+
+def _replace_with_retry(
+    source: Path,
+    destination: Path,
+    *,
+    attempts: int = 12,
+    initial_delay: float = 0.25,
+) -> None:
+    """Atomically rename a closed file, retrying transient Windows AV/indexer locks."""
+    last_error: OSError | None = None
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            last_error = exc
+            code = getattr(exc, "winerror", None) or exc.errno
+            if code not in _RETRYABLE_WINDOWS_LOCK_ERRORS or attempt + 1 >= attempts:
+                raise
+            time.sleep(min(max(0.05, initial_delay) * (2 ** min(attempt, 4)), 1.5))
+    if last_error is not None:
+        raise last_error
+
+
+def _unlink_best_effort(path: Path, *, attempts: int = 5) -> bool:
+    """Remove a temporary updater file without masking the original failure."""
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError as exc:
+            code = getattr(exc, "winerror", None) or exc.errno
+            if code not in _RETRYABLE_WINDOWS_LOCK_ERRORS or attempt + 1 >= attempts:
+                return False
+            time.sleep(0.15 * (attempt + 1))
+    return False
 
 
 def _get(url: str) -> bytes:
@@ -34,7 +77,8 @@ def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES
     total = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with urllib.request.urlopen(request, timeout=90) as response, destination.open("wb") as output:
+        # Exclusive creation makes accidental path reuse/concurrent downloads fail safely.
+        with urllib.request.urlopen(request, timeout=90) as response, destination.open("xb") as output:
             content_length = response.headers.get("Content-Length")
             if content_length:
                 try:
@@ -53,11 +97,12 @@ def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES
                 digest.update(chunk)
                 output.write(chunk)
             output.flush()
+            os.fsync(output.fileno())
         if total <= 0:
             raise RuntimeError("Сервер вернул пустой пакет обновления.")
         return digest.hexdigest(), total
     except Exception:
-        destination.unlink(missing_ok=True)
+        _unlink_best_effort(destination)
         raise
 
 
@@ -209,6 +254,12 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
 
 
 def download_verified_update(info: dict[str, Any], target_dir: Path) -> Path:
+    """Download each update into a private staging directory.
+
+    Unique per-attempt paths prevent two update clicks from opening/replacing the
+    same .tmp file. The temporary file is closed and flushed before rename; a
+    bounded retry handles brief Windows Defender/indexer sharing violations.
+    """
     if not info.get("package_url") or not info.get("checksum_url"):
         raise RuntimeError("В релизе не найдены MoyaIshka.zip и MoyaIshka.zip.sha256.")
     checksum_text = _get(str(info["checksum_url"])).decode("utf-8", errors="replace").strip()
@@ -216,17 +267,22 @@ def download_verified_update(info: dict[str, Any], target_dir: Path) -> Path:
     if not match:
         raise RuntimeError("Файл контрольной суммы имеет неверный формат.")
     target_dir.mkdir(parents=True, exist_ok=True)
-    archive = target_dir / "MoyaIshka_update.zip"
-    temporary = archive.with_suffix(".tmp")
+    # Keep every attempt isolated: no shared archive, .tmp file, or extraction folder.
+    attempt_dir = target_dir / f"MoyaIshka_update_{uuid.uuid4().hex}"
+    attempt_dir.mkdir(parents=False, exist_ok=False)
+    archive = attempt_dir / "MoyaIshka_update.zip"
+    temporary = attempt_dir / "MoyaIshka_update.part"
     try:
         actual, _ = _download_to(str(info["package_url"]), temporary, MAX_PACKAGE_BYTES)
         if actual.lower() != match.group(1).lower():
             raise RuntimeError("Контрольная сумма пакета не совпадает. Обновление отклонено.")
-        temporary.replace(archive)
-        staged_exe = _extract_package(archive, target_dir, str(info.get("version", "")))
-        archive.unlink(missing_ok=True)
+        # Both handles in _download_to have exited before this atomic rename.
+        _replace_with_retry(temporary, archive)
+        staged_exe = _extract_package(archive, attempt_dir, str(info.get("version", "")))
+        _unlink_best_effort(archive)
         return staged_exe
     except Exception:
-        temporary.unlink(missing_ok=True)
-        archive.unlink(missing_ok=True)
+        # Never delete another update attempt's files. A locked temp is harmless
+        # and uniquely named; cleanup is best effort so it cannot hide the cause.
+        shutil.rmtree(attempt_dir, ignore_errors=True)
         raise

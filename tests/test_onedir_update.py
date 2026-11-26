@@ -87,6 +87,78 @@ class OnedirUpdateTests(unittest.TestCase):
                     _download_to("https://example.test/file", path, 10)
             self.assertFalse(path.exists())
 
+    def test_update_downloads_use_unique_staging_paths(self):
+        import hashlib
+        from unittest.mock import patch
+        from updater import download_verified_update
+
+        payload = b"unique update package"
+        digest = hashlib.sha256(payload).hexdigest()
+        package_paths = []
+
+        def fake_download(_url, destination, _limit):
+            package_paths.append(destination)
+            destination.write_bytes(payload)
+            return digest, len(payload)
+
+        def fake_extract(archive, destination, version):
+            self.assertEqual(archive.read_bytes(), payload)
+            self.assertEqual(version, "4.1.9")
+            app = destination / "MoyaIshka"
+            app.mkdir()
+            exe = app / "MoyaIshka.exe"
+            exe.write_bytes(b"staged")
+            return exe
+
+        info = {
+            "package_url": "https://example.test/MoyaIshka.zip",
+            "checksum_url": "https://example.test/MoyaIshka.zip.sha256",
+            "version": "4.1.9",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "update_staging"
+            with patch("updater._get", return_value=digest.encode("ascii")):
+                with patch("updater._download_to", side_effect=fake_download):
+                    with patch("updater._extract_package", side_effect=fake_extract):
+                        first = download_verified_update(info, root)
+                        second = download_verified_update(info, root)
+
+            self.assertNotEqual(first.parent, second.parent)
+            self.assertNotEqual(package_paths[0], package_paths[1])
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+            self.assertFalse(package_paths[0].exists())
+            self.assertFalse(package_paths[1].exists())
+
+    def test_update_replace_retries_transient_windows_file_lock(self):
+        import os
+        from unittest.mock import patch
+        from updater import _replace_with_retry
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "update.part"
+            destination = root / "update.zip"
+            source.write_bytes(b"verified")
+            real_replace = os.replace
+            calls = []
+
+            def flaky_replace(src, dst):
+                calls.append((src, dst))
+                if len(calls) < 3:
+                    error = OSError("sharing violation")
+                    error.winerror = 32
+                    raise error
+                return real_replace(src, dst)
+
+            with patch("updater.os.replace", side_effect=flaky_replace):
+                with patch("updater.time.sleep"):
+                    _replace_with_retry(source, destination, attempts=4)
+
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(destination.read_bytes(), b"verified")
+            self.assertFalse(source.exists())
+
     def test_archive_path_traversal_is_rejected(self):
         for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):
             with self.subTest(path=path), self.assertRaises(RuntimeError):
