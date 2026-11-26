@@ -44,6 +44,14 @@ def resolve_install_layout(root_dir: str | Path) -> dict[str, Path]:
     return {"root": root, "app": app, "updates": updates}
 
 
+def ensure_install_layout(root_dir: str | Path) -> dict[str, Path]:
+    """Create the container root and its sibling App / Updates directories."""
+    layout = resolve_install_layout(root_dir)
+    layout["app"].mkdir(parents=True, exist_ok=True)
+    layout["updates"].mkdir(parents=True, exist_ok=True)
+    return layout
+
+
 def default_install_root(
     configured_root: str | Path | None = None,
     legacy_install_dir: str | Path | None = None,
