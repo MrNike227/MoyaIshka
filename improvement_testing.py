@@ -13,6 +13,11 @@ class ProposalTestError(RuntimeError):
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
+def _normalized_text_sha256(data: bytes) -> str:
+    """Hash UTF-8 source text independently of Windows/Linux newline encoding."""
+    text = data.decode("utf-8")
+    return _sha256(text.replace("\\r\\n", "\\n").replace("\\r", "\\n").encode("utf-8"))
+
 def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeout_seconds: int = 240) -> dict[str, Any]:
     """Verify a saved proposal, then run unit tests against it in a temporary project copy."""
     bundle, source = Path(bundle_dir).expanduser().resolve(), Path(source_root).expanduser().resolve()
@@ -50,7 +55,11 @@ def test_change_bundle(bundle_dir: str | Path, source_root: str | Path, *, timeo
             raise ProposalTestError("Размер пакета превышает безопасный лимит.")
         if _sha256(new) != entry.get("sha256"):
             raise ProposalTestError(f"SHA-256 изменённого файла не совпадает: {relative.as_posix()}")
-        if _sha256(old) != entry.get("base_sha256"):
+        try:
+            source_hash = _normalized_text_sha256(old)
+        except UnicodeDecodeError as exc:
+            raise ProposalTestError(f"Исходник {relative.as_posix()} не является UTF-8.") from exc
+        if source_hash != entry.get("base_sha256"):
             raise ProposalTestError(f"Исходник {relative.as_posix()} уже изменился. Создай предложение заново.")
         try:
             compile(new.decode("utf-8"), relative.as_posix(), "exec")
