@@ -131,7 +131,7 @@ class ReleaseBuildTests(unittest.TestCase):
             python = root / "python311"
             python.mkdir()
             redist = (
-                root / "Visual Studio" / "2022" / "BuildTools" / "VC" / "Redist"
+                root / "Microsoft Visual Studio" / "2022" / "BuildTools" / "VC" / "Redist"
                 / "MSVC" / "14.42.34433" / "x64" / "Microsoft.VC143.CRT"
             )
             redist.mkdir(parents=True)
