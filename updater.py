@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-MAX_PACKAGE_BYTES = 2 * 10250 * 1024 * 1024
+MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PACKAGE_FILES = 20000
 DOWNLOAD_CHUNK_BYTES = 50 * 1024 * 1024
 FILE_HASH_CHUNK_BYTES = 50 * 1024 * 1024
