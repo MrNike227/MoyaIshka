@@ -32,7 +32,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_application_version_is_419(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.1.9"', source)
+        self.assertIn('APP_VERSION = "4.2.0"', source)
 
     def test_legacy_update_repository_is_migrated(self):
         from main import migrate_update_repository
@@ -330,8 +330,8 @@ class ReleaseBuildTests(unittest.TestCase):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(4, 1, 9, 0)", source)
         self.assertIn("prodvers=(4, 1, 9, 0)", source)
-        self.assertIn("FileVersion', '4.1.9'", source)
-        self.assertIn("ProductVersion', '4.1.9'", source)
+        self.assertIn("FileVersion', '4.2.0'", source)
+        self.assertIn("ProductVersion', '4.2.0'", source)
 
 
 
@@ -343,7 +343,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.1.9 onedir", workflow)
+        self.assertIn("Build Windows release — verified 4.2.0 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
@@ -382,19 +382,19 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.1.9]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.0]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
     def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.1.9' }}", workflow)
-        self.assertIn("- name: Update v4.1.9 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.1.9", workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.0' }}", workflow)
+        self.assertIn("- name: Update v4.2.0 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.2.0", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.1.9 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.0 tag to validated root source"))
     def test_windows10_script_checks_exact_target_os_without_python(self):
         script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
         self.assertIn("19045", script)
