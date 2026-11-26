@@ -30,14 +30,21 @@ class BackupManagerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _write_database(self, message):
-        with sqlite3.connect(self.root / "assistant.db") as db:
+        db = sqlite3.connect(self.root / "assistant.db")
+        try:
             db.execute("CREATE TABLE IF NOT EXISTS messages (body TEXT NOT NULL)")
             db.execute("DELETE FROM messages")
             db.execute("INSERT INTO messages(body) VALUES(?)", (message,))
+            db.commit()
+        finally:
+            db.close()
 
     def _read_database(self):
-        with sqlite3.connect(self.root / "assistant.db") as db:
+        db = sqlite3.connect(self.root / "assistant.db")
+        try:
             return db.execute("SELECT body FROM messages").fetchone()[0]
+        finally:
+            db.close()
 
     def test_backup_contains_memory_history_knowledge_skills_and_plugins(self):
         archive = create_backup(self.root, app_version="4.1.9")
@@ -55,8 +62,11 @@ class BackupManagerTests(unittest.TestCase):
             )
             database = Path(self.temp.name) / "snapshot.db"
             database.write_bytes(package.read("assistant.db"))
-        with sqlite3.connect(database) as db:
+        db = sqlite3.connect(database)
+        try:
             self.assertEqual(db.execute("SELECT body FROM messages").fetchone()[0], "исходный диалог")
+        finally:
+            db.close()
 
     def test_restore_replaces_user_data_and_creates_pre_restore_snapshot(self):
         archive = create_backup(self.root, app_version="4.1.9")
@@ -79,7 +89,7 @@ class BackupManagerTests(unittest.TestCase):
             for name in source.namelist():
                 payload = source.read(name)
                 if name == "config.json":
-                    payload += b" "
+                    payload = (b"X" + payload[1:]) if payload else b"X"
                 target.writestr(name, payload)
         with self.assertRaisesRegex(BackupError, "SHA-256"):
             inspect_backup(tampered)
