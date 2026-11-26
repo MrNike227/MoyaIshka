@@ -1,11 +1,17 @@
 import json
 import unittest
 from unittest.mock import patch
+from io import BytesIO
+from urllib.error import HTTPError
+from urllib.request import Request
 
 from google_drive_sync import (
     DRIVE_SCOPE,
     GoogleDriveError,
     GoogleDriveVaultClient,
+    _NoRedirectResumableUploadHandler,
+    _validate_resumable_upload_ack,
+    backup_file_md5,
     _b64url,
     _json_bytes,
 )
@@ -54,6 +60,68 @@ class GoogleDriveSyncTests(unittest.TestCase):
         })
         client.ensure_fresh_session()
         self.assertEqual(client.session["access_token"], "access")
+
+    def test_backup_folder_is_created_under_app_folder(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._folder = lambda: "app-folder"
+        queries = []
+        def fake_list(query, **_kwargs):
+            queries.append(query)
+            return []
+        client._list = fake_list
+        client._api = lambda *_args, **_kwargs: (b'{"id":"backup-folder"}', {})
+        self.assertEqual(client._backup_folder(), "backup-folder")
+        self.assertIn("'app-folder' in parents", queries[0])
+
+    def test_backup_listing_filters_to_encrypted_app_backups(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._backup_folder = lambda: "backup-folder"
+        client._list = lambda *_args, **_kwargs: [
+            {"id": "ok", "name": "a.mibak", "size": "123", "appProperties": {
+                "moya_backup_format": "1", "moya_backup_sha256": "a" * 64}},
+            {"id": "unrelated", "name": "other.zip", "size": "30", "appProperties": {}},
+        ]
+        rows = client.list_backup_files()
+        self.assertEqual([row["id"] for row in rows], ["ok"])
+        self.assertEqual(rows[0]["sha256"], "a" * 64)
+
+    def test_resumable_upload_308_is_treated_as_incomplete_ack(self):
+        handler = _NoRedirectResumableUploadHandler()
+        request = Request("https://www.googleapis.com/upload/drive/v3/files")
+        with self.assertRaises(HTTPError) as caught:
+            handler.http_error_308(request, BytesIO(b""), 308, "Resume Incomplete", {})
+        self.assertEqual(caught.exception.code, 308)
+
+    def test_resumable_upload_ack_requires_complete_range(self):
+        _validate_resumable_upload_ack({"Range": "bytes=0-8388607"}, 8388607)
+        with self.assertRaises(GoogleDriveError):
+            _validate_resumable_upload_ack({}, 8388607)
+        with self.assertRaises(GoogleDriveError):
+            _validate_resumable_upload_ack({"Range": "bytes=0-4"}, 8388607)
+
+    def test_backup_upload_rejects_bad_hash_without_network(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        with patch("google_drive_sync.urllib.request.urlopen") as opener:
+            with self.assertRaisesRegex(GoogleDriveError, "SHA-256"):
+                client.upload_backup_file(__file__, remote_name="bad.mibak", sha256="wrong")
+            opener.assert_not_called()
+
+    def test_backup_quota_counts_files_inside_backup_subfolder(self):
+        client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
+        client._backup_folder = lambda: "backup-folder"
+        client._list = lambda query, **_kwargs: [
+            {"id": "a", "size": "123"}, {"id": "b", "size": "456"},
+        ]
+        self.assertEqual(client.get_backup_folder_usage(), 579)
+
+    def test_backup_md5_helper_matches_file_content(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "backup.mibak"
+            path.write_bytes(b"encrypted-backup-data")
+            self.assertEqual(backup_file_md5(path), hashlib.md5(b"encrypted-backup-data").hexdigest())
 
     def test_quota_usage_sums_only_app_folder_files(self):
         client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})

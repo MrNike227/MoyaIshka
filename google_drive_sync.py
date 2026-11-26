@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -25,6 +27,26 @@ DRIVE_API = "https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 APP_FOLDER_NAME = "Moya Ishka Cloud"
+BACKUP_FOLDER_NAME = "Moya Ishka Backups"
+BACKUP_FORMAT_PROPERTY = "moya_backup_format"
+BACKUP_SHA_PROPERTY = "moya_backup_sha256"
+BACKUP_CHUNK_BYTES = 8 * 1024 * 1024
+MAX_BACKUP_FILE_BYTES = 2 * 1024 * 1024 * 1024 + 1024 * 1024
+
+
+def _validate_resumable_upload_ack(headers: Any, expected_end: int) -> None:
+    accepted_range = str(headers.get("Range", "") or "")
+    if not accepted_range or not accepted_range.endswith(f"-{expected_end}"):
+        raise GoogleDriveError("Google Drive не подтвердил полный блок загрузки. Локальная копия сохранена.")
+
+
+class _NoRedirectResumableUploadHandler(urllib.request.HTTPRedirectHandler):
+    """Treat Drive's HTTP 308 Resume Incomplete response as an upload ACK, not a redirect."""
+
+    def http_error_308(self, request, response, code, message, headers):
+        raise urllib.error.HTTPError(request.full_url, code, message, headers, response)
+
+
 VAULT_FILENAME = "moyaishka-vault.enc"
 APP_UA = "MoyaIshka/4.1.5.1 (Google Drive vault)"
 
@@ -35,6 +57,15 @@ class GoogleDriveError(RuntimeError):
 
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def backup_file_md5(path: str | Path) -> str:
+    """Return Drive's server-side MD5 checksum format for an uploaded binary file."""
+    digest = hashlib.md5()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -172,6 +203,7 @@ class GoogleDriveVaultClient:
         self.session = dict(session or {})
         self.timeout = max(8, min(int(timeout), 90))
         self._folder_id: str | None = None
+        self._backup_folder_id: str | None = None
 
     @staticmethod
     def authorize(client_id: str, client_secret: str) -> dict[str, Any]:
@@ -342,6 +374,270 @@ class GoogleDriveVaultClient:
                            content_type="application/json", query={"uploadType": "media", "fields": "id,name,modifiedTime"}, upload=True)
         result = _parse_json(raw, "vault update")
         return bool(isinstance(result, dict) and result.get("id"))
+
+    def _backup_folder(self) -> str:
+        """Create/find the app-owned backup subfolder under the app-owned Drive folder."""
+        if self._backup_folder_id:
+            return self._backup_folder_id
+        parent = self._folder()
+        safe_name = BACKUP_FOLDER_NAME.replace("'", "\\'")
+        rows = self._list(
+            f"name = '{safe_name}' and '{parent}' in parents "
+            "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        )
+        if rows:
+            self._backup_folder_id = str(rows[0]["id"])
+            return self._backup_folder_id
+        metadata = _json_bytes({
+            "name": BACKUP_FOLDER_NAME,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent],
+        })
+        raw, _ = self._api("POST", "/files", body=metadata, query={"fields": "id,name"})
+        result = _parse_json(raw, "create backup folder")
+        if not isinstance(result, dict) or not result.get("id"):
+            raise GoogleDriveError("Google Drive не вернул ID папки резервных копий.")
+        self._backup_folder_id = str(result["id"])
+        return self._backup_folder_id
+
+    def list_backup_files(self) -> list[dict[str, Any]]:
+        """List only encrypted backups created in MoyaIshka's private Drive folder."""
+        folder = self._backup_folder()
+        rows = self._list(
+            f"'{folder}' in parents and trashed = false",
+            fields="files(id,name,mimeType,modifiedTime,size,md5Checksum,appProperties)",
+        )
+        result = []
+        for row in rows:
+            properties = row.get("appProperties") if isinstance(row.get("appProperties"), dict) else {}
+            if properties.get(BACKUP_FORMAT_PROPERTY) != "1":
+                continue
+            if row.get("mimeType") == "application/vnd.google-apps.folder":
+                continue
+            try:
+                size = int(row.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if size <= 0 or size > MAX_BACKUP_FILE_BYTES:
+                continue
+            result.append({
+                "id": str(row.get("id", "")),
+                "name": str(row.get("name", "Резервная копия")),
+                "modified_time": str(row.get("modifiedTime", "")),
+                "size": size,
+                "sha256": str(properties.get(BACKUP_SHA_PROPERTY, "")),
+                "md5": str(row.get("md5Checksum", "")),
+                "app_version": str(properties.get("moya_app_version", "")),
+                "backup_kind": str(properties.get("moya_backup_kind", "")),
+            })
+        return result
+
+    def upload_backup_file(
+        self,
+        source_path: str | Path,
+        *,
+        remote_name: str,
+        sha256: str,
+        app_version: str = "",
+        backup_kind: str = "manual",
+    ) -> dict[str, Any]:
+        """Upload an encrypted archive using resumable chunks, bounded to 8 MiB RAM."""
+        source = Path(source_path).expanduser()
+        if source.is_symlink() or not source.is_file():
+            raise GoogleDriveError("Зашифрованный файл резервной копии не найден.")
+        source = source.resolve()
+        total = source.stat().st_size
+        if total <= 0 or total > MAX_BACKUP_FILE_BYTES:
+            raise GoogleDriveError("Размер зашифрованной резервной копии превышает предел 2 ГБ.")
+        if len(sha256) != 64:
+            raise GoogleDriveError("Для отправки резервной копии не передана контрольная сумма SHA-256.")
+        try:
+            int(sha256, 16)
+        except ValueError as exc:
+            raise GoogleDriveError("Контрольная сумма резервной копии имеет неверный формат.") from exc
+
+        self.ensure_fresh_session()
+        folder = self._backup_folder()
+        safe_name = Path(remote_name).name[:180]
+        if not safe_name.lower().endswith(".mibak"):
+            safe_name += ".mibak"
+        metadata = {
+            "name": safe_name,
+            "parents": [folder],
+            "mimeType": "application/octet-stream",
+            "appProperties": {
+                BACKUP_FORMAT_PROPERTY: "1",
+                BACKUP_SHA_PROPERTY: sha256.lower(),
+                "moya_app_version": str(app_version)[:40],
+                "moya_backup_kind": str(backup_kind)[:20],
+            },
+            "description": "MoyaIshka encrypted backup; AES-256-GCM",
+        }
+        local_md5 = backup_file_md5(source)
+        query = urllib.parse.urlencode({"uploadType": "resumable", "fields": "id,name,size,md5Checksum,modifiedTime,appProperties"})
+        request = urllib.request.Request(
+            DRIVE_UPLOAD_API + "/files?" + query,
+            data=_json_bytes(metadata),
+            headers={
+                "Authorization": "Bearer " + str(self.session.get("access_token", "")),
+                "User-Agent": APP_UA,
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": "application/octet-stream",
+                "X-Upload-Content-Length": str(total),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                upload_url = str(response.headers.get("Location", ""))
+        except urllib.error.HTTPError as exc:
+            raise GoogleDriveError(f"Не удалось начать загрузку резервной копии в Google Drive (HTTP {exc.code}): {_google_error(exc.read())}") from exc
+        except urllib.error.URLError as exc:
+            raise GoogleDriveError(f"Не удалось начать загрузку в Google Drive: {exc.reason}") from exc
+        parsed_upload_url = urllib.parse.urlsplit(upload_url)
+        if parsed_upload_url.scheme != "https" or not (
+            parsed_upload_url.hostname == "googleapis.com"
+            or str(parsed_upload_url.hostname or "").endswith(".googleapis.com")
+        ):
+            raise GoogleDriveError("Google Drive вернул небезопасный адрес загрузки.")
+
+        result: dict[str, Any] | None = None
+        offset = 0
+        upload_opener = urllib.request.build_opener(_NoRedirectResumableUploadHandler())
+        with source.open("rb") as stream:
+            while offset < total:
+                chunk = stream.read(min(BACKUP_CHUNK_BYTES, total - offset))
+                if not chunk:
+                    raise GoogleDriveError("Локальный файл резервной копии неожиданно оборвался.")
+                end = offset + len(chunk) - 1
+                chunk_request = urllib.request.Request(
+                    upload_url,
+                    data=chunk,
+                    headers={
+                        "Authorization": "Bearer " + str(self.session.get("access_token", "")),
+                        "User-Agent": APP_UA,
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(len(chunk)),
+                        "Content-Range": f"bytes {offset}-{end}/{total}",
+                    },
+                    method="PUT",
+                )
+                try:
+                    with upload_opener.open(chunk_request, timeout=max(self.timeout, 90)) as response:
+                        raw = response.read(1024 * 1024)
+                        status = int(getattr(response, "status", 200) or 200)
+                        if status in {200, 201}:
+                            payload = _parse_json(raw, "backup upload")
+                            if isinstance(payload, dict):
+                                result = payload
+                            offset = end + 1
+                            break
+                        raise GoogleDriveError(f"Google Drive вернул неожиданный статус загрузки: HTTP {status}.")
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 308:
+                        try:
+                            _validate_resumable_upload_ack(exc.headers, end)
+                        except GoogleDriveError as ack_error:
+                            raise ack_error from exc
+                        offset = end + 1
+                        continue
+                    raise GoogleDriveError(f"Не удалось загрузить блок резервной копии (HTTP {exc.code}): {_google_error(exc.read())}") from exc
+                except urllib.error.URLError as exc:
+                    raise GoogleDriveError(f"Загрузка резервной копии прервана из-за сети: {exc.reason}") from exc
+        if not isinstance(result, dict) or not result.get("id"):
+            raise GoogleDriveError("Google Drive не подтвердил завершение загрузки резервной копии.")
+        if int(result.get("size", total) or total) != total:
+            raise GoogleDriveError("Размер резервной копии в Google Drive не совпал с отправленным. Локальный файл сохранён.")
+        returned_props = result.get("appProperties") if isinstance(result.get("appProperties"), dict) else {}
+        if str(returned_props.get(BACKUP_SHA_PROPERTY, "")) != sha256.lower():
+            raise GoogleDriveError("Google Drive не подтвердил SHA-256 загруженной резервной копии.")
+        if str(result.get("md5Checksum", "")).lower() != local_md5:
+            raise GoogleDriveError("Контрольная сумма файла, рассчитанная Google Drive, не совпала. Локальная копия сохранена.")
+        return result
+
+    def download_backup_file(self, file_id: str, destination_path: str | Path) -> dict[str, int | str]:
+        """Stream a cloud archive to disk without buffering the complete file."""
+        clean_id = str(file_id or "").strip()
+        if not clean_id or len(clean_id) > 256:
+            raise GoogleDriveError("ID резервной копии Google Drive имеет неверный формат.")
+        self.ensure_fresh_session()
+        url = DRIVE_API + "/files/" + urllib.parse.quote(clean_id, safe="") + "?alt=media"
+        request = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + str(self.session.get("access_token", "")),
+            "User-Agent": APP_UA,
+            "Accept": "application/octet-stream",
+        })
+        destination = Path(destination_path).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".download")
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.timeout, 90)) as response, temporary.open("wb") as stream:
+                expected = str(response.headers.get("Content-Length", "")).strip()
+                expected_size = int(expected) if expected.isdigit() else None
+                if expected_size is not None and (expected_size <= 0 or expected_size > MAX_BACKUP_FILE_BYTES):
+                    raise GoogleDriveError("Облачная копия имеет недопустимый размер.")
+                while True:
+                    chunk = response.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_BACKUP_FILE_BYTES:
+                        raise GoogleDriveError("Размер скачиваемой резервной копии превышает предел 2 ГБ.")
+                    digest.update(chunk)
+                    stream.write(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if expected_size is not None and total != expected_size:
+                raise GoogleDriveError("Скачанная резервная копия неполная. Исходные данные не затронуты.")
+            if total <= 0:
+                raise GoogleDriveError("Google Drive вернул пустой файл резервной копии.")
+            os.replace(temporary, destination)
+            return {"size": total, "sha256": digest.hexdigest()}
+        except GoogleDriveError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except urllib.error.HTTPError as exc:
+            temporary.unlink(missing_ok=True)
+            raise GoogleDriveError(f"Не удалось скачать резервную копию (HTTP {exc.code}): {_google_error(exc.read())}") from exc
+        except urllib.error.URLError as exc:
+            temporary.unlink(missing_ok=True)
+            raise GoogleDriveError(f"Не удалось скачать резервную копию: {exc.reason}") from exc
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            raise GoogleDriveError(f"Не удалось сохранить резервную копию: {exc}") from exc
+
+    def delete_backup_file(self, file_id: str) -> bool:
+        clean_id = str(file_id or "").strip()
+        if not clean_id or len(clean_id) > 256:
+            raise GoogleDriveError("ID резервной копии Google Drive имеет неверный формат.")
+        encoded = urllib.parse.quote(clean_id, safe="")
+        self._api("DELETE", f"/files/{encoded}")
+        return True
+
+    def prune_backup_files(self, keep_count: int = 7) -> int:
+        """Keep the newest N cloud backups and delete only app-owned backup objects."""
+        keep = max(1, min(50, int(keep_count)))
+        items = sorted(
+            self.list_backup_files(),
+            key=lambda item: (str(item.get("modified_time", "")), str(item.get("name", ""))),
+            reverse=True,
+        )
+        deleted = 0
+        for item in items[keep:]:
+            self.delete_backup_file(str(item["id"]))
+            deleted += 1
+        return deleted
+
+    def get_backup_folder_usage(self) -> int:
+        """Return bytes used by actual encrypted backup objects (inside the backup subfolder)."""
+        folder = self._backup_folder()
+        items = self._list(
+            f"'{folder}' in parents and trashed = false",
+            fields="files(id,name,size)",
+        )
+        return sum(max(0, int(item.get("size", 0) or 0)) for item in items)
 
     def get_app_folder_usage(self) -> int:
         """Return bytes used by files in the app folder (not the whole Google account)."""

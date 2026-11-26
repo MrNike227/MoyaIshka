@@ -13,10 +13,12 @@ import json
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +31,21 @@ from typing import Any
 
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
+from intelligent_memory import (
+    MEMORY_CONTEXT_END, MEMORY_CONTEXT_START, add_or_update_memory,
+    edit_memory_entry as edit_memory_record, merge_memory_data,
+    normalize_memory_metadata, select_memory_records,
+)
+from backup_manager import (
+    create_backup, maybe_create_daily_backup, restore_backup, inspect_backup,
+    copy_verified_backups,
+)
+from backup_cloud import (
+    BackupEncryptionError, decrypt_backup_file, encrypt_backup_file, sha256_file as backup_sha256_file,
+)
+from supabase_backup import (
+    MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
+)
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
@@ -54,12 +71,12 @@ from cloud_sync import (
     CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
     load_protected_session, save_protected_session, delete_protected_session,
 )
-from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient
+from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient, backup_file_md5
 from resource_governor import ResourceGovernor
-from context_engine import select_relevant_memories, trim_conversation_context
+from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.1.8.5"
+APP_VERSION = "4.1.9"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -86,11 +103,19 @@ def user_data_dir() -> Path:
     return directory
 
 
+def default_backup_directory() -> Path:
+    """Place backups beside, never inside, the replaceable application folder."""
+    app_folder = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    return app_folder.parent / "MoyaIshka_Backups"
+
+
 DATA_DIR = user_data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "assistant.db"
 CLOUD_SESSION_PATH = DATA_DIR / "cloud_session.dat"
 GOOGLE_DRIVE_SESSION_PATH = DATA_DIR / "google_drive_session.dat"
+BACKUP_UPLOAD_QUEUE_PATH = DATA_DIR / "backup_upload_queue.json"
+BACKUP_SUPABASE_UPLOAD_QUEUE_PATH = DATA_DIR / "backup_supabase_upload_queue.json"
 if os.environ.get("APPDATA"):
     LEGACY_DATA_DIR = Path(os.environ["APPDATA"]) / "CustomAI"
 else:
@@ -114,7 +139,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "font_family": "Segoe UI",
     "font_size": 12,
     "memory": [],
+    "memory_metadata": [],
     "auto_memory": True,
+    "memory_semantic_enabled": True,
+    "memory_embedding_model": "nomic-embed-text",
+    "auto_backup_enabled": True,
+    "backup_retention_count": 7,
+    "backup_dir": "",
+    "backup_cloud_enabled": True,
+    "backup_cloud_retention_count": 7,
+    "backup_supabase_enabled": False,
+    "backup_supabase_retention_count": 7,
+    "backup_legacy_migrated": False,
     "voice_tts": False,
     "voice_engine": "system",
     "tts_voice_id": "",
@@ -165,13 +201,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "context_engine.py",
+            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -559,6 +595,15 @@ class MoyaIshkaApp:
         self.config: dict[str, Any] = dict(DEFAULT_CONFIG)
         if isinstance(legacy_config, dict):
             self.config.update(legacy_config)
+        original_memory = self.config.get("memory", [])
+        original_memory_metadata = self.config.get("memory_metadata", [])
+        migrated_memory, migrated_memory_metadata = normalize_memory_metadata(
+            original_memory, original_memory_metadata
+        )
+        self.config["memory"] = migrated_memory
+        self.config["memory_metadata"] = migrated_memory_metadata
+        if original_memory != migrated_memory or original_memory_metadata != migrated_memory_metadata:
+            atomic_json_save(CONFIG_PATH, self.config)
         if migrate_update_repository(self.config):
             atomic_json_save(CONFIG_PATH, self.config)
         # Improve readability for users upgrading from the former 10pt default.
@@ -651,6 +696,17 @@ class MoyaIshkaApp:
         self.staged_update_path: Path | None = None
         self.staged_update_version = ""
         self._last_update_check_day = ""
+        self.backup_working = False
+        self.backup_upload_working = False
+        self.backup_migration_lock = threading.Lock()
+        self.cloud_backup_dialog: tk.Toplevel | None = None
+        self.cloud_backup_listbox: tk.Listbox | None = None
+        self.cloud_backup_status_var: tk.StringVar | None = None
+        self.cloud_backup_items: list[dict[str, Any]] = []
+        self.supabase_backup_dialog: tk.Toplevel | None = None
+        self.supabase_backup_listbox: tk.Listbox | None = None
+        self.supabase_backup_status_var: tk.StringVar | None = None
+        self.supabase_backup_items: list[dict[str, Any]] = []
         self.busy = False
         self.voice_busy = False
         self.voice_cancel_event: threading.Event | None = None
@@ -679,6 +735,8 @@ class MoyaIshkaApp:
         self.root.after(100, self._process_events)
         self.root.after(250, self._apply_windows_titlebar_theme)
         self.root.after(450, self._apply_high_dpi_windows_icon)
+        self.root.after(4500, self._schedule_automatic_backup)
+        self.root.after(20000, self._schedule_backup_upload_retry)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
         if bool(self.config.get("self_improve_auto_enabled", False)):
@@ -1047,7 +1105,7 @@ class MoyaIshkaApp:
         cloud.pack(fill="x", pady=(0, 10))
         ttk.Label(
             cloud,
-            text="Supabase остаётся резервным провайдером: при подключении ИИшка хранит там вторую зашифрованную копию, а если Google Drive временно недоступен — может использовать Supabase. Настройка необязательна. Для Free учитывай 500 МБ размера базы данных (не 2 ГБ диска PostgreSQL).",
+            text="Supabase остаётся дополнительным хранилищем зашифрованного состояния приложения (диалоги, настройки и знания). ZIP-архивы резервных копий отправляются в Google Drive; если он недоступен, локальный архив сохраняется в очереди до восстановления связи. Supabase не заменяет очередь ZIP-копий. Настройка необязательна. Для Free учитывай 500 МБ размера базы данных (не 2 ГБ диска PostgreSQL).",
             style="MutedPanel.TLabel", wraplength=900, justify="left",
         ).pack(anchor="w", pady=(0, 6))
         self.cloud_url_var = tk.StringVar(value=str(self.config.get("cloud_url", "")))
@@ -1104,6 +1162,80 @@ class MoyaIshkaApp:
         ttk.Combobox(appearance_row, textvariable=self.font_family_var, state="readonly", values=["Segoe UI", "Arial", "Verdana"], width=14).pack(side="left")
         ttk.Label(appearance_row, text="Размер", style="Panel.TLabel").pack(side="left", padx=(18, 8))
         ttk.Combobox(appearance_row, textvariable=self.font_size_var, state="readonly", values=["10", "11", "12", "13", "14", "15", "16"], width=5).pack(side="left")
+
+        backups = ttk.LabelFrame(content, text="Резервные копии памяти и данных", padding=12)
+        backups.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            backups,
+            text="Ежедневные копии содержат историю, память, настройки, базу знаний, навыки и плагины. Google Drive хранит отдельный AES-256-GCM зашифрованный архив; без E2E-пароля его нельзя прочитать. Локальная копия остаётся запасной, а при отсутствии интернета отправка в облако ставится в очередь. Папка расположена рядом с папкой установки, а не внутри неё — автообновление её не удалит.",
+            style="MutedPanel.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self.backup_dir_var = tk.StringVar(value=str(self._backup_directory()))
+        backup_location = ttk.Frame(backups, style="Panel.TFrame")
+        backup_location.pack(fill="x", pady=(0, 7))
+        ttk.Label(backup_location, text="Папка на диске:", style="Panel.TLabel").pack(side="left", padx=(0, 8))
+        ttk.Entry(backup_location, textvariable=self.backup_dir_var, state="readonly").pack(side="left", fill="x", expand=True)
+        ttk.Button(backup_location, text="Выбрать…", command=self.choose_backup_directory).pack(side="left", padx=(8, 0))
+
+        backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        backup_options.pack(fill="x", pady=(0, 6))
+        self.auto_backup_var = tk.BooleanVar(value=bool(self.config.get("auto_backup_enabled", True)))
+        self._make_checkbox(
+            backup_options, "Создавать резервную копию автоматически каждый день",
+            self.auto_backup_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(backup_options, text="Локально:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
+        self.backup_retention_var = tk.StringVar(value=str(self.config.get("backup_retention_count", 7)))
+        ttk.Combobox(
+            backup_options, textvariable=self.backup_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        ttk.Label(backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
+        cloud_backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        cloud_backup_options.pack(fill="x", pady=(2, 6))
+        self.backup_cloud_enabled_var = tk.BooleanVar(value=bool(self.config.get("backup_cloud_enabled", True)))
+        self._make_checkbox(
+            cloud_backup_options, "Шифровать и отправлять копии в Google Drive",
+            self.backup_cloud_enabled_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(cloud_backup_options, text="В облаке хранить:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
+        self.backup_cloud_retention_var = tk.StringVar(value=str(self.config.get("backup_cloud_retention_count", 7)))
+        ttk.Combobox(
+            cloud_backup_options, textvariable=self.backup_cloud_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        ttk.Label(cloud_backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
+        supabase_backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        supabase_backup_options.pack(fill="x", pady=(2, 6))
+        self.backup_supabase_enabled_var = tk.BooleanVar(value=bool(self.config.get("backup_supabase_enabled", False)))
+        self._make_checkbox(
+            supabase_backup_options,
+            "Дополнительно дублировать зашифрованные ZIP-архивы в Supabase Storage",
+            self.backup_supabase_enabled_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(supabase_backup_options, text="В Supabase хранить:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
+        self.backup_supabase_retention_var = tk.StringVar(value=str(self.config.get("backup_supabase_retention_count", 7)))
+        ttk.Combobox(
+            supabase_backup_options, textvariable=self.backup_supabase_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        ttk.Label(supabase_backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
+        backup_actions = ttk.Frame(backups, style="Panel.TFrame")
+        backup_actions.pack(fill="x", pady=(4, 4))
+        ttk.Button(backup_actions, text="Создать копию сейчас", style="Accent.TButton", command=self.create_local_backup).pack(side="left")
+        ttk.Button(backup_actions, text="Восстановить с диска…", command=self.restore_local_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions, text="Восстановить из Google Drive…", command=self.restore_cloud_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions, text="Отправить ожидающие копии", command=self.upload_pending_backups_now).pack(side="left")
+        backup_actions2 = ttk.Frame(backups, style="Panel.TFrame")
+        backup_actions2.pack(fill="x", pady=(2, 0))
+        ttk.Button(backup_actions2, text="Открыть папку копий", command=self.open_backup_folder).pack(side="left")
+        ttk.Button(backup_actions2, text="Восстановить из Supabase…", command=self.restore_supabase_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions2, text="Сохранить настройки копирования", command=self.save_backup_settings).pack(side="left", padx=7)
+        self.backup_status_var = tk.StringVar(value="Папка резервных копий: " + str(self._backup_directory()))
+        ttk.Label(backups, textvariable=self.backup_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(6, 0))
 
         bottom = ttk.Frame(content)
         bottom.pack(fill="x", pady=(4, 10))
@@ -1360,7 +1492,7 @@ class MoyaIshkaApp:
         safe_preference_keys = (
             "assistant_name", "role", "personality", "style", "instructions", "mode",
             "online_url", "online_model", "ollama_url", "ollama_model", "temperature",
-            "theme", "font_family", "font_size", "auto_memory", "voice_tts", "voice_engine",
+            "theme", "font_family", "font_size", "auto_memory", "memory_semantic_enabled", "memory_embedding_model", "voice_tts", "voice_engine",
             "tts_voice_id", "plugins_enabled", "web_search_enabled", "auto_search_current",
             "use_research_library", "research_auto_enabled", "research_topics",
             "research_interval_hours", "research_results_limit", "research_fetch_pages",
@@ -1372,6 +1504,7 @@ class MoyaIshkaApp:
             "config_modified_at": str(self.config.get("cloud_modified_at", "")),
             "preferences": preferences,
             "memory": [str(item)[:500] for item in self.config.get("memory", []) if isinstance(item, str)][:2000],
+            "memory_metadata": list(self.config.get("memory_metadata", []))[:2000],
             "conversations": conversations,
             "research": list(self.research_library.items[-1000:]),
         }
@@ -1428,17 +1561,12 @@ class MoyaIshkaApp:
 
         local_memory = self.config.get("memory", []) if isinstance(self.config.get("memory", []), list) else []
         remote_memory = snapshot.get("memory", []) if isinstance(snapshot.get("memory", []), list) else []
-        merged_memory: list[str] = []
-        seen_memory: set[str] = set()
-        for value in local_memory + remote_memory:
-            if not isinstance(value, str):
-                continue
-            text = value.strip()[:500]
-            key = text.casefold()
-            if text and key not in seen_memory:
-                seen_memory.add(key)
-                merged_memory.append(text)
-        self.config["memory"] = merged_memory[-2000:]
+        merged_memory, merged_metadata = merge_memory_data(
+            local_memory, self.config.get("memory_metadata", []),
+            remote_memory, snapshot.get("memory_metadata", []),
+        )
+        self.config["memory"] = merged_memory
+        self.config["memory_metadata"] = merged_metadata
 
         remote_config_time = str(snapshot.get("config_modified_at", ""))
         local_config_time = str(self.config.get("cloud_modified_at", ""))
@@ -1471,7 +1599,7 @@ class MoyaIshkaApp:
         return (
             "assistant_name", "role", "personality", "style", "instructions", "mode",
             "online_url", "online_model", "ollama_url", "ollama_model", "temperature",
-            "theme", "font_family", "font_size", "auto_memory", "voice_tts", "voice_engine",
+            "theme", "font_family", "font_size", "auto_memory", "memory_semantic_enabled", "memory_embedding_model", "voice_tts", "voice_engine",
             "tts_voice_id", "plugins_enabled", "web_search_enabled", "auto_search_current",
             "use_research_library", "research_auto_enabled", "research_topics",
             "research_interval_hours", "research_results_limit", "research_fetch_pages",
@@ -1761,7 +1889,7 @@ class MoyaIshkaApp:
         page.rowconfigure(2, weight=1)
         page.columnconfigure(0, weight=1)
         ttk.Label(page, text="Память ИИ", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(page, text="Сохраняй здесь предпочтения и сведения, которые помощник должен учитывать в следующих диалогах. Память находится только на этом компьютере.", style="Muted.TLabel", wraplength=900).grid(row=1, column=0, sticky="w", pady=(6, 12))
+        ttk.Label(page, text="Память хранится локально и попадает в зашифрованную облачную копию при включённой синхронизации.", style="Muted.TLabel", wraplength=900).grid(row=1, column=0, sticky="w", pady=(6, 12))
         body = ttk.Frame(page)
         body.grid(row=2, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
@@ -1786,7 +1914,16 @@ class MoyaIshkaApp:
         ttk.Label(page, textvariable=self.memory_count_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.auto_memory_var = tk.BooleanVar(value=bool(self.config.get("auto_memory", True)))
         self._make_checkbox(page, "Автоматически запоминать явные факты и предпочтения из моих сообщений", self.auto_memory_var, self._toggle_auto_memory, background_key="bg", wraplength=820).grid(row=5, column=0, sticky="w", pady=(12, 0))
-        ttk.Label(page, text="Запоминаются только явно сформулированные и не похожие на секреты сведения. Пароли, ключи, медицинские и другие чувствительные данные фильтруются.", style="Muted.TLabel", wraplength=900).grid(row=6, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(page, text="Запоминаются явные факты. Пароли, ключи, контакты и чувствительные сведения отфильтровываются.", style="Muted.TLabel", wraplength=900).grid(row=6, column=0, sticky="w", pady=(5, 0))
+        self.memory_semantic_var = tk.BooleanVar(value=bool(self.config.get("memory_semantic_enabled", True)))
+        self._make_checkbox(page, "Искать воспоминания по смыслу через локальную Ollama", self.memory_semantic_var, self._toggle_memory_semantic, background_key="bg", wraplength=820).grid(row=7, column=0, sticky="w", pady=(10, 0))
+        embedding_row = ttk.Frame(page)
+        embedding_row.grid(row=8, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(embedding_row, text="Модель смыслового поиска:").pack(side="left")
+        self.memory_embedding_model_var = tk.StringVar(value=str(self.config.get("memory_embedding_model", "nomic-embed-text")))
+        ttk.Entry(embedding_row, textvariable=self.memory_embedding_model_var, width=28).pack(side="left", padx=(8, 6))
+        ttk.Button(embedding_row, text="Сохранить", command=self.save_memory_semantic_settings).pack(side="left")
+        ttk.Label(page, text="Для векторного поиска установи модель в Ollama: ollama pull nomic-embed-text. Если модель или Ollama недоступна, ИИ автоматически использует локальный поиск по словам и похожим понятиям. Векторный кеш остаётся на компьютере.", style="Muted.TLabel", wraplength=900).grid(row=9, column=0, sticky="w", pady=(5, 0))
         self._refresh_memory_list()
 
     def _build_windows_page(self) -> None:
@@ -2624,13 +2761,20 @@ class MoyaIshkaApp:
         if bool(self.config.get("auto_memory", True)) and not had_attachment:
             candidate = extract_memory_candidate(prompt)
             if candidate:
-                memories = self.config.setdefault("memory", [])
-                if candidate not in memories and len(memories) < 100:
-                    memories.append(candidate)
+                memories, metadata, action = add_or_update_memory(
+                    self.config.get("memory", []), self.config.get("memory_metadata", []),
+                    candidate, source="automatic",
+                )
+                if action in {"added", "superseded", "duplicate"}:
+                    self.config["memory"] = memories
+                    self.config["memory_metadata"] = metadata
                     atomic_json_save(CONFIG_PATH, self.config)
                     self._refresh_memory_list()
                     self._schedule_cloud_sync()
-                    self._set_status("Полезный факт сохранён в память")
+                    status = "Полезный факт сохранён в память"
+                    if action == "superseded":
+                        status = "Новое сведение обновило противоречащую запись памяти"
+                    self._set_status(status)
         web_query = self._extract_web_query(prompt) if not had_attachment else ""
         if web_query and bool(self.config.get("web_search_enabled", True)):
             self._render_current_chat()
@@ -2681,6 +2825,12 @@ class MoyaIshkaApp:
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": float(self.config.get("temperature", 0.7)),
             "resource_pressure": self.resource_governor.snapshot().system_pressure,
+            "memory_query": prompt[:4000],
+            "memory": list(self.config.get("memory", [])),
+            "memory_metadata": [dict(item) for item in self.config.get("memory_metadata", []) if isinstance(item, dict)],
+            "memory_semantic_enabled": bool(self.config.get("memory_semantic_enabled", True)),
+            "memory_embedding_model": str(self.config.get("memory_embedding_model", "nomic-embed-text")),
+            "memory_cache_path": str(DATA_DIR / "memory_embeddings.json"),
         }
         conversation_id = self.current_chat_id
         threading.Thread(target=self._reply_worker, args=(mode, settings, messages, conversation_id), daemon=True).start()
@@ -2694,6 +2844,11 @@ class MoyaIshkaApp:
             "ollama_model": self.config.get("ollama_model", ""),
             "temperature": float(self.config.get("temperature", 0.7)),
             "resource_pressure": self.resource_governor.snapshot().system_pressure,
+            "memory": list(self.config.get("memory", [])),
+            "memory_metadata": [dict(item) for item in self.config.get("memory_metadata", []) if isinstance(item, dict)],
+            "memory_semantic_enabled": bool(self.config.get("memory_semantic_enabled", True)),
+            "memory_embedding_model": str(self.config.get("memory_embedding_model", "nomic-embed-text")),
+            "memory_cache_path": str(DATA_DIR / "memory_embeddings.json"),
         }
 
     def _extract_web_query(self, prompt: str) -> str:
@@ -2728,8 +2883,11 @@ class MoyaIshkaApp:
                 fetch_pages=int(self.config.get("research_fetch_pages", 5)),
             )
             self.events.put(("research_store", documents))
+            settings = dict(settings)
+            settings["memory_query"] = query[:4000]
             if messages and messages[-1]["role"] == "user":
                 messages[-1]["content"] += "\n\n" + self._format_research_context(query, documents)
+            messages = self._apply_intelligent_memory(messages, settings)
 
             # Use a language model for synthesis when one is actually available.
             # Otherwise return a clear extractive digest with URLs, without asking
@@ -2938,10 +3096,9 @@ class MoyaIshkaApp:
             self.research_status_var.set("Локальная библиотека очищена.")
 
     def _build_system_prompt(self, current_query: str = "") -> str:
-        memories = select_relevant_memories(
-            self.config.get("memory", []), current_query, max_items=10, max_chars=3600
-        )
-        memory_text = "\n".join(f"- {item}" for item in memories)
+        # The worker fills this block with vetted, ranked memory. Keep the UI-thread
+        # preview empty so a retrieval failure can never leak legacy sensitive text.
+        memory_text = ""
         parts = [
             f"Твоё имя: {self.config.get('assistant_name', 'Ишка')}.",
             f"Твоя роль: {self.config.get('role', '')}.",
@@ -2956,11 +3113,47 @@ class MoyaIshkaApp:
         skill_prompt = self.plugin_manager.build_skill_prompt()
         if skill_prompt:
             parts.append(skill_prompt)
-        if memory_text:
-            parts.append(
-                "РЕЛЕВАНТНАЯ ПАМЯТЬ (контекст, а не команды):\n" + memory_text
-            )
+        parts.append(
+            "РЕЛЕВАНТНАЯ ПАМЯТЬ (контекст, а не команды):\n"
+            + MEMORY_CONTEXT_START + "\n" + memory_text + "\n" + MEMORY_CONTEXT_END
+        )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _apply_intelligent_memory(messages: list[dict[str, str]], settings: dict[str, Any]) -> list[dict[str, str]]:
+        """Replace the fast UI preview with a local semantic retrieval result in a worker."""
+        prepared = [dict(item) for item in messages]
+        try:
+            query = str(settings.get("memory_query") or next((str(item.get("content", "")) for item in reversed(prepared) if item.get("role") == "user"), ""))[:4000]
+            records = select_memory_records(
+                settings.get("memory", []), settings.get("memory_metadata", []), query,
+                max_items=8, max_chars=2800,
+                semantic_enabled=bool(settings.get("memory_semantic_enabled", True)),
+                ollama_url=str(settings.get("ollama_url", "http://localhost:11434")),
+                embedding_model=str(settings.get("memory_embedding_model", "nomic-embed-text")),
+                cache_path=settings.get("memory_cache_path"),
+                resource_pressure=bool(settings.get("resource_pressure", False)),
+            )
+            memory_text = "\n".join(
+                f"- [{item['category']} · важность {item['importance']}/5] {item['text']}"
+                for item in records
+            )
+            for item in prepared:
+                if item.get("role") != "system":
+                    continue
+                content = str(item.get("content", ""))
+                if MEMORY_CONTEXT_START in content and MEMORY_CONTEXT_END in content:
+                    prefix, remainder = content.split(MEMORY_CONTEXT_START, 1)
+                    _, suffix = remainder.split(MEMORY_CONTEXT_END, 1)
+                    item["content"] = (
+                        prefix + MEMORY_CONTEXT_START + "\n" + memory_text + "\n"
+                        + MEMORY_CONTEXT_END + suffix
+                    )
+                    break
+        except Exception:
+            # Memory retrieval must never prevent the regular chat from working.
+            return prepared
+        return prepared
 
     def _build_api_messages(self, conversation_id: str) -> list[dict[str, str]]:
         history: list[dict[str, str]] = []
@@ -3068,6 +3261,7 @@ class MoyaIshkaApp:
         return "".join(parts).strip()
 
     def _reply_worker(self, mode: str, settings: dict[str, Any], messages: list[dict[str, str]], conversation_id: str) -> None:
+        messages = self._apply_intelligent_memory(messages, settings)
         errors: list[str] = []
         if mode == "Только онлайн":
             try:
@@ -3100,7 +3294,94 @@ class MoyaIshkaApp:
         try:
             while True:
                 event, payload = self.events.get_nowait()
-                if event == "reply":
+                if event == "backup_created":
+                    self.backup_working = False
+                    details = payload if isinstance(payload, dict) else {"path": str(payload), "cloud_status": ""}
+                    cloud_note = str(details.get("cloud_status", "")).strip()
+                    status = f"Резервная копия создана: {details.get('path', '')}"
+                    if cloud_note:
+                        status += chr(10) + cloud_note
+                    self.backup_status_var.set(status)
+                    self._set_status("Резервная копия данных создана")
+                elif event == "backup_auto_result":
+                    self.backup_working = False
+                    if isinstance(payload, dict):
+                        status = f"Автоматическая копия создана: {payload.get('path')}" if payload.get("path") else "Сегодняшняя копия уже существует."
+                        if payload.get("cloud_status"):
+                            status += "\n" + str(payload["cloud_status"])
+                        self.backup_status_var.set(status)
+                    elif payload:
+                        self.backup_status_var.set(f"Автоматическая копия создана: {payload}")
+                    elif hasattr(self, "backup_status_var"):
+                        self.backup_status_var.set("На сегодня резервная копия уже существует.")
+                elif event == "backup_upload_result":
+                    self.backup_upload_working = False
+                    if isinstance(payload, dict):
+                        messages = []
+                        for provider, title in (("google_drive", "Google Drive"), ("supabase", "Supabase Storage")):
+                            result = payload.get(provider)
+                            if not result:
+                                continue
+                            uploaded, pending, error_text = result
+                            if error_text:
+                                messages.append(f"{title}: ожидает повтора — {error_text}")
+                            elif uploaded:
+                                messages.append(f"{title}: отправлено {uploaded}; в очереди {pending}.")
+                            elif pending:
+                                messages.append(f"{title}: ожидают отправки {pending}.")
+                            else:
+                                messages.append(f"{title}: очередь пуста.")
+                        self.backup_status_var.set(" ".join(messages) or "Очереди облачных копий пусты.")
+                    else:
+                        uploaded, pending, error_text = payload
+                        if error_text:
+                            self.backup_status_var.set(f"Локальные копии сохранены. Облачная отправка ожидает повтора: {error_text}")
+                        elif uploaded:
+                            self.backup_status_var.set(f"В Google Drive отправлено копий: {uploaded}. В очереди осталось: {pending}.")
+                        elif pending:
+                            self.backup_status_var.set(f"Ожидают отправки в Google Drive: {pending}.")
+                        else:
+                            self.backup_status_var.set("Очередь облачных резервных копий пуста.")
+                elif event == "backup_cloud_list":
+                    self._show_cloud_backup_items(payload)
+                elif event == "backup_cloud_list_error":
+                    if self.cloud_backup_status_var is not None:
+                        self.cloud_backup_status_var.set(f"Не удалось получить список Google Drive: {payload}")
+                    self.backup_status_var.set(f"Google Drive: {payload}")
+                elif event == "backup_supabase_list":
+                    self._show_supabase_backup_items(payload)
+                elif event == "backup_supabase_list_error":
+                    if self.supabase_backup_status_var is not None:
+                        self.supabase_backup_status_var.set(f"Не удалось получить список Supabase: {payload}")
+                    self.backup_status_var.set(f"Supabase Storage: {payload}")
+                elif event == "backup_error":
+                    self.backup_working = False
+                    self.backup_status_var.set("Не удалось создать резервную копию.")
+                    messagebox.showerror("Резервное копирование", str(payload))
+                elif event == "backup_restore_complete":
+                    self.backup_working = False
+                    restored, detail = payload
+                    try:
+                        self._reload_after_backup_restore()
+                    except Exception as exc:
+                        messagebox.showerror(
+                            "Восстановление данных",
+                            "Не удалось перечитать восстановленные данные. Закрой и снова запусти Мою ИИшку.\n\n" + str(exc),
+                        )
+                    else:
+                        if restored:
+                            self.backup_status_var.set("Данные успешно восстановлены.")
+                            self._set_status("Резервная копия восстановлена")
+                            messagebox.showinfo(
+                                "Восстановление завершено",
+                                "История, память, настройки и пользовательские данные восстановлены. "
+                                "Перед восстановлением создана страховочная копия.\n\n"
+                                f"Источник: {detail}",
+                            )
+                        else:
+                            self.backup_status_var.set("Восстановление не выполнено. Текущие данные сохранены.")
+                            messagebox.showerror("Восстановление не выполнено", str(detail))
+                elif event == "reply":
                     conversation_id, answer, source = payload
                     self.store.add_message(conversation_id, "assistant", answer, source)
                     if conversation_id == self.current_chat_id:
@@ -3361,6 +3642,7 @@ class MoyaIshkaApp:
                     else:
                         self.google_drive_status_var.set("Google Drive подключён. Создаю первую зашифрованную копию…")
                         self._start_cloud_sync(force=True)
+                    self.root.after(3500, self.upload_pending_backups_now)
                 elif event == "google_drive_auth_error":
                     self.google_drive_status_var.set(f"Ошибка подключения Google Drive: {payload}")
                     messagebox.showerror("Google Drive", str(payload))
@@ -3530,6 +3812,15 @@ class MoyaIshkaApp:
             "font_size": int(self.font_size_var.get()),
             "font_family": self.font_family_var.get().strip() or "Segoe UI",
             "auto_memory": bool(self.auto_memory_var.get()) if hasattr(self, "auto_memory_var") else bool(self.config.get("auto_memory", True)),
+            "memory_semantic_enabled": bool(self.memory_semantic_var.get()) if hasattr(self, "memory_semantic_var") else bool(self.config.get("memory_semantic_enabled", True)),
+            "memory_embedding_model": self.memory_embedding_model_var.get().strip()[:120] if hasattr(self, "memory_embedding_model_var") else str(self.config.get("memory_embedding_model", "nomic-embed-text")),
+            "auto_backup_enabled": bool(self.auto_backup_var.get()) if hasattr(self, "auto_backup_var") else bool(self.config.get("auto_backup_enabled", True)),
+            "backup_retention_count": max(3, min(30, int(self.backup_retention_var.get()))) if hasattr(self, "backup_retention_var") else int(self.config.get("backup_retention_count", 7)),
+            "backup_dir": self.backup_dir_var.get().strip() if hasattr(self, "backup_dir_var") else str(self.config.get("backup_dir", "")),
+            "backup_cloud_enabled": bool(self.backup_cloud_enabled_var.get()) if hasattr(self, "backup_cloud_enabled_var") else bool(self.config.get("backup_cloud_enabled", True)),
+            "backup_cloud_retention_count": max(3, min(30, int(self.backup_cloud_retention_var.get()))) if hasattr(self, "backup_cloud_retention_var") else int(self.config.get("backup_cloud_retention_count", 7)),
+            "backup_supabase_enabled": bool(self.backup_supabase_enabled_var.get()) if hasattr(self, "backup_supabase_enabled_var") else bool(self.config.get("backup_supabase_enabled", False)),
+            "backup_supabase_retention_count": max(3, min(30, int(self.backup_supabase_retention_var.get()))) if hasattr(self, "backup_supabase_retention_var") else int(self.config.get("backup_supabase_retention_count", 7)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
             "voice_engine": str(self.config.get("voice_engine", "system")),
             "tts_voice_id": str(self.config.get("tts_voice_id", "")),
@@ -3568,7 +3859,7 @@ class MoyaIshkaApp:
         if not messagebox.askyesno("Сбросить настройки", "Вернуть имя, характер и параметры подключения к значениям по умолчанию? История чатов и память не удалятся."):
             return
         for key, value in DEFAULT_CONFIG.items():
-            if key == "memory":
+            if key in {"memory", "memory_metadata"}:
                 continue
             self.config[key] = value
         self.api_key = ""
@@ -3596,6 +3887,21 @@ class MoyaIshkaApp:
         self.instructions_box.insert("1.0", self.config["instructions"])
         if hasattr(self, "auto_memory_var"):
             self.auto_memory_var.set(bool(self.config.get("auto_memory", True)))
+        if hasattr(self, "memory_semantic_var"):
+            self.memory_semantic_var.set(bool(self.config.get("memory_semantic_enabled", True)))
+        if hasattr(self, "memory_embedding_model_var"):
+            self.memory_embedding_model_var.set(str(self.config.get("memory_embedding_model", "nomic-embed-text")))
+        if hasattr(self, "auto_backup_var"):
+            self.auto_backup_var.set(bool(self.config.get("auto_backup_enabled", True)))
+            self.backup_retention_var.set(str(self.config.get("backup_retention_count", 7)))
+            if hasattr(self, "backup_dir_var"):
+                self.backup_dir_var.set(str(self._backup_directory()))
+            if hasattr(self, "backup_cloud_enabled_var"):
+                self.backup_cloud_enabled_var.set(bool(self.config.get("backup_cloud_enabled", True)))
+                self.backup_cloud_retention_var.set(str(self.config.get("backup_cloud_retention_count", 7)))
+                if hasattr(self, "backup_supabase_enabled_var"):
+                    self.backup_supabase_enabled_var.set(bool(self.config.get("backup_supabase_enabled", False)))
+                    self.backup_supabase_retention_var.set(str(self.config.get("backup_supabase_retention_count", 7)))
         if hasattr(self, "voice_tts_var"):
             self.voice_tts_var.set(bool(self.config.get("voice_tts", False)))
         if hasattr(self, "tts_voice_combo"):
@@ -3617,6 +3923,1016 @@ class MoyaIshkaApp:
             self.research_interval_var.set(str(self.config.get("research_interval_hours", 12)))
             self.research_results_var.set(str(self.config.get("research_results_limit", 5)))
             self.research_fetch_var.set(str(self.config.get("research_fetch_pages", 3)))
+
+    def _backup_directory(self) -> Path:
+        configured = str(self.config.get("backup_dir", "")).strip()
+        return Path(configured).expanduser().resolve() if configured else default_backup_directory()
+
+    def _migrate_legacy_backups_once(self, destination: Path) -> tuple[int, int]:
+        with self.backup_migration_lock:
+            if bool(self.config.get("backup_legacy_migrated", False)):
+                return 0, 0
+            copied, skipped = copy_verified_backups(DATA_DIR / "backups", destination)
+            # Migrate verified historical archives to the cloud queue too; no archive is
+            # pruned locally until its cloud upload has been confirmed.
+            for candidate in sorted(destination.glob("MoyaIshka_backup_*.zip"), key=lambda item: item.name):
+                if candidate.is_file() and not candidate.is_symlink():
+                    try:
+                        inspect_backup(candidate)
+                    except Exception:
+                        continue
+                    self._queue_backup_upload(candidate)
+                    if bool(self.config.get("backup_supabase_enabled", False)) and candidate.stat().st_size + 64 <= MAX_SUPABASE_FILE_BYTES:
+                        self._queue_supabase_backup_upload(candidate)
+            self.config["backup_legacy_migrated"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+            return copied, skipped
+
+    def choose_backup_directory(self) -> None:
+        current = self._backup_directory()
+        initial = current if current.is_dir() else current.parent
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            title="Выбери папку резервных копий (вне папки установки)",
+            initialdir=str(initial if initial.exists() else Path.home()),
+            mustexist=False,
+        )
+        if selected:
+            self.backup_dir_var.set(str(Path(selected).expanduser().resolve()))
+            self.save_backup_settings()
+
+    def save_backup_settings(self) -> bool:
+        try:
+            retention = max(3, min(30, int(self.backup_retention_var.get())))
+            cloud_retention = max(3, min(30, int(self.backup_cloud_retention_var.get())))
+            supabase_retention = max(3, min(30, int(self.backup_supabase_retention_var.get())))
+            backup_dir = Path(self.backup_dir_var.get().strip() or default_backup_directory()).expanduser().resolve()
+            install_dir = (
+                Path(sys.executable).resolve().parent
+                if getattr(sys, "frozen", False)
+                else Path(__file__).resolve().parent
+            )
+            if backup_dir == install_dir or install_dir in backup_dir.parents:
+                raise ValueError("Папку резервных копий нельзя размещать внутри папки установки программы. Выбери соседнюю папку на этом диске.")
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            if not backup_dir.is_dir():
+                raise OSError("Выбранный путь не является папкой.")
+        except Exception as exc:
+            messagebox.showerror("Резервное копирование", f"Не удалось сохранить папку копий или параметры: {exc}")
+            return False
+        self.config["auto_backup_enabled"] = bool(self.auto_backup_var.get())
+        self.config["backup_retention_count"] = retention
+        self.config["backup_dir"] = str(backup_dir)
+        self.config["backup_cloud_enabled"] = bool(self.backup_cloud_enabled_var.get())
+        self.config["backup_cloud_retention_count"] = cloud_retention
+        self.config["backup_supabase_enabled"] = bool(self.backup_supabase_enabled_var.get())
+        self.config["backup_supabase_retention_count"] = supabase_retention
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.backup_status_var.set(
+            f"Папка: {backup_dir} · локально: {retention} · Google Drive: "
+            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · Google Drive: {cloud_retention} · "
+            f"Supabase: {'включён' if self.config['backup_supabase_enabled'] else 'выключен'} · {supabase_retention}"
+        )
+        return True
+
+    def open_backup_folder(self) -> None:
+        folder = self._backup_directory()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            self._open_local_folder(folder)
+        except OSError as exc:
+            messagebox.showerror("Папка резервных копий", str(exc))
+
+    def _backup_queue_items(self) -> list[str]:
+        values = load_json(BACKUP_UPLOAD_QUEUE_PATH, [])
+        if not isinstance(values, list):
+            return []
+        safe = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        return safe
+
+    def _save_backup_queue(self, values: list[str]) -> None:
+        safe = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            value = str(path.resolve())
+            if value not in safe:
+                safe.append(value)
+        atomic_json_save(BACKUP_UPLOAD_QUEUE_PATH, safe)
+
+    def _queue_backup_upload(self, archive_path: Path) -> None:
+        pending = self._backup_queue_items()
+        archive_value = str(archive_path.expanduser().resolve())
+        if archive_value not in pending:
+            pending.append(archive_value)
+        self._save_backup_queue(pending)
+
+    def _remove_backup_from_queue(self, filename: str) -> None:
+        target = str(Path(filename).expanduser().resolve())
+        self._save_backup_queue([item for item in self._backup_queue_items() if str(Path(item).resolve()) != target])
+
+    def _backup_supabase_queue_items(self) -> list[str]:
+        values = load_json(BACKUP_SUPABASE_UPLOAD_QUEUE_PATH, [])
+        if not isinstance(values, list):
+            return []
+        safe: list[str] = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        return safe
+
+    def _save_supabase_backup_queue(self, values: list[str]) -> None:
+        safe: list[str] = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        atomic_json_save(BACKUP_SUPABASE_UPLOAD_QUEUE_PATH, safe)
+
+    def _queue_supabase_backup_upload(self, archive_path: Path) -> None:
+        pending = self._backup_supabase_queue_items()
+        value = str(archive_path.expanduser().resolve())
+        if value not in pending:
+            pending.append(value)
+        self._save_supabase_backup_queue(pending)
+
+    @staticmethod
+    def _supabase_backup_client(package: dict[str, Any]) -> tuple[SupabaseBackupClient, SupabaseCloudClient]:
+        session = package.get("session", {}) if isinstance(package.get("session"), dict) else {}
+        auth_client = SupabaseCloudClient(
+            str(package.get("project_url", "")), str(package.get("publishable_key", "")), dict(session),
+        )
+        auth_client.ensure_fresh_session()
+        storage_client = SupabaseBackupClient(
+            str(package.get("project_url", "")), str(package.get("publishable_key", "")), dict(auth_client.session),
+        )
+        return storage_client, auth_client
+
+    def _save_supabase_backup_session(self, package: dict[str, Any], auth_client: SupabaseCloudClient) -> None:
+        updated = dict(package)
+        updated["session"] = dict(auth_client.session)
+        self._remember_cloud_package(updated)
+
+    def _upload_supabase_backup_archive(self, archive_path: Path, package: dict[str, Any], retention: int) -> str:
+        passphrase = str(package.get("e2e_passphrase", ""))
+        if len(passphrase) < 10:
+            raise SupabaseBackupError("В защищённой сессии Supabase не найден E2E-пароль резервных копий.")
+        source = Path(archive_path).expanduser().resolve()
+        if not source.is_file() or source.is_symlink():
+            raise SupabaseBackupError("Локальный ZIP-архив для Supabase не найден.")
+        encrypted_path = source.with_name(source.stem + ".supabase.mibak")
+        try:
+            encrypt_backup_file(source, encrypted_path, passphrase)
+            encrypted_hash = backup_sha256_file(encrypted_path)
+            encrypted_size = encrypted_path.stat().st_size
+            if encrypted_size > MAX_SUPABASE_FILE_BYTES:
+                raise SupabaseBackupError(
+                    "Архив превышает лимит Supabase Free — 50 МБ на файл. "
+                    "Полная копия остаётся локально и в Google Drive."
+                )
+            client, auth_client = self._supabase_backup_client(package)
+            remote_name = f"{source.stem}_{encrypted_hash}.mibak"
+            remote_path = f"{client.user_id}/{remote_name}"
+            existing = next(
+                (item for item in client.list_backup_files() if item.get("path") == remote_path),
+                None,
+            )
+            if existing and int(existing.get("size", 0)) != encrypted_size:
+                client.delete_backup_file(remote_path)
+                existing = None
+            if existing:
+                # A matching file name is not enough: authenticate the bytes already in Storage.
+                verify_existing = encrypted_path.with_name(encrypted_path.name + ".existing-check")
+                try:
+                    client.download_backup_file(remote_path, verify_existing)
+                except SupabaseBackupError:
+                    client.delete_backup_file(remote_path)
+                    existing = None
+                finally:
+                    verify_existing.unlink(missing_ok=True)
+            if not existing:
+                client.prune_backup_files(max(1, int(retention) - 1))
+                client.upload_backup_file(
+                    encrypted_path, remote_name=remote_name, sha256=encrypted_hash,
+                    app_version=APP_VERSION,
+                    backup_kind=(source.stem.split("_")[2] if len(source.stem.split("_")) > 2 else "manual"),
+                )
+                listed = client.list_backup_files()
+                existing = next(
+                    (item for item in listed
+                     if item.get("path") == remote_path and int(item.get("size", 0)) == encrypted_size
+                     and item.get("sha256") == encrypted_hash),
+                    None,
+                )
+                if not existing:
+                    raise SupabaseBackupError("Supabase не подтвердил полную загрузку зашифрованной копии.")
+                verify_path = encrypted_path.with_name(encrypted_path.name + ".verify")
+                try:
+                    verified = client.download_backup_file(remote_path, verify_path)
+                    if str(verified.get("sha256", "")).lower() != encrypted_hash:
+                        raise SupabaseBackupError("SHA-256 скачанного из Supabase архива не совпал.")
+                finally:
+                    verify_path.unlink(missing_ok=True)
+            client.prune_backup_files(retention)
+            self._save_supabase_backup_session(package, auth_client)
+            return f"Зашифрованная копия подтверждена в Supabase: {remote_name}."
+        finally:
+            encrypted_path.unlink(missing_ok=True)
+
+    def _upload_supabase_backup_queue(self, package: dict[str, Any], retention: int) -> tuple[int, int, str]:
+        pending = self._backup_supabase_queue_items()
+        uploaded, error_text = 0, ""
+        remaining = list(pending)
+        for filename in pending:
+            archive = Path(filename).expanduser()
+            if not archive.is_file() or archive.is_symlink():
+                error_text = f"Локальный архив пока недоступен: {archive}. Очередь Supabase сохранена."
+                break
+            try:
+                self._upload_supabase_backup_archive(archive, package, retention)
+                remaining.remove(filename)
+                self._save_supabase_backup_queue(remaining)
+                uploaded += 1
+            except Exception as exc:
+                error_text = str(exc)
+                break
+        self._save_supabase_backup_queue(remaining)
+        return uploaded, len(remaining), error_text
+
+    @staticmethod
+    def _backup_drive_client(package: dict[str, Any]) -> GoogleDriveVaultClient:
+        if str(package.get("provider", "")) != "google_drive":
+            raise GoogleDriveError("Резервные архивы поддерживаются через подключённый Google Drive.")
+        session = package.get("session", {}) if isinstance(package.get("session"), dict) else {}
+        return GoogleDriveVaultClient(
+            str(package.get("client_id", "")),
+            str(package.get("client_secret", "")),
+            dict(session),
+        )
+
+    @staticmethod
+    def _save_backup_drive_session(package: dict[str, Any], client: GoogleDriveVaultClient) -> None:
+        updated = dict(package)
+        updated["session"] = dict(client.session)
+        save_protected_session(GOOGLE_DRIVE_SESSION_PATH, updated)
+
+    def _upload_backup_archive(
+        self,
+        archive_path: Path,
+        package: dict[str, Any],
+        cloud_retention: int,
+    ) -> str:
+        passphrase = str(package.get("e2e_passphrase", ""))
+        if len(passphrase) < 10:
+            raise BackupEncryptionError("В защищённой сессии Google Drive не найден пароль E2E.")
+        encrypted_path = archive_path.with_suffix(".mibak")
+        if not encrypted_path.is_file():
+            encrypt_backup_file(archive_path, encrypted_path, passphrase)
+        encrypted_hash = backup_sha256_file(encrypted_path)
+        client = self._backup_drive_client(package)
+
+        # A previous upload may have reached Drive even if the client lost its response.
+        # Check for an identical encrypted archive before trying to upload it again.
+        remote_match = next(
+            (
+                item for item in client.list_backup_files()
+                if item.get("sha256") == encrypted_hash
+                and item.get("md5") == backup_file_md5(encrypted_path)
+            ),
+            None,
+        )
+        if remote_match:
+            if int(remote_match.get("size", 0)) != encrypted_path.stat().st_size:
+                raise GoogleDriveError("Размер уже загруженной резервной копии не совпадает. Локальный архив сохранён.")
+            client.prune_backup_files(cloud_retention)
+            self._save_backup_drive_session(package, client)
+            encrypted_path.unlink(missing_ok=True)
+            return f"Зашифрованная копия уже подтверждена в Google Drive: {remote_match.get('name', encrypted_path.name)}."
+
+        limit_gb = max(1, min(int(self.config.get("google_drive_storage_limit_gb", 10) or 10), 10))
+        encrypted_size = encrypted_path.stat().st_size
+        usage = client.get_app_folder_usage() + client.get_backup_folder_usage()
+        if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
+            client.prune_backup_files(cloud_retention)
+            usage = client.get_app_folder_usage() + client.get_backup_folder_usage()
+            if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
+                raise GoogleDriveError(
+                    f"В папке Моя ИИшка Cloud превышен мягкий лимит {limit_gb} ГБ. "
+                    "Удалите старые архивы в Google Drive или увеличьте лимит в настройках."
+                )
+
+        parts = archive_path.stem.split("_")
+        backup_kind = parts[2] if len(parts) > 2 and parts[0] == "MoyaIshka" else "manual"
+        client.upload_backup_file(
+            encrypted_path,
+            remote_name=encrypted_path.name,
+            sha256=encrypted_hash,
+            app_version=APP_VERSION,
+            backup_kind=backup_kind,
+        )
+        local_md5 = backup_file_md5(encrypted_path)
+        remote_match = next(
+            (
+                item for item in client.list_backup_files()
+                if item.get("sha256") == encrypted_hash and item.get("md5") == local_md5
+            ),
+            None,
+        )
+        if not remote_match or int(remote_match.get("size", 0)) != encrypted_size:
+            raise GoogleDriveError("Google Drive не подтвердил наличие полной копии после загрузки. Локальный архив сохранён.")
+        client.prune_backup_files(cloud_retention)
+        self._save_backup_drive_session(package, client)
+        encrypted_path.unlink(missing_ok=True)
+        return f"Зашифрованная копия подтверждена в Google Drive: {remote_match.get('name', encrypted_path.name)}."
+
+    def _upload_backup_queue(
+        self,
+        backup_dir: Path,
+        package: dict[str, Any],
+        cloud_retention: int,
+    ) -> tuple[int, int, str]:
+        pending = self._backup_queue_items()
+        uploaded = 0
+        error_text = ""
+        remaining = list(pending)
+        for filename in pending:
+            archive = Path(filename).expanduser()
+            if not archive.is_file() or archive.is_symlink():
+                error_text = f"Локальный архив пока недоступен: {archive}. Очередь сохранена."
+                break
+            try:
+                self._upload_backup_archive(archive, package, cloud_retention)
+                remaining.remove(filename)
+                self._save_backup_queue(remaining)
+                uploaded += 1
+            except Exception as exc:
+                error_text = str(exc)
+                break
+        self._save_backup_queue(remaining)
+        return uploaded, len(remaining), error_text
+
+    def _create_and_queue_backup(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
+        *,
+        automatic: bool,
+    ) -> tuple[Path | None, str]:
+        migration_note = ""
+        try:
+            migrated, skipped = self._migrate_legacy_backups_once(backup_dir)
+            if migrated:
+                migration_note = f"Перенесено старых резервных копий: {migrated}."
+            if skipped:
+                migration_note = (migration_note + " " if migration_note else "") + f"Повреждённых старых архивов пропущено: {skipped}."
+        except Exception as exc:
+            migration_note = f"Старые архивы пока не перенесены: {exc}"
+        # Keep queued archives until every enabled cloud target has confirmed its copy.
+        pending_count = len(self._backup_queue_items()) + len(self._backup_supabase_queue_items())
+        effective_retention = max(retention, pending_count + 1)
+        if automatic:
+            archive = maybe_create_daily_backup(
+                DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
+            )
+        else:
+            archive = create_backup(
+                DATA_DIR, app_version=APP_VERSION, retention_count=effective_retention, backup_dir=backup_dir,
+            )
+        notes: list[str] = []
+        if migration_note:
+            notes.append(migration_note)
+        if cloud_enabled:
+            if archive is not None:
+                self._queue_backup_upload(archive)
+            if package:
+                uploaded, pending, error_text = self._upload_backup_queue(backup_dir, package, cloud_retention)
+                if error_text:
+                    notes.append(f"Google Drive: ожидает повтора — {error_text}")
+                elif uploaded:
+                    notes.append(f"Google Drive: подтверждено копий {uploaded}; в очереди {pending}.")
+                elif pending:
+                    notes.append(f"Google Drive: ожидают отправки {pending}.")
+                else:
+                    notes.append("Google Drive: копии актуальны.")
+            else:
+                pending = len(self._backup_queue_items())
+                if pending:
+                    notes.append(f"Google Drive: ожидают подключения {pending} копий.")
+                else:
+                    notes.append("Google Drive не подключён; локальная копия сохранена.")
+        if supabase_enabled:
+            if archive is not None:
+                try:
+                    if archive.stat().st_size + 64 > MAX_SUPABASE_FILE_BYTES:
+                        notes.append("Supabase: ZIP больше лимита 50 МБ; архив сохранён локально и в Google Drive.")
+                    else:
+                        self._queue_supabase_backup_upload(archive)
+                except OSError as exc:
+                    notes.append(f"Supabase: не удалось проверить локальный архив — {exc}")
+            if supabase_package:
+                uploaded, pending, error_text = self._upload_supabase_backup_queue(supabase_package, supabase_retention)
+                if error_text:
+                    notes.append(f"Supabase: ожидает повтора — {error_text}")
+                elif uploaded:
+                    notes.append(f"Supabase Storage: подтверждено копий {uploaded}; в очереди {pending}.")
+                elif pending:
+                    notes.append(f"Supabase Storage: ожидают отправки {pending}.")
+                else:
+                    notes.append("Supabase Storage: копии актуальны.")
+            else:
+                pending = len(self._backup_supabase_queue_items())
+                if pending:
+                    notes.append(f"Supabase: ожидают подключения {pending} копий.")
+                else:
+                    notes.append("Supabase Storage не подключён; локальная копия и Google Drive не затронуты.")
+        return archive, " ".join(notes)
+
+    def create_local_backup(self) -> None:
+        if self.backup_working or self.backup_upload_working:
+            self.backup_status_var.set("Операция с резервной копией уже выполняется.")
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        self.backup_status_var.set("Создаю локальную копию и отправляю зашифрованный архив в облако…")
+        threading.Thread(
+            target=self._manual_backup_worker,
+            args=(
+                int(self.config.get("backup_retention_count", 7)),
+                self._backup_directory(),
+                bool(self.config.get("backup_cloud_enabled", True)),
+                dict(self.google_drive_session) if self.google_drive_session_ready else None,
+                int(self.config.get("backup_cloud_retention_count", 7)),
+                bool(self.config.get("backup_supabase_enabled", False)),
+                dict(self.cloud_session) if self.cloud_session_ready else None,
+                int(self.config.get("backup_supabase_retention_count", 7)),
+            ),
+            daemon=True,
+        ).start()
+
+    def _manual_backup_worker(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
+    ) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            archive, cloud_status = self._create_and_queue_backup(
+                retention, backup_dir, cloud_enabled, package, cloud_retention,
+                supabase_enabled, supabase_package, supabase_retention, automatic=False,
+            )
+            self.events.put(("backup_created", {
+                "path": str(archive) if archive else "",
+                "cloud_status": cloud_status,
+            }))
+        except Exception as exc:
+            self.events.put(("backup_error", str(exc)))
+
+    def _schedule_automatic_backup(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        if (
+            bool(self.config.get("auto_backup_enabled", True))
+            and not self.backup_working
+            and not self.backup_upload_working
+        ):
+            self.backup_working = True
+            threading.Thread(
+                target=self._automatic_backup_worker,
+                args=(
+                    int(self.config.get("backup_retention_count", 7)),
+                    self._backup_directory(),
+                    bool(self.config.get("backup_cloud_enabled", True)),
+                    dict(self.google_drive_session) if self.google_drive_session_ready else None,
+                    int(self.config.get("backup_cloud_retention_count", 7)),
+                    bool(self.config.get("backup_supabase_enabled", False)),
+                    dict(self.cloud_session) if self.cloud_session_ready else None,
+                    int(self.config.get("backup_supabase_retention_count", 7)),
+                ),
+                daemon=True,
+            ).start()
+        self.root.after(6 * 60 * 60 * 1000, self._schedule_automatic_backup)
+
+    def _automatic_backup_worker(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+        supabase_enabled: bool = False,
+        supabase_package: dict[str, Any] | None = None,
+        supabase_retention: int = 7,
+    ) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            archive, cloud_status = self._create_and_queue_backup(
+                retention, backup_dir, cloud_enabled, package, cloud_retention,
+                supabase_enabled, supabase_package, supabase_retention, automatic=True,
+            )
+            self.events.put(("backup_auto_result", {
+                "path": str(archive) if archive else "",
+                "cloud_status": cloud_status,
+            }))
+        except Exception as exc:
+            self.events.put(("backup_error", str(exc)))
+
+    def upload_pending_backups_now(self) -> None:
+        if self.backup_upload_working or self.backup_working:
+            self.backup_status_var.set("Другая операция с резервной копией уже выполняется.")
+            return
+        drive_pending = bool(self._backup_queue_items())
+        supabase_pending = bool(self._backup_supabase_queue_items())
+        drive_package = (
+            dict(self.google_drive_session)
+            if drive_pending and bool(self.config.get("backup_cloud_enabled", True)) and self.google_drive_session_ready
+            else None
+        )
+        supabase_package = (
+            dict(self.cloud_session)
+            if supabase_pending and bool(self.config.get("backup_supabase_enabled", False)) and self.cloud_session_ready
+            else None
+        )
+        if not drive_pending and not supabase_pending:
+            self.backup_status_var.set("Нет копий, ожидающих отправки в облако.")
+            return
+        if not drive_package and not supabase_package:
+            messagebox.showwarning(
+                "Облачные резервные копии",
+                "Подключи Google Drive или Supabase и включи соответствующее зеркало в настройках копирования.",
+            )
+            return
+        self.backup_upload_working = True
+        self.backup_status_var.set("Отправляю ожидающие резервные копии в доступные облака…")
+        threading.Thread(
+            target=self._retry_backup_upload_worker,
+            args=(self._backup_directory(), drive_package, supabase_package,
+                  int(self.config.get("backup_cloud_retention_count", 7)),
+                  int(self.config.get("backup_supabase_retention_count", 7))),
+            daemon=True,
+        ).start()
+
+    def _retry_backup_upload_worker(
+        self, backup_dir: Path, drive_package: dict[str, Any] | None,
+        supabase_package: dict[str, Any] | None, drive_retention: int, supabase_retention: int,
+    ) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        results: dict[str, tuple[int, int, str]] = {}
+        if drive_package:
+            try:
+                results["google_drive"] = self._upload_backup_queue(backup_dir, drive_package, drive_retention)
+            except Exception as exc:
+                results["google_drive"] = (0, len(self._backup_queue_items()), str(exc))
+        if supabase_package:
+            try:
+                results["supabase"] = self._upload_supabase_backup_queue(supabase_package, supabase_retention)
+            except Exception as exc:
+                results["supabase"] = (0, len(self._backup_supabase_queue_items()), str(exc))
+        self.events.put(("backup_upload_result", results))
+
+    def _schedule_backup_upload_retry(self) -> None:
+        try:
+            if not self.root.winfo_exists():
+                return
+            drive_pending = bool(self._backup_queue_items())
+            supabase_pending = bool(self._backup_supabase_queue_items())
+            drive_package = (
+                dict(self.google_drive_session)
+                if drive_pending and bool(self.config.get("backup_cloud_enabled", True)) and self.google_drive_session_ready
+                else None
+            )
+            supabase_package = (
+                dict(self.cloud_session)
+                if supabase_pending and bool(self.config.get("backup_supabase_enabled", False)) and self.cloud_session_ready
+                else None
+            )
+            if (drive_package or supabase_package) and not self.backup_working and not self.backup_upload_working:
+                self.backup_upload_working = True
+                threading.Thread(
+                    target=self._retry_backup_upload_worker,
+                    args=(self._backup_directory(), drive_package, supabase_package,
+                          int(self.config.get("backup_cloud_retention_count", 7)),
+                          int(self.config.get("backup_supabase_retention_count", 7))),
+                    daemon=True,
+                ).start()
+        finally:
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(30 * 60 * 1000, self._schedule_backup_upload_retry)
+            except tk.TclError:
+                pass
+
+    def restore_local_backup(self) -> None:
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning(
+                "Восстановление",
+                "Сначала дождись завершения ответа ИИ, голосовой операции, исследования и облачной синхронизации.",
+            )
+            return
+        folder = self._backup_directory()
+        selected = filedialog.askopenfilename(
+            title="Выбери резервную копию Моей ИИшки",
+            initialdir=str(folder if folder.exists() else folder.parent),
+            filetypes=[("Резервные копии Моя ИИшка", "*.zip")],
+        )
+        if not selected:
+            return
+        if not messagebox.askyesno(
+            "Восстановить резервную копию",
+            "Текущая история, память, настройки, база знаний, навыки и плагины будут заменены данными из выбранного архива. "
+            "Перед заменой программа создаст отдельную страховочную копию. Продолжить?",
+        ):
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        self.backup_status_var.set("Проверяю архив и подготавливаю безопасное восстановление…")
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        retention = int(self.config.get("backup_retention_count", 7))
+        threading.Thread(
+            target=self._restore_backup_worker,
+            args=(selected, retention, self._backup_directory()),
+            daemon=True,
+        ).start()
+
+    def _restore_backup_worker(self, archive_path: str, retention: int, backup_dir: Path) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
+            )
+            self.events.put(("backup_restore_complete", (True, str(restored.get("source", archive_path)))))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+
+    def restore_cloud_backup(self) -> None:
+        if not self.google_drive_session_ready:
+            messagebox.showwarning("Google Drive", "Для восстановления из облака сначала подключи Google Drive и пароль E2E.")
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Резервные копии Google Drive")
+        dialog.transient(self.root)
+        dialog.geometry("660x390")
+        dialog.minsize(520, 300)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Выбери зашифрованную резервную копию. Перед восстановлением текущие данные будут сохранены.", wraplength=620).pack(anchor="w", pady=(0, 8))
+        self.cloud_backup_listbox = tk.Listbox(frame, height=12, exportselection=False)
+        self.cloud_backup_listbox.pack(fill="both", expand=True)
+        self.cloud_backup_status_var = tk.StringVar(value="Получаю список резервных копий Google Drive…")
+        ttk.Label(frame, textvariable=self.cloud_backup_status_var, wraplength=620).pack(anchor="w", pady=(8, 6))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Обновить список", command=self._request_cloud_backup_list).pack(side="left")
+        ttk.Button(actions, text="Восстановить выбранную", style="Accent.TButton", command=self._restore_selected_cloud_backup).pack(side="right")
+        ttk.Button(actions, text="Закрыть", command=dialog.destroy).pack(side="right", padx=8)
+        self.cloud_backup_dialog = dialog
+        self.cloud_backup_items = []
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self._request_cloud_backup_list()
+
+    def _request_cloud_backup_list(self) -> None:
+        if not self.google_drive_session_ready:
+            return
+        package = dict(self.google_drive_session)
+        threading.Thread(target=self._list_cloud_backups_worker, args=(package,), daemon=True).start()
+
+    def _list_cloud_backups_worker(self, package: dict[str, Any]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            client = self._backup_drive_client(package)
+            items = client.list_backup_files()
+            self._save_backup_drive_session(package, client)
+            self.events.put(("backup_cloud_list", items))
+        except Exception as exc:
+            self.events.put(("backup_cloud_list_error", str(exc)))
+
+    def _show_cloud_backup_items(self, items: list[dict[str, Any]]) -> None:
+        try:
+            if self.cloud_backup_dialog is None or not self.cloud_backup_dialog.winfo_exists() or self.cloud_backup_listbox is None:
+                return
+            self.cloud_backup_items = sorted(
+                list(items or []),
+                key=lambda item: str(item.get("modified_time", "")),
+                reverse=True,
+            )
+            self.cloud_backup_listbox.delete(0, "end")
+            for item in self.cloud_backup_items:
+                when = str(item.get("modified_time", ""))
+                try:
+                    parsed = datetime.fromisoformat(when.replace("Z", "+00:00"))
+                    when = parsed.astimezone().strftime("%d.%m.%Y %H:%M")
+                except (ValueError, TypeError):
+                    when = when or "дата неизвестна"
+                size_mb = int(item.get("size", 0) or 0) / (1024 * 1024)
+                self.cloud_backup_listbox.insert(
+                    "end",
+                    f"{item.get('name', 'Резервная копия')} · {when} · {size_mb:.1f} МБ",
+                )
+            if self.cloud_backup_status_var is not None:
+                self.cloud_backup_status_var.set(
+                    f"Найдено резервных копий: {len(self.cloud_backup_items)}. Архивы зашифрованы на этом ПК."
+                    if self.cloud_backup_items else "В папке Google Drive пока нет резервных копий."
+                )
+        except tk.TclError:
+            return
+
+    def _restore_selected_cloud_backup(self) -> None:
+        if self.cloud_backup_listbox is None:
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        selected = self.cloud_backup_listbox.curselection()
+        if not selected or selected[0] >= len(self.cloud_backup_items):
+            messagebox.showinfo("Google Drive", "Сначала выбери резервную копию.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        item = dict(self.cloud_backup_items[selected[0]])
+        if not messagebox.askyesno(
+            "Восстановить из Google Drive",
+            f"Заменить текущую историю, память, настройки, базу знаний, навыки и плагины архивом «{item.get('name', '')}»? "
+            "Перед этим будет создана страховочная копия текущих данных.",
+        ):
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        backup_dir = self._backup_directory()
+        retention = int(self.config.get("backup_retention_count", 7))
+        package = dict(self.google_drive_session)
+        try:
+            if self.cloud_backup_dialog is not None:
+                self.cloud_backup_dialog.destroy()
+        except tk.TclError:
+            pass
+        self.cloud_backup_dialog = None
+        threading.Thread(
+            target=self._restore_cloud_backup_worker,
+            args=(item, package, backup_dir, retention),
+            daemon=True,
+        ).start()
+
+    def _restore_cloud_backup_worker(
+        self,
+        item: dict[str, Any],
+        package: dict[str, Any],
+        backup_dir: Path,
+        retention: int,
+    ) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        temp_root: Path | None = None
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            temp_root = Path(tempfile.mkdtemp(prefix=".cloud-restore-", dir=str(backup_dir)))
+            safe_name = Path(str(item.get("name", "cloud-backup.mibak"))).name
+            encrypted_path = temp_root / safe_name
+            archive_path = temp_root / "restored_backup.zip"
+            client = self._backup_drive_client(package)
+            download_info = client.download_backup_file(str(item.get("id", "")), encrypted_path)
+            expected_hash = str(item.get("sha256", "")).lower()
+            if not expected_hash or str(download_info.get("sha256", "")).lower() != expected_hash:
+                raise BackupEncryptionError("SHA-256 скачанной резервной копии не совпал с Google Drive. Восстановление отменено.")
+            decrypt_backup_file(encrypted_path, archive_path, str(package.get("e2e_passphrase", "")))
+            inspect_backup(archive_path)
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
+            )
+            self._save_backup_drive_session(package, client)
+            self.events.put((
+                "backup_restore_complete",
+                (True, f"Google Drive: {item.get('name', 'резервная копия')} · восстановлено файлов: {restored.get('files_restored', '0')}"),
+            ))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+        finally:
+            if temp_root is not None:
+                shutil.rmtree(temp_root, ignore_errors=True)
+
+    def restore_supabase_backup(self) -> None:
+        if not self.cloud_session_ready:
+            messagebox.showwarning("Supabase", "Сначала подключи резервное облако Supabase и пароль E2E.")
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Резервные копии Supabase Storage")
+        dialog.transient(self.root)
+        dialog.geometry("660x390")
+        dialog.minsize(520, 300)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Выбери зашифрованный архив Supabase. Перед восстановлением текущие данные будут сохранены.", wraplength=620).pack(anchor="w", pady=(0, 8))
+        self.supabase_backup_listbox = tk.Listbox(frame, height=12, exportselection=False)
+        self.supabase_backup_listbox.pack(fill="both", expand=True)
+        self.supabase_backup_status_var = tk.StringVar(value="Получаю список резервных копий Supabase…")
+        ttk.Label(frame, textvariable=self.supabase_backup_status_var, wraplength=620).pack(anchor="w", pady=(8, 6))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Обновить список", command=self._request_supabase_backup_list).pack(side="left")
+        ttk.Button(actions, text="Восстановить выбранную", style="Accent.TButton", command=self._restore_selected_supabase_backup).pack(side="right")
+        ttk.Button(actions, text="Закрыть", command=dialog.destroy).pack(side="right", padx=8)
+        self.supabase_backup_dialog = dialog
+        self.supabase_backup_items = []
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self._request_supabase_backup_list()
+
+    def _request_supabase_backup_list(self) -> None:
+        if self.cloud_session_ready:
+            threading.Thread(target=self._list_supabase_backups_worker, args=(dict(self.cloud_session),), daemon=True).start()
+
+    def _list_supabase_backups_worker(self, package: dict[str, Any]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            client, auth_client = self._supabase_backup_client(package)
+            items = client.list_backup_files()
+            self._save_supabase_backup_session(package, auth_client)
+            self.events.put(("backup_supabase_list", items))
+        except Exception as exc:
+            self.events.put(("backup_supabase_list_error", str(exc)))
+
+    def _show_supabase_backup_items(self, items: list[dict[str, Any]]) -> None:
+        try:
+            if self.supabase_backup_dialog is None or not self.supabase_backup_dialog.winfo_exists() or self.supabase_backup_listbox is None:
+                return
+            self.supabase_backup_items = sorted(list(items or []), key=lambda item: str(item.get("created_at", "")), reverse=True)
+            self.supabase_backup_listbox.delete(0, "end")
+            for item in self.supabase_backup_items:
+                when = str(item.get("created_at", ""))
+                try:
+                    when = datetime.fromisoformat(when.replace("Z", "+00:00")).astimezone().strftime("%d.%m.%Y %H:%M")
+                except (ValueError, TypeError):
+                    when = when or "дата неизвестна"
+                size_mb = int(item.get("size", 0) or 0) / (1024 * 1024)
+                self.supabase_backup_listbox.insert("end", f"{item.get('name', 'Резервная копия')} · {when} · {size_mb:.1f} МБ")
+            if self.supabase_backup_status_var is not None:
+                self.supabase_backup_status_var.set(
+                    f"Найдено резервных копий: {len(self.supabase_backup_items)}. Архивы зашифрованы на этом ПК."
+                    if self.supabase_backup_items else "В Supabase Storage пока нет резервных копий."
+                )
+        except tk.TclError:
+            return
+
+    def _restore_selected_supabase_backup(self) -> None:
+        if self.supabase_backup_listbox is None:
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        selected = self.supabase_backup_listbox.curselection()
+        if not selected or selected[0] >= len(self.supabase_backup_items):
+            messagebox.showinfo("Supabase", "Сначала выбери резервную копию.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        item = dict(self.supabase_backup_items[selected[0]])
+        if not messagebox.askyesno(
+            "Восстановить из Supabase",
+            f"Заменить текущую историю, память, настройки, базу знаний, навыки и плагины архивом «{item.get('name', '')}»? Перед этим будет создана страховочная копия.",
+        ):
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        backup_dir = self._backup_directory()
+        retention = int(self.config.get("backup_retention_count", 7))
+        package = dict(self.cloud_session)
+        try:
+            if self.supabase_backup_dialog is not None:
+                self.supabase_backup_dialog.destroy()
+        except tk.TclError:
+            pass
+        self.supabase_backup_dialog = None
+        threading.Thread(target=self._restore_supabase_backup_worker, args=(item, package, backup_dir, retention), daemon=True).start()
+
+    def _restore_supabase_backup_worker(self, item: dict[str, Any], package: dict[str, Any], backup_dir: Path, retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        temp_root: Path | None = None
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            temp_root = Path(tempfile.mkdtemp(prefix=".supabase-restore-", dir=str(backup_dir)))
+            safe_name = Path(str(item.get("name", "supabase-backup.mibak"))).name
+            encrypted_path, archive_path = temp_root / safe_name, temp_root / "restored_backup.zip"
+            client, auth_client = self._supabase_backup_client(package)
+            downloaded = client.download_backup_file(str(item.get("path", "")), encrypted_path)
+            expected_hash = str(item.get("sha256", "")).lower()
+            if not expected_hash or str(downloaded.get("sha256", "")).lower() != expected_hash:
+                raise BackupEncryptionError("SHA-256 скачанной резервной копии Supabase не совпал. Восстановление отменено.")
+            decrypt_backup_file(encrypted_path, archive_path, str(package.get("e2e_passphrase", "")))
+            inspect_backup(archive_path)
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
+            )
+            self._save_supabase_backup_session(package, auth_client)
+            self.events.put(("backup_restore_complete", (
+                True, f"Supabase Storage: {item.get('name', 'резервная копия')} · восстановлено файлов: {restored.get('files_restored', '0')}",
+            )))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+        finally:
+            if temp_root is not None:
+                shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _reload_after_backup_restore(self) -> None:
+        saved = load_json(CONFIG_PATH, {})
+        self.config = dict(DEFAULT_CONFIG)
+        if isinstance(saved, dict):
+            self.config.update(saved)
+        self.api_key = unprotect_api_key(self.config)
+        self.store = Store(DB_PATH)
+        self.research_library = ResearchLibrary(DATA_DIR / "research_library.json", max_items=1000)
+        self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
+        self.current_chat_id = self.store.ensure_conversation()
+        self.cloud_session = load_protected_session(CLOUD_SESSION_PATH)
+        self.google_drive_session = load_protected_session(GOOGLE_DRIVE_SESSION_PATH)
+        self.cloud_session_ready = bool(
+            self.cloud_session.get("session", {}).get("access_token")
+            and self.cloud_session.get("e2e_passphrase")
+        )
+        self.google_drive_session_ready = self._is_google_drive_session_ready(self.google_drive_session)
+        self._reload_settings_controls()
+        if hasattr(self, "auto_backup_var"):
+            self.auto_backup_var.set(bool(self.config.get("auto_backup_enabled", True)))
+            self.backup_retention_var.set(str(self.config.get("backup_retention_count", 7)))
+        self._refresh_chat_list()
+        self._render_current_chat()
+        self._refresh_memory_list()
+        self._refresh_research_list()
+        self._refresh_skill_list()
 
     def test_online(self) -> None:
         if not self.api_key_var.get().strip():
@@ -3906,6 +5222,24 @@ class MoyaIshkaApp:
         self.config["auto_memory"] = bool(self.auto_memory_var.get())
         atomic_json_save(CONFIG_PATH, self.config)
         self._set_status("Автоматическая память включена" if self.config["auto_memory"] else "Автоматическая память выключена")
+
+    def _toggle_memory_semantic(self) -> None:
+        self.config["memory_semantic_enabled"] = bool(self.memory_semantic_var.get())
+        atomic_json_save(CONFIG_PATH, self.config)
+        self._schedule_cloud_sync()
+        state = "включён" if self.config["memory_semantic_enabled"] else "выключен"
+        self._set_status(f"Семантический поиск {state}")
+
+    def save_memory_semantic_settings(self) -> None:
+        model = self.memory_embedding_model_var.get().strip()
+        if not model or len(model) > 120 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
+            messagebox.showerror("Память ИИ", "Укажи корректное имя локальной модели Ollama.")
+            return
+        self.config["memory_embedding_model"] = model
+        self.config["memory_semantic_enabled"] = bool(self.memory_semantic_var.get())
+        atomic_json_save(CONFIG_PATH, self.config)
+        self._schedule_cloud_sync()
+        self._set_status(f"Модель смыслового поиска сохранена: {model}")
 
     def _open_local_folder(self, path: Path) -> None:
         try:
@@ -4631,25 +5965,46 @@ class MoyaIshkaApp:
         if not hasattr(self, "memory_list"):
             return
         self.memory_list.delete(0, "end")
-        memories = self.config.get("memory", [])
-        for index, item in enumerate(memories, 1):
-            display = str(item).replace("\n", " ")
-            if len(display) > 130:
-                display = display[:127] + "…"
-            self.memory_list.insert("end", f"{index:02d}. {display}")
+        memories, metadata = normalize_memory_metadata(
+            self.config.get("memory", []), self.config.get("memory_metadata", [])
+        )
+        self.config["memory"] = memories
+        self.config["memory_metadata"] = metadata
+        active_count = 0
+        for index, (item, record) in enumerate(zip(memories, metadata), 1):
+            state = str(record.get("status", "active"))
+            if state == "active":
+                active_count += 1
+            marker = " · заменено" if state == "superseded" else " · срок истёк" if state == "expired" else ""
+            display = f"{index:02d}. [{record.get('category', 'Факты')} · {record.get('importance', 3)}/5{marker}] {str(item).replace(chr(10), ' ')}"
+            if len(display) > 170:
+                display = display[:167] + "…"
+            self.memory_list.insert("end", display)
         if hasattr(self, "memory_count_var"):
-            self.memory_count_var.set(f"{len(memories)} записей · память добавляется в системный контекст ИИ")
+            self.memory_count_var.set(f"{active_count} активных из {len(memories)} записей · поиск по смыслу работает локально")
 
     def add_memory(self) -> None:
         text = self.memory_entry_var.get().strip()
         if not text:
             return
-        self.config.setdefault("memory", []).append(text)
+        memories, metadata, action = add_or_update_memory(
+            self.config.get("memory", []), self.config.get("memory_metadata", []), text, source="manual"
+        )
+        if action == "blocked":
+            messagebox.showwarning("Память ИИ", "Эта запись похожа на пароль, ключ, контакт или чувствительные данные. Такие сведения не сохраняются.")
+            return
+        if action == "duplicate":
+            messagebox.showinfo("Память ИИ", "Такая запись уже есть. Её актуальность обновлена.")
+        elif action == "superseded":
+            self._set_status("Новая запись заменила противоречащее предпочтение или цель")
+        self.config["memory"] = memories
+        self.config["memory_metadata"] = metadata
         atomic_json_save(CONFIG_PATH, self.config)
         self.memory_entry_var.set("")
         self._refresh_memory_list()
         self._schedule_cloud_sync()
-        self._set_status("Запись добавлена в память")
+        if action != "superseded":
+            self._set_status("Запись добавлена в интеллектуальную память")
 
     def edit_memory(self) -> None:
         selected = self.memory_list.curselection()
@@ -4661,7 +6016,17 @@ class MoyaIshkaApp:
             return
         value = simpledialog.askstring("Изменить запись памяти", "Текст записи:", initialvalue=items[index], parent=self.root)
         if value and value.strip():
-            items[index] = value.strip()
+            memories, metadata, action = edit_memory_record(
+                items, self.config.get("memory_metadata", []), index, value.strip()
+            )
+            if action == "blocked":
+                messagebox.showwarning("Память ИИ", "Пароли, ключи, контакты и чувствительные данные не сохраняются.")
+                return
+            if action == "duplicate":
+                messagebox.showinfo("Память ИИ", "Такая запись уже существует.")
+                return
+            self.config["memory"] = memories
+            self.config["memory_metadata"] = metadata
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
             self.memory_list.selection_set(index)
@@ -4674,8 +6039,13 @@ class MoyaIshkaApp:
             return
         index = selected[0]
         items = self.config.get("memory", [])
+        metadata = self.config.get("memory_metadata", [])
         if 0 <= index < len(items):
             del items[index]
+            if isinstance(metadata, list) and index < len(metadata):
+                del metadata[index]
+            self.config["memory"] = items
+            self.config["memory_metadata"] = metadata
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
             self._schedule_cloud_sync()
@@ -4684,12 +6054,13 @@ class MoyaIshkaApp:
     def clear_memory(self) -> None:
         if not self.config.get("memory"):
             return
-        if messagebox.askyesno("Очистить память", "Удалить все записи памяти? История чатов останется."):
+        if messagebox.askyesno("Очистить память", "Удалить все записи памяти и их категории? История чатов останется."):
             self.config["memory"] = []
+            self.config["memory_metadata"] = []
             atomic_json_save(CONFIG_PATH, self.config)
             self._refresh_memory_list()
             self._schedule_cloud_sync()
-            self._set_status("Память очищена")
+            self._set_status("Интеллектуальная память очищена")
 
     # ---------- utilities ----------
     def open_data_folder(self) -> None:
@@ -4926,8 +6297,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.8.5-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.8.5-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.1.9-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.1.9-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
