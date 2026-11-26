@@ -32,6 +32,15 @@ BACKUP_FORMAT_PROPERTY = "moya_backup_format"
 BACKUP_SHA_PROPERTY = "moya_backup_sha256"
 BACKUP_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_BACKUP_FILE_BYTES = 2 * 1024 * 1024 * 1024 + 1024 * 1024
+
+
+class _NoRedirectResumableUploadHandler(urllib.request.HTTPRedirectHandler):
+    """Treat Drive's HTTP 308 Resume Incomplete response as an upload ACK, not a redirect."""
+
+    def http_error_308(self, request, response, code, message, headers):
+        raise urllib.error.HTTPError(request.full_url, code, message, headers, response)
+
+
 VAULT_FILENAME = "moyaishka-vault.enc"
 APP_UA = "MoyaIshka/4.1.5.1 (Google Drive vault)"
 
@@ -488,6 +497,7 @@ class GoogleDriveVaultClient:
 
         result: dict[str, Any] | None = None
         offset = 0
+        upload_opener = urllib.request.build_opener(_NoRedirectResumableUploadHandler())
         with source.open("rb") as stream:
             while offset < total:
                 chunk = stream.read(min(BACKUP_CHUNK_BYTES, total - offset))
@@ -507,7 +517,7 @@ class GoogleDriveVaultClient:
                     method="PUT",
                 )
                 try:
-                    with urllib.request.urlopen(chunk_request, timeout=max(self.timeout, 90)) as response:
+                    with upload_opener.open(chunk_request, timeout=max(self.timeout, 90)) as response:
                         raw = response.read(1024 * 1024)
                         status = int(getattr(response, "status", 200) or 200)
                         if status in {200, 201}:

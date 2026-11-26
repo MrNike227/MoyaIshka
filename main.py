@@ -1073,7 +1073,7 @@ class MoyaIshkaApp:
         cloud.pack(fill="x", pady=(0, 10))
         ttk.Label(
             cloud,
-            text="Supabase остаётся резервным провайдером: при подключении ИИшка хранит там вторую зашифрованную копию, а если Google Drive временно недоступен — может использовать Supabase. Настройка необязательна. Для Free учитывай 500 МБ размера базы данных (не 2 ГБ диска PostgreSQL).",
+            text="Supabase остаётся дополнительным хранилищем зашифрованного состояния приложения (диалоги, настройки и знания). ZIP-архивы резервных копий отправляются в Google Drive; если он недоступен, локальный архив сохраняется в очереди до восстановления связи. Supabase не заменяет очередь ZIP-копий. Настройка необязательна. Для Free учитывай 500 МБ размера базы данных (не 2 ГБ диска PostgreSQL).",
             style="MutedPanel.TLabel", wraplength=900, justify="left",
         ).pack(anchor="w", pady=(0, 6))
         self.cloud_url_var = tk.StringVar(value=str(self.config.get("cloud_url", "")))

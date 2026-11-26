@@ -1,11 +1,15 @@
 import json
 import unittest
 from unittest.mock import patch
+from io import BytesIO
+from urllib.error import HTTPError
+from urllib.request import Request
 
 from google_drive_sync import (
     DRIVE_SCOPE,
     GoogleDriveError,
     GoogleDriveVaultClient,
+    _NoRedirectResumableUploadHandler,
     backup_file_md5,
     _b64url,
     _json_bytes,
@@ -79,6 +83,13 @@ class GoogleDriveSyncTests(unittest.TestCase):
         rows = client.list_backup_files()
         self.assertEqual([row["id"] for row in rows], ["ok"])
         self.assertEqual(rows[0]["sha256"], "a" * 64)
+
+    def test_resumable_upload_308_is_treated_as_incomplete_ack(self):
+        handler = _NoRedirectResumableUploadHandler()
+        request = Request("https://www.googleapis.com/upload/drive/v3/files")
+        with self.assertRaises(HTTPError) as caught:
+            handler.http_error_308(request, BytesIO(b""), 308, "Resume Incomplete", {})
+        self.assertEqual(caught.exception.code, 308)
 
     def test_backup_upload_rejects_bad_hash_without_network(self):
         client = GoogleDriveVaultClient("id", "secret", {"access_token": "x", "expires_at": 4_000_000_000})
