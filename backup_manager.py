@@ -33,7 +33,10 @@ class BackupError(RuntimeError):
     """Raised when a backup cannot be safely created, checked or restored."""
 
 
-def backup_directory(data_dir: str | Path) -> Path:
+def backup_directory(data_dir: str | Path, custom_path: str | Path | None = None) -> Path:
+    """Return the chosen backup folder, defaulting to the legacy data subfolder."""
+    if custom_path is not None and str(custom_path).strip():
+        return Path(custom_path).expanduser().resolve()
     return Path(data_dir).expanduser().resolve() / "backups"
 
 
@@ -215,12 +218,13 @@ def create_backup(
     app_version: str = "",
     retention_count: int = 7,
     backup_kind: str = "manual",
+    backup_dir: str | Path | None = None,
 ) -> Path:
     """Create a consistent, SHA-256 verified ZIP backup using SQLite's backup API."""
     root = Path(data_dir).expanduser().resolve()
     if not root.is_dir():
         raise BackupError("Папка данных Моей ИИшки не найдена.")
-    folder = backup_directory(root)
+    folder = backup_directory(root, backup_dir)
     folder.mkdir(parents=True, exist_ok=True)
     if backup_kind not in {"manual", "auto", "pre-restore"}:
         raise BackupError("Неизвестный тип резервной копии.")
@@ -292,9 +296,10 @@ def maybe_create_daily_backup(
     *,
     app_version: str = "",
     retention_count: int = 7,
+    backup_dir: str | Path | None = None,
 ) -> Path | None:
     """Create no more than one verified automatic backup per local calendar day."""
-    folder = backup_directory(data_dir)
+    folder = backup_directory(data_dir, backup_dir)
     today = datetime.now().astimezone().strftime("%Y%m%d")
     for candidate in folder.glob(f"{BACKUP_PREFIX}auto_{today}_*.zip"):
         try:
@@ -304,7 +309,7 @@ def maybe_create_daily_backup(
             continue
     return create_backup(
         data_dir, app_version=app_version,
-        retention_count=retention_count, backup_kind="auto",
+        retention_count=retention_count, backup_kind="auto", backup_dir=backup_dir,
     )
 
 
@@ -315,13 +320,14 @@ def restore_backup(
     app_version: str = "",
     retention_count: int = 7,
     create_pre_restore_backup: bool = True,
+    backup_dir: str | Path | None = None,
 ) -> dict[str, str]:
     """Verify, stage, then transactionally restore user data with rollback."""
     root = Path(data_dir).expanduser().resolve()
     if not root.is_dir():
         raise BackupError("Папка данных Моей ИИшки не найдена.")
     archive_path = Path(archive_path).expanduser().resolve()
-    backup_directory(root).mkdir(parents=True, exist_ok=True)
+    backup_directory(root, backup_dir).mkdir(parents=True, exist_ok=True)
     stage_root = Path(tempfile.mkdtemp(prefix=".restore-work-", dir=str(root)))
     stage = stage_root / "stage"
     rollback = stage_root / "rollback"
@@ -360,7 +366,7 @@ def restore_backup(
         if create_pre_restore_backup and (root / "assistant.db").is_file():
             safety_backup = create_backup(
                 root, app_version=app_version, retention_count=retention_count,
-                backup_kind="pre-restore",
+                backup_kind="pre-restore", backup_dir=backup_dir,
             )
 
         try:

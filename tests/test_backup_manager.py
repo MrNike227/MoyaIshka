@@ -109,6 +109,12 @@ class BackupManagerTests(unittest.TestCase):
             inspect_backup(archive)
         self.assertFalse((Path(self.temp.name) / "outside.txt").exists())
 
+    def test_custom_backup_directory_is_used(self):
+        target = Path(self.temp.name) / "D_drive" / "MoyaIshka_Backups"
+        archive = create_backup(self.root, app_version="4.1.9", backup_dir=target)
+        self.assertTrue(archive.is_file())
+        self.assertEqual(archive.parent, target)
+
     def test_daily_backup_is_created_only_once_per_day(self):
         first = maybe_create_daily_backup(self.root, app_version="4.1.9")
         second = maybe_create_daily_backup(self.root, app_version="4.1.9")
