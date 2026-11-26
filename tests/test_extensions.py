@@ -1,11 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff, build_model_source_context, extract_unified_diff, parse_improvement_suggestions
+from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, parse_improvement_suggestions
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -55,6 +56,28 @@ class PatchTests(unittest.TestCase):
         )
         updated = apply_unified_diff(source, patch, "main.py")
         self.assertIn("return 'PROFILE'", updated)
+
+    def test_editable_file_scan_uses_project_relative_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "tests" / "MoyaIshka"
+            (root / "pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / ".git" / "hooks").mkdir(parents=True)
+            (root / ".github").mkdir()
+            (root / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "pkg" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+            (root / "tests" / "test_module.py").write_text("VALUE = 3\n", encoding="utf-8")
+            (root / ".git" / "hooks" / "hook.py").write_text("VALUE = 4\n", encoding="utf-8")
+            (root / ".github" / "helper.py").write_text("VALUE = 5\n", encoding="utf-8")
+            previous = os.environ.get("MOYA_PROJECT_DIR")
+            os.environ["MOYA_PROJECT_DIR"] = str(root)
+            try:
+                self.assertEqual(editable_project_files(), ["main.py", "pkg/module.py"])
+            finally:
+                if previous is None:
+                    os.environ.pop("MOYA_PROJECT_DIR", None)
+                else:
+                    os.environ["MOYA_PROJECT_DIR"] = previous
 
     def test_small_source_context_is_unchanged(self):
         source = "def answer():\n    return 42\n"
