@@ -102,6 +102,15 @@ class OnedirUpdateTests(unittest.TestCase):
             self.assertEqual(validate_app_folder(app, "4.1.8.4")["version"], "4.1.8.4")
             self.assertEqual(validate_app_directory(app, "4.1.8.4")["version"], "4.1.8.4")
 
+    def test_unmanifested_runtime_dll_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = write_fake_app(Path(temp))
+            (app / "_internal" / "unexpected.dll").write_bytes(b"unexpected")
+            with self.assertRaisesRegex(RuntimeError, "лишние"):
+                validate_app_folder(app, "4.1.8.4")
+            with self.assertRaisesRegex(RuntimeError, "лишние"):
+                validate_app_directory(app, "4.1.8.4")
+
     def test_tampered_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             app = write_fake_app(Path(temp))

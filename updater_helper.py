@@ -742,6 +742,21 @@ def _directory_updater_script() -> str:
         if ([string]$manifest.entrypoint -ne 'MoyaIshka.exe') { throw 'Неверная точка входа.' }
         $items = @($manifest.files)
         if ($items.Count -lt 1 -or $items.Count -gt 20000) { throw 'Неверное число файлов в манифесте.' }
+        $manifestFullPath = [IO.Path]::GetFullPath($manifestPath)
+        $expectedPaths = @($items | ForEach-Object { ([string]$_.path).Replace('/', '\').ToLowerInvariant() } | Sort-Object -Unique)
+        $treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse)
+        $reparsePoints = @($treeItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+        if ($reparsePoints.Count -gt 0) { throw 'Символические ссылки и reparse points в папке приложения запрещены.' }
+        $actualPaths = @(
+            Get-ChildItem -LiteralPath $Folder -File -Force -Recurse |
+                Where-Object { [IO.Path]::GetFullPath($_.FullName) -ine $manifestFullPath } |
+                ForEach-Object { $_.FullName.Substring($base.Length).Replace('\', '/').ToLowerInvariant() } |
+                Sort-Object -Unique
+        )
+        if ($actualPaths.Count -ne $expectedPaths.Count -or
+            @(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $actualPaths).Count -gt 0) {
+            throw 'Фактический состав папки не совпадает с build_manifest.json.'
+        }
         $base = [IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
         foreach ($item in $items) {
             $relative = ([string]$item.path).Replace('/', '\')
@@ -767,7 +782,11 @@ def _directory_updater_script() -> str:
     function Rollback([string]$Reason) {
         Log "Откат: $Reason"
         if ($NewProcess -and -not $NewProcess.HasExited) {
-            try { Stop-Process -Id $NewProcess.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 700 } catch {}
+            try {
+                Stop-Process -Id $NewProcess.Id -Force -ErrorAction SilentlyContinue
+                [void]$NewProcess.WaitForExit(15000)
+            } catch {}
+            try { $NewProcess.Refresh() } catch {}
         }
         try {
             if ($NewInstalled -and (Test-Path -LiteralPath $TargetDir)) {
@@ -777,6 +796,10 @@ def _directory_updater_script() -> str:
                 if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
                 Move-Item -LiteralPath $BackupDir -Destination $TargetDir
                 Log 'Резервная папка восстановлена.'
+                Remove-Item Env:MOYA_UPDATE_RECEIPT -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_VERSION -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_SHA256 -ErrorAction SilentlyContinue
+                Remove-Item Env:MOYA_UPDATE_TARGET -ErrorAction SilentlyContinue
                 Start-Process -FilePath (Join-Path $TargetDir 'MoyaIshka.exe') -WorkingDirectory $TargetDir | Out-Null
             } elseif (-not $BackupReady -and $NewInstalled) {
                 Log 'Старой установки не было; неудачная новая папка удалена.'
