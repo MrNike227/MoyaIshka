@@ -3751,37 +3751,260 @@ class MoyaIshkaApp:
             self.research_results_var.set(str(self.config.get("research_results_limit", 5)))
             self.research_fetch_var.set(str(self.config.get("research_fetch_pages", 3)))
 
-    def save_backup_settings(self) -> None:
+    def _backup_directory(self) -> Path:
+        configured = str(self.config.get("backup_dir", "")).strip()
+        return Path(configured).expanduser().resolve() if configured else default_backup_directory()
+
+    def choose_backup_directory(self) -> None:
+        current = self._backup_directory()
+        initial = current if current.is_dir() else current.parent
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            title="Выбери папку резервных копий (вне папки установки)",
+            initialdir=str(initial if initial.exists() else Path.home()),
+            mustexist=False,
+        )
+        if selected:
+            self.backup_dir_var.set(str(Path(selected).expanduser().resolve()))
+            self.save_backup_settings()
+
+    def save_backup_settings(self) -> bool:
         try:
             retention = max(3, min(30, int(self.backup_retention_var.get())))
-        except (ValueError, AttributeError):
-            retention = 7
+            cloud_retention = max(3, min(30, int(self.backup_cloud_retention_var.get())))
+            backup_dir = Path(self.backup_dir_var.get().strip() or default_backup_directory()).expanduser().resolve()
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            if not backup_dir.is_dir():
+                raise OSError("Выбранный путь не является папкой.")
+        except (ValueError, AttributeError, OSError) as exc:
+            messagebox.showerror("Резервное копирование", f"Не удалось сохранить папку копий или параметры: {exc}")
+            return False
         self.config["auto_backup_enabled"] = bool(self.auto_backup_var.get())
         self.config["backup_retention_count"] = retention
+        self.config["backup_dir"] = str(backup_dir)
+        self.config["backup_cloud_enabled"] = bool(self.backup_cloud_enabled_var.get())
+        self.config["backup_cloud_retention_count"] = cloud_retention
         atomic_json_save(CONFIG_PATH, self.config)
         self.backup_status_var.set(
-            f"Автокопирование: {'включено' if self.config['auto_backup_enabled'] else 'выключено'} · "
-            f"хранится до {retention} копий · {DATA_DIR / 'backups'}"
+            f"Папка: {backup_dir} · локально: {retention} · Google Drive: "
+            f"{'включён' if self.config['backup_cloud_enabled'] else 'выключен'} · облако: {cloud_retention}"
         )
+        return True
 
     def open_backup_folder(self) -> None:
-        self._open_local_folder(DATA_DIR / "backups")
+        folder = self._backup_directory()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            self._open_local_folder(folder)
+        except OSError as exc:
+            messagebox.showerror("Папка резервных копий", str(exc))
+
+    def _backup_queue_items(self) -> list[str]:
+        values = load_json(BACKUP_UPLOAD_QUEUE_PATH, [])
+        if not isinstance(values, list):
+            return []
+        return list(dict.fromkeys(
+            Path(str(item)).name for item in values
+            if isinstance(item, str)
+            and Path(str(item)).name == str(item)
+            and str(item).lower().endswith(".zip")
+        ))
+
+    def _save_backup_queue(self, values: list[str]) -> None:
+        safe = list(dict.fromkeys(
+            Path(str(item)).name for item in values
+            if isinstance(item, str)
+            and Path(str(item)).name == str(item)
+            and str(item).lower().endswith(".zip")
+        ))
+        atomic_json_save(BACKUP_UPLOAD_QUEUE_PATH, safe)
+
+    def _queue_backup_upload(self, archive_path: Path) -> None:
+        pending = self._backup_queue_items()
+        if archive_path.name not in pending:
+            pending.append(archive_path.name)
+        self._save_backup_queue(pending)
+
+    def _remove_backup_from_queue(self, filename: str) -> None:
+        self._save_backup_queue([item for item in self._backup_queue_items() if item != Path(filename).name])
+
+    @staticmethod
+    def _backup_drive_client(package: dict[str, Any]) -> GoogleDriveVaultClient:
+        if str(package.get("provider", "")) != "google_drive":
+            raise GoogleDriveError("Резервные архивы поддерживаются через подключённый Google Drive.")
+        session = package.get("session", {}) if isinstance(package.get("session"), dict) else {}
+        return GoogleDriveVaultClient(
+            str(package.get("client_id", "")),
+            str(package.get("client_secret", "")),
+            dict(session),
+        )
+
+    @staticmethod
+    def _save_backup_drive_session(package: dict[str, Any], client: GoogleDriveVaultClient) -> None:
+        updated = dict(package)
+        updated["session"] = dict(client.session)
+        save_protected_session(GOOGLE_DRIVE_SESSION_PATH, updated)
+
+    def _upload_backup_archive(
+        self,
+        archive_path: Path,
+        package: dict[str, Any],
+        cloud_retention: int,
+    ) -> str:
+        passphrase = str(package.get("e2e_passphrase", ""))
+        if len(passphrase) < 10:
+            raise BackupEncryptionError("В защищённой сессии Google Drive не найден пароль E2E.")
+        encrypted_path = archive_path.with_suffix(".mibak")
+        if not encrypted_path.is_file():
+            encrypt_backup_file(archive_path, encrypted_path, passphrase)
+        encrypted_hash = backup_sha256_file(encrypted_path)
+        client = self._backup_drive_client(package)
+
+        # A previous upload may have reached Drive even if the client lost its response.
+        # Check for an identical encrypted archive before trying to upload it again.
+        remote_match = next(
+            (item for item in client.list_backup_files() if item.get("sha256") == encrypted_hash),
+            None,
+        )
+        if remote_match:
+            if int(remote_match.get("size", 0)) != encrypted_path.stat().st_size:
+                raise GoogleDriveError("Размер уже загруженной резервной копии не совпадает. Локальный архив сохранён.")
+            client.prune_backup_files(cloud_retention)
+            self._save_backup_drive_session(package, client)
+            encrypted_path.unlink(missing_ok=True)
+            return f"Зашифрованная копия уже подтверждена в Google Drive: {remote_match.get('name', encrypted_path.name)}."
+
+        limit_gb = max(1, min(int(self.config.get("google_drive_storage_limit_gb", 10) or 10), 10))
+        encrypted_size = encrypted_path.stat().st_size
+        usage = client.get_app_folder_usage()
+        if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
+            client.prune_backup_files(cloud_retention)
+            usage = client.get_app_folder_usage()
+            if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
+                raise GoogleDriveError(
+                    f"В папке Моя ИИшка Cloud превышен мягкий лимит {limit_gb} ГБ. "
+                    "Удалите старые архивы в Google Drive или увеличьте лимит в настройках."
+                )
+
+        parts = archive_path.stem.split("_")
+        backup_kind = parts[2] if len(parts) > 2 and parts[0] == "MoyaIshka" else "manual"
+        client.upload_backup_file(
+            encrypted_path,
+            remote_name=encrypted_path.name,
+            sha256=encrypted_hash,
+            app_version=APP_VERSION,
+            backup_kind=backup_kind,
+        )
+        remote_match = next(
+            (item for item in client.list_backup_files() if item.get("sha256") == encrypted_hash),
+            None,
+        )
+        if not remote_match or int(remote_match.get("size", 0)) != encrypted_size:
+            raise GoogleDriveError("Google Drive не подтвердил наличие полной копии после загрузки. Локальный архив сохранён.")
+        client.prune_backup_files(cloud_retention)
+        self._save_backup_drive_session(package, client)
+        encrypted_path.unlink(missing_ok=True)
+        return f"Зашифрованная копия подтверждена в Google Drive: {remote_match.get('name', encrypted_path.name)}."
+
+    def _upload_backup_queue(
+        self,
+        backup_dir: Path,
+        package: dict[str, Any],
+        cloud_retention: int,
+    ) -> tuple[int, int, str]:
+        pending = self._backup_queue_items()
+        uploaded = 0
+        error_text = ""
+        remaining = list(pending)
+        for filename in pending:
+            archive = backup_dir / filename
+            if not archive.is_file() or archive.is_symlink():
+                remaining.remove(filename)
+                self._save_backup_queue(remaining)
+                continue
+            try:
+                self._upload_backup_archive(archive, package, cloud_retention)
+                remaining.remove(filename)
+                self._save_backup_queue(remaining)
+                uploaded += 1
+            except Exception as exc:
+                error_text = str(exc)
+                break
+        self._save_backup_queue(remaining)
+        return uploaded, len(remaining), error_text
+
+    def _create_and_queue_backup(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+        *,
+        automatic: bool,
+    ) -> tuple[Path | None, str]:
+        if automatic:
+            archive = maybe_create_daily_backup(
+                DATA_DIR, app_version=APP_VERSION, retention_count=retention, backup_dir=backup_dir,
+            )
+        else:
+            archive = create_backup(
+                DATA_DIR, app_version=APP_VERSION, retention_count=retention, backup_dir=backup_dir,
+            )
+        if not cloud_enabled:
+            return archive, "Загрузка в Google Drive выключена." if archive else ""
+        if archive is not None:
+            self._queue_backup_upload(archive)
+        if not package:
+            pending_count = len(self._backup_queue_items())
+            note = f"Ожидают подключения Google Drive: {pending_count} копий." if pending_count else "Google Drive не подключён; локальная копия сохранена."
+            return archive, note
+        uploaded, pending_count, error_text = self._upload_backup_queue(backup_dir, package, cloud_retention)
+        if error_text:
+            note = f"Облачная отправка отложена до восстановления связи: {error_text}"
+        elif uploaded:
+            note = f"В Google Drive подтверждена загрузка: {uploaded}; в очереди осталось: {pending_count}."
+        else:
+            note = f"Ожидают отправки в Google Drive: {pending_count}." if pending_count else "В Google Drive уже есть актуальные копии."
+        return archive, note
 
     def create_local_backup(self) -> None:
         if self.backup_working:
             self.backup_status_var.set("Операция с резервной копией уже выполняется.")
             return
-        self.save_backup_settings()
+        if not self.save_backup_settings():
+            return
         self.backup_working = True
-        self.backup_status_var.set("Создаю резервную копию…")
-        retention = int(self.config.get("backup_retention_count", 7))
-        threading.Thread(target=self._manual_backup_worker, args=(retention,), daemon=True).start()
+        self.backup_status_var.set("Создаю локальную копию и отправляю зашифрованный архив в облако…")
+        threading.Thread(
+            target=self._manual_backup_worker,
+            args=(
+                int(self.config.get("backup_retention_count", 7)),
+                self._backup_directory(),
+                bool(self.config.get("backup_cloud_enabled", True)),
+                dict(self.google_drive_session) if self.google_drive_session_ready else None,
+                int(self.config.get("backup_cloud_retention_count", 7)),
+            ),
+            daemon=True,
+        ).start()
 
-    def _manual_backup_worker(self, retention: int) -> None:
+    def _manual_backup_worker(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+    ) -> None:
         ResourceGovernor.set_current_thread_low_priority()
         try:
-            path = create_backup(DATA_DIR, app_version=APP_VERSION, retention_count=retention)
-            self.events.put(("backup_created", str(path)))
+            archive, cloud_status = self._create_and_queue_backup(
+                retention, backup_dir, cloud_enabled, package, cloud_retention, automatic=False,
+            )
+            self.events.put(("backup_created", {
+                "path": str(archive) if archive else "",
+                "cloud_status": cloud_status,
+            }))
         except Exception as exc:
             self.events.put(("backup_error", str(exc)))
 
@@ -3790,20 +4013,102 @@ class MoyaIshkaApp:
             return
         if bool(self.config.get("auto_backup_enabled", True)) and not self.backup_working:
             self.backup_working = True
-            retention = int(self.config.get("backup_retention_count", 7))
-            threading.Thread(target=self._automatic_backup_worker, args=(retention,), daemon=True).start()
+            threading.Thread(
+                target=self._automatic_backup_worker,
+                args=(
+                    int(self.config.get("backup_retention_count", 7)),
+                    self._backup_directory(),
+                    bool(self.config.get("backup_cloud_enabled", True)),
+                    dict(self.google_drive_session) if self.google_drive_session_ready else None,
+                    int(self.config.get("backup_cloud_retention_count", 7)),
+                ),
+                daemon=True,
+            ).start()
         self.root.after(6 * 60 * 60 * 1000, self._schedule_automatic_backup)
 
-    def _automatic_backup_worker(self, retention: int) -> None:
+    def _automatic_backup_worker(
+        self,
+        retention: int,
+        backup_dir: Path,
+        cloud_enabled: bool,
+        package: dict[str, Any] | None,
+        cloud_retention: int,
+    ) -> None:
         ResourceGovernor.set_current_thread_low_priority()
         try:
-            path = maybe_create_daily_backup(DATA_DIR, app_version=APP_VERSION, retention_count=retention)
-            self.events.put(("backup_auto_result", str(path) if path else ""))
+            archive, cloud_status = self._create_and_queue_backup(
+                retention, backup_dir, cloud_enabled, package, cloud_retention, automatic=True,
+            )
+            self.events.put(("backup_auto_result", {
+                "path": str(archive) if archive else "",
+                "cloud_status": cloud_status,
+            }))
         except Exception as exc:
             self.events.put(("backup_error", str(exc)))
 
+    def upload_pending_backups_now(self) -> None:
+        if self.backup_upload_working or self.backup_working:
+            self.backup_status_var.set("Другая операция с резервной копией уже выполняется.")
+            return
+        if not bool(self.config.get("backup_cloud_enabled", True)):
+            self.backup_status_var.set("Отправка в Google Drive выключена в настройках копирования.")
+            return
+        if not self.google_drive_session_ready:
+            messagebox.showwarning("Google Drive", "Сначала подключи Google Drive и пароль E2E в настройках.")
+            return
+        if not self._backup_queue_items():
+            self.backup_status_var.set("Нет копий, ожидающих отправки в Google Drive.")
+            return
+        self.backup_upload_working = True
+        self.backup_status_var.set("Отправляю ожидающие резервные копии в Google Drive…")
+        threading.Thread(
+            target=self._retry_backup_upload_worker,
+            args=(
+                self._backup_directory(),
+                dict(self.google_drive_session),
+                int(self.config.get("backup_cloud_retention_count", 7)),
+            ),
+            daemon=True,
+        ).start()
+
+    def _retry_backup_upload_worker(self, backup_dir: Path, package: dict[str, Any], cloud_retention: int) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            result = self._upload_backup_queue(backup_dir, package, cloud_retention)
+            self.events.put(("backup_upload_result", result))
+        except Exception as exc:
+            self.events.put(("backup_upload_result", (0, len(self._backup_queue_items()), str(exc))))
+
+    def _schedule_backup_upload_retry(self) -> None:
+        try:
+            if not self.root.winfo_exists():
+                return
+            if (
+                bool(self.config.get("backup_cloud_enabled", True))
+                and self.google_drive_session_ready
+                and self._backup_queue_items()
+                and not self.backup_working
+                and not self.backup_upload_working
+            ):
+                self.backup_upload_working = True
+                threading.Thread(
+                    target=self._retry_backup_upload_worker,
+                    args=(
+                        self._backup_directory(),
+                        dict(self.google_drive_session),
+                        int(self.config.get("backup_cloud_retention_count", 7)),
+                    ),
+                    daemon=True,
+                ).start()
+        finally:
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(30 * 60 * 1000, self._schedule_backup_upload_retry)
+            except tk.TclError:
+                pass
+
     def restore_local_backup(self) -> None:
-        if self.backup_working:
+        if self.backup_working or self.backup_upload_working:
             messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
             return
         if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
@@ -3812,10 +4117,10 @@ class MoyaIshkaApp:
                 "Сначала дождись завершения ответа ИИ, голосовой операции, исследования и облачной синхронизации.",
             )
             return
-        folder = DATA_DIR / "backups"
+        folder = self._backup_directory()
         selected = filedialog.askopenfilename(
             title="Выбери резервную копию Моей ИИшки",
-            initialdir=str(folder if folder.exists() else DATA_DIR),
+            initialdir=str(folder if folder.exists() else folder.parent),
             filetypes=[("Резервные копии Моя ИИшка", "*.zip")],
         )
         if not selected:
@@ -3826,7 +4131,8 @@ class MoyaIshkaApp:
             "Перед заменой программа создаст отдельную страховочную копию. Продолжить?",
         ):
             return
-        self.save_backup_settings()
+        if not self.save_backup_settings():
+            return
         self.backup_working = True
         self.backup_status_var.set("Проверяю архив и подготавливаю безопасное восстановление…")
         try:
@@ -3835,19 +4141,171 @@ class MoyaIshkaApp:
             pass
         retention = int(self.config.get("backup_retention_count", 7))
         threading.Thread(
-            target=self._restore_backup_worker, args=(selected, retention), daemon=True,
+            target=self._restore_backup_worker,
+            args=(selected, retention, self._backup_directory()),
+            daemon=True,
         ).start()
 
-    def _restore_backup_worker(self, archive_path: str, retention: int) -> None:
+    def _restore_backup_worker(self, archive_path: str, retention: int, backup_dir: Path) -> None:
         ResourceGovernor.set_current_thread_low_priority()
         try:
             restored = restore_backup(
                 archive_path, DATA_DIR, app_version=APP_VERSION,
-                retention_count=retention, create_pre_restore_backup=True,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
             )
             self.events.put(("backup_restore_complete", (True, str(restored.get("source", archive_path)))))
         except Exception as exc:
             self.events.put(("backup_restore_complete", (False, str(exc))))
+
+    def restore_cloud_backup(self) -> None:
+        if not self.google_drive_session_ready:
+            messagebox.showwarning("Google Drive", "Для восстановления из облака сначала подключи Google Drive и пароль E2E.")
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Резервные копии Google Drive")
+        dialog.transient(self.root)
+        dialog.geometry("660x390")
+        dialog.minsize(520, 300)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Выбери зашифрованную резервную копию. Перед восстановлением текущие данные будут сохранены.", wraplength=620).pack(anchor="w", pady=(0, 8))
+        self.cloud_backup_listbox = tk.Listbox(frame, height=12, exportselection=False)
+        self.cloud_backup_listbox.pack(fill="both", expand=True)
+        self.cloud_backup_status_var = tk.StringVar(value="Получаю список резервных копий Google Drive…")
+        ttk.Label(frame, textvariable=self.cloud_backup_status_var, wraplength=620).pack(anchor="w", pady=(8, 6))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Обновить список", command=self._request_cloud_backup_list).pack(side="left")
+        ttk.Button(actions, text="Восстановить выбранную", style="Accent.TButton", command=self._restore_selected_cloud_backup).pack(side="right")
+        ttk.Button(actions, text="Закрыть", command=dialog.destroy).pack(side="right", padx=8)
+        self.cloud_backup_dialog = dialog
+        self.cloud_backup_items = []
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self._request_cloud_backup_list()
+
+    def _request_cloud_backup_list(self) -> None:
+        if not self.google_drive_session_ready:
+            return
+        package = dict(self.google_drive_session)
+        threading.Thread(target=self._list_cloud_backups_worker, args=(package,), daemon=True).start()
+
+    def _list_cloud_backups_worker(self, package: dict[str, Any]) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        try:
+            client = self._backup_drive_client(package)
+            items = client.list_backup_files()
+            self._save_backup_drive_session(package, client)
+            self.events.put(("backup_cloud_list", items))
+        except Exception as exc:
+            self.events.put(("backup_cloud_list_error", str(exc)))
+
+    def _show_cloud_backup_items(self, items: list[dict[str, Any]]) -> None:
+        try:
+            if self.cloud_backup_dialog is None or not self.cloud_backup_dialog.winfo_exists() or self.cloud_backup_listbox is None:
+                return
+            self.cloud_backup_items = list(items or [])
+            self.cloud_backup_listbox.delete(0, "end")
+            for item in self.cloud_backup_items:
+                when = str(item.get("modified_time", ""))
+                try:
+                    parsed = datetime.fromisoformat(when.replace("Z", "+00:00"))
+                    when = parsed.astimezone().strftime("%d.%m.%Y %H:%M")
+                except (ValueError, TypeError):
+                    when = when or "дата неизвестна"
+                size_mb = int(item.get("size", 0) or 0) / (1024 * 1024)
+                self.cloud_backup_listbox.insert(
+                    "end",
+                    f"{item.get('name', 'Резервная копия')} · {when} · {size_mb:.1f} МБ",
+                )
+            if self.cloud_backup_status_var is not None:
+                self.cloud_backup_status_var.set(
+                    f"Найдено резервных копий: {len(self.cloud_backup_items)}. Архивы зашифрованы на этом ПК."
+                    if self.cloud_backup_items else "В папке Google Drive пока нет резервных копий."
+                )
+        except tk.TclError:
+            return
+
+    def _restore_selected_cloud_backup(self) -> None:
+        if self.cloud_backup_listbox is None:
+            return
+        selected = self.cloud_backup_listbox.curselection()
+        if not selected or selected[0] >= len(self.cloud_backup_items):
+            messagebox.showinfo("Google Drive", "Сначала выбери резервную копию.")
+            return
+        if self.busy or self.research_busy or self.cloud_sync_busy or self.voice_busy or self.voice_download_busy:
+            messagebox.showwarning("Восстановление", "Сначала дождись завершения текущих задач ИИ.")
+            return
+        item = dict(self.cloud_backup_items[selected[0]])
+        if not messagebox.askyesno(
+            "Восстановить из Google Drive",
+            f"Заменить текущую историю, память, настройки, базу знаний, навыки и плагины архивом «{item.get('name', '')}»? "
+            "Перед этим будет создана страховочная копия текущих данных.",
+        ):
+            return
+        if not self.save_backup_settings():
+            return
+        self.backup_working = True
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        backup_dir = self._backup_directory()
+        retention = int(self.config.get("backup_retention_count", 7))
+        package = dict(self.google_drive_session)
+        try:
+            if self.cloud_backup_dialog is not None:
+                self.cloud_backup_dialog.destroy()
+        except tk.TclError:
+            pass
+        self.cloud_backup_dialog = None
+        threading.Thread(
+            target=self._restore_cloud_backup_worker,
+            args=(item, package, backup_dir, retention),
+            daemon=True,
+        ).start()
+
+    def _restore_cloud_backup_worker(
+        self,
+        item: dict[str, Any],
+        package: dict[str, Any],
+        backup_dir: Path,
+        retention: int,
+    ) -> None:
+        ResourceGovernor.set_current_thread_low_priority()
+        temp_root: Path | None = None
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            temp_root = Path(tempfile.mkdtemp(prefix=".cloud-restore-", dir=str(backup_dir)))
+            safe_name = Path(str(item.get("name", "cloud-backup.mibak"))).name
+            encrypted_path = temp_root / safe_name
+            archive_path = temp_root / "restored_backup.zip"
+            client = self._backup_drive_client(package)
+            download_info = client.download_backup_file(str(item.get("id", "")), encrypted_path)
+            expected_hash = str(item.get("sha256", "")).lower()
+            if not expected_hash or str(download_info.get("sha256", "")).lower() != expected_hash:
+                raise BackupEncryptionError("SHA-256 скачанной резервной копии не совпал с Google Drive. Восстановление отменено.")
+            decrypt_backup_file(encrypted_path, archive_path, str(package.get("e2e_passphrase", "")))
+            inspect_backup(archive_path)
+            restored = restore_backup(
+                archive_path, DATA_DIR, app_version=APP_VERSION,
+                retention_count=retention, create_pre_restore_backup=True, backup_dir=backup_dir,
+            )
+            self._save_backup_drive_session(package, client)
+            self.events.put((
+                "backup_restore_complete",
+                (True, f"Google Drive: {item.get('name', 'резервная копия')} · восстановлено файлов: {restored.get('files_restored', '0')}"),
+            ))
+        except Exception as exc:
+            self.events.put(("backup_restore_complete", (False, str(exc))))
+        finally:
+            if temp_root is not None:
+                shutil.rmtree(temp_root, ignore_errors=True)
 
     def _reload_after_backup_restore(self) -> None:
         saved = load_json(CONFIG_PATH, {})
