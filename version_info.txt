@@ -17,11 +17,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Moya Ishka'),
           StringStruct('FileDescription', 'Moya Ishka Desktop Assistant'),
-          StringStruct('FileVersion', '4.2.2'),
+          StringStruct('FileVersion', '4.2.3'),
           StringStruct('InternalName', 'MoyaIshka'),
           StringStruct('OriginalFilename', 'MoyaIshka.exe'),
           StringStruct('ProductName', 'Moya Ishka'),
-          StringStruct('ProductVersion', '4.2.2')
+          StringStruct('ProductVersion', '4.2.3')
         ]
       )
     ]),
