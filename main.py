@@ -3584,56 +3584,53 @@ class MoyaIshkaApp:
                         messagebox.showerror("Обновление", "GitHub не передал номер версии релиза. Для безопасной установки нужна точная версия.")
                         continue
                     self.update_status_var.set(f"Обновление {self.staged_update_version} загружено и проверено: {self.staged_update_path.name}")
-                    # Ask for a permanent folder on the first install; afterwards always reuse it.
+                    # Keep the active App directory separate from the optional container root.
+                    # The folder picker here selects the actual application directory,
+                    # not the parent which contains App and Updates.
                     initial = self._selected_install_dir()
                     if bool(self.config.get("install_dir_user_selected", False)):
                         destination_dir = initial
                     else:
                         selected = filedialog.askdirectory(
                             parent=self.root,
-                            title="Выбери постоянную папку установки Моей ИИшки",
+                            title="Выбери постоянную папку программы (папку App)",
                             initialdir=str(initial),
                             mustexist=False,
                         )
                         if not selected:
                             messagebox.showinfo(
                                 "Обновление загружено",
-                                f"Установка отменена. Проверенный файл остаётся во временной папке:\n{self.staged_update_path}\n\nПапку установки можно выбрать позже в Настройках → Автоматические обновления.",
+                                f"Установка отменена. Проверенный пакет остаётся во временной папке:\n{self.staged_update_path}\n\nПапку программы можно выбрать позже в Настройках → Автоматические обновления.",
                             )
                             continue
                         destination_dir = Path(selected).expanduser().resolve()
-                        self.update_install_dir_var.set(str(destination_dir))
-                        self.save_update_settings(show_message=False)
 
                     try:
                         destination_dir = ensure_install_dir_writable(destination_dir)
                     except Exception as exc:
                         messagebox.showerror("Папка установки", str(exc))
                         continue
-                    self.config["install_dir"] = str(destination_dir)
-                    self.config["install_dir_user_selected"] = True
-                    atomic_json_save(CONFIG_PATH, self.config)
                     target = destination_dir / "MoyaIshka.exe"
                     if getattr(sys, "frozen", False):
                         current_exe = Path(sys.executable).resolve()
                         if target.resolve() != current_exe:
                             prompt = (
                                 "Контрольная сумма проверена.\n\nСтарая программа закроется, новая версия будет установлена в выбранную папку и запустится.\n\n"
-                                f"Папка установки:\n{destination_dir}\n\n"
+                                f"Папка App:\n{destination_dir}\n\n"
                                 "Старая копия в прежней папке останется. Её можно удалить после проверки новой версии.\n\nПродолжить?"
                             )
                         else:
                             prompt = (
-                                "Контрольная сумма проверена.\n\nТекущая программа закроется, EXE будет безопасно заменён и приложение запустится снова.\n\n"
-                                f"Папка установки:\n{destination_dir}\n\nПродолжить?"
+                                "Контрольная сумма проверена.\n\nТекущая программа закроется, папка App будет безопасно заменена и приложение запустится снова.\n\n"
+                                f"Папка App:\n{destination_dir}\n\nПродолжить?"
                             )
                         if messagebox.askyesno("Установить обновление", prompt):
-                            self._apply_staged_update()
+                            self._apply_staged_update(destination_dir)
                     else:
                         if messagebox.askyesno(
                             "Установить автономную версию",
                             "Сейчас ИИшка запущена через Python/START.bat. Будет установлена самостоятельная версия EXE.\n\n"
-                            f"Постоянная папка установки:\n{destination_dir}\n\n"
+                            f"Папка App:\n{destination_dir}\n\n"
                             "В дальнейшем обновления будут устанавливаться в эту же папку.\n"
                             "Текущая программа закроется, а новая версия запустится автоматически.\n\nПродолжить?",
                         ):
@@ -5855,6 +5852,11 @@ class MoyaIshkaApp:
 
     def install_current_build_to_selected_folder(self) -> None:
         """Move the complete onedir folder into Container/App using the verified installer."""
+        previous_values = {
+            key: self.config.get(key)
+            for key in ("install_root_dir", "updates_dir", "install_dir", "install_dir_user_selected")
+        }
+        staged_dir: Path | None = None
         try:
             root = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
             layout = resolve_install_layout(root)
@@ -5863,13 +5865,13 @@ class MoyaIshkaApp:
                 raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
             ensure_install_dir_writable(layout["updates"])
             destination = ensure_install_dir_writable(layout["app"])
-            self.config["install_root_dir"] = str(root)
-            self.config["updates_dir"] = str(layout["updates"])
-            self.config["install_dir"] = str(destination)
-            self.config["install_dir_user_selected"] = True
-            atomic_json_save(CONFIG_PATH, self.config)
 
             if not getattr(sys, "frozen", False):
+                self.config["install_root_dir"] = str(root)
+                self.config["updates_dir"] = str(layout["updates"])
+                self.config["install_dir"] = str(destination)
+                self.config["install_dir_user_selected"] = True
+                atomic_json_save(CONFIG_PATH, self.config)
                 self.update_status_var.set(
                     f"Контейнер настроен. App: {destination}. Updates: {layout['updates']}."
                 )
@@ -5883,18 +5885,23 @@ class MoyaIshkaApp:
 
             current_dir = Path(sys.executable).resolve().parent
             if current_dir == destination:
+                self.config["install_root_dir"] = str(root)
+                self.config["updates_dir"] = str(layout["updates"])
+                self.config["install_dir"] = str(destination)
+                self.config["install_dir_user_selected"] = True
+                atomic_json_save(CONFIG_PATH, self.config)
                 self.update_status_var.set(f"Приложение уже установлено в {destination}")
-                messagebox.showinfo("Установка", "Текущая версия уже находится в выбранной папке.")
+                messagebox.showinfo("Установка", "Программа уже находится в App выбранного контейнера.")
                 return
 
-            # Never copy only MoyaIshka.exe: Python DLL, cryptography and all
-            # native extensions belong to the _internal directory.
+            # Validate the current installation before prompting or changing settings.
             validate_app_directory(current_dir, APP_VERSION)
             if not messagebox.askyesno(
                 "Переместить приложение",
                 "Будет скопирована вся папка приложения, включая _internal и DLL.\n\n"
-                f"Новая папка:\n{destination}\n\n"
-                "Текущая папка станет резервной, если там уже есть старая версия. "
+                f"Новая папка App:\n{destination}\n\n"
+                f"Папка Updates останется отдельно:\n{layout['updates']}\n\n"
+                "Старая установка останется на месте как резервная копия. "
                 "После проверки новая копия запустится автоматически. Продолжить?",
             ):
                 return
@@ -5906,24 +5913,44 @@ class MoyaIshkaApp:
             shutil.copytree(current_dir, staged_dir)
             validate_app_directory(staged_dir, APP_VERSION)
 
-            launch_windows_directory_replacement(
-                staged_app_dir=staged_dir,
-                target_dir=destination,
-                parent_pid=os.getpid(),
-                log_path=DATA_DIR / "update.log",
-                expected_version=APP_VERSION,
-                receipt_path=DATA_DIR / "update_confirmation.json",
-            )
+            # Persist the new target only after explicit confirmation and successful staging.
+            self.config["install_root_dir"] = str(root)
+            self.config["updates_dir"] = str(layout["updates"])
+            self.config["install_dir"] = str(destination)
+            self.config["install_dir_user_selected"] = True
+            atomic_json_save(CONFIG_PATH, self.config)
+
+            try:
+                launch_windows_directory_replacement(
+                    staged_app_dir=staged_dir,
+                    target_dir=destination,
+                    parent_pid=os.getpid(),
+                    log_path=DATA_DIR / "update.log",
+                    expected_version=APP_VERSION,
+                    receipt_path=DATA_DIR / "update_confirmation.json",
+                )
+            except Exception:
+                for key, value in previous_values.items():
+                    if value is None:
+                        self.config.pop(key, None)
+                    else:
+                        self.config[key] = value
+                atomic_json_save(CONFIG_PATH, self.config)
+                raise
+
             self.update_status_var.set(
-                f"Перенос всей папки передан установщику. Новая копия: {destination}"
+                f"Перенос всей папки передан установщику. App: {destination}. Updates сохранён: {layout['updates']}"
             )
             if self.avatar is not None:
                 self.avatar.hide()
             self.on_close()
         except Exception as exc:
+            if staged_dir is not None and staged_dir.exists():
+                import shutil
+                shutil.rmtree(staged_dir, ignore_errors=True)
             messagebox.showerror(
                 "Установка",
-                f"Текущая версия не затронута. Проверь, что запускается onedir-сборка 4.1.8.5.\n\n{exc}",
+                f"Текущая версия не затронута. Проверь установленную onedir-сборку {APP_VERSION}.\n\n{exc}",
             )
 
     def search_old_versions(self) -> None:
@@ -6145,16 +6172,16 @@ class MoyaIshkaApp:
                 f"Текущая версия не затронута.\n\nПричина: {exc}\n\nПакет сохранён здесь:\n{self.staged_update_path.parent}",
             )
 
-    def _apply_staged_update(self) -> None:
+    def _apply_staged_update(self, install_dir: str | Path | None = None) -> None:
         if not self.staged_update_path or not self.staged_update_path.exists():
             messagebox.showerror("Обновление", "Папка обновления не найдена.")
             return
         try:
-            destination = ensure_install_dir_writable(self._selected_install_dir())
+            destination = ensure_install_dir_writable(install_dir or self._selected_install_dir())
+            # This method is called only after the user accepts installation.
             self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
-            self.update_install_dir_var.set(str(destination))
             launch_windows_directory_replacement(
                 staged_app_dir=self.staged_update_path.parent,
                 target_dir=destination,

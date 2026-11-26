@@ -283,6 +283,44 @@ class ReleaseBuildTests(unittest.TestCase):
             script.index("$treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse"),
         )
 
+    def test_migration_persists_app_target_only_after_user_confirmation(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
+        end = source.index("    def search_old_versions(self) -> None:", start)
+        method = source[start:end]
+        frozen_start = method.index("            current_dir = Path(sys.executable).resolve().parent")
+        confirmation = method.index('if not messagebox.askyesno(', frozen_start)
+        staging = method.index("shutil.copytree(current_dir, staged_dir)", confirmation)
+        staged_validation = method.index("validate_app_directory(staged_dir, APP_VERSION)", staging)
+        persist_target = method.index('self.config["install_dir"] = str(destination)', staged_validation)
+        launch = method.index("launch_windows_directory_replacement(", persist_target)
+        self.assertLess(confirmation, staging)
+        self.assertLess(staging, staged_validation)
+        self.assertLess(staged_validation, persist_target)
+        self.assertLess(persist_target, launch)
+        self.assertIn("layout['updates']", method)
+        self.assertIn("target_dir=destination", method)
+
+    def test_update_download_dialog_selects_app_folder_not_container_root(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index('                elif event == "update_downloaded":')
+        end = source.index('                elif event == "old_versions_scan_complete":', start)
+        handler = source[start:end]
+        self.assertIn("папку программы (папку App)", handler)
+        self.assertNotIn("self.save_update_settings(show_message=False)", handler)
+        self.assertIn("self._apply_staged_update(destination_dir)", handler)
+        self.assertIn("target = destination_dir / \"MoyaIshka.exe\"", handler)
+
+    def test_container_update_target_uses_app_and_keeps_updates_sibling(self):
+        from improvement_delivery import resolve_install_layout
+        with tempfile.TemporaryDirectory() as temp:
+            layout = resolve_install_layout(Path(temp) / "Container")
+            self.assertEqual(layout["app"].name, "App")
+            self.assertEqual(layout["updates"].name, "Updates")
+            self.assertEqual(layout["app"].parent, layout["updates"].parent)
+            source = (ROOT / "main.py").read_text(encoding="utf-8")
+            self.assertIn('return resolve_install_layout(root)["app"]', source)
+
     def test_move_current_build_copies_complete_onedir_folder(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
