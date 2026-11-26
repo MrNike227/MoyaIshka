@@ -25,7 +25,7 @@ def _safe_relative_path(value: str | Path) -> PurePosixPath:
         or path.is_absolute()
         or not path.parts
         or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
-        or path.parts[0].casefold() in {".git", ".github"}
+        or any(part.casefold() in {".git", ".github"} for part in path.parts)
         or path.suffix.casefold() != ".py"
     ):
         raise ValueError("Разрешено сохранять только безопасные относительные пути к Python-файлам проекта.")
