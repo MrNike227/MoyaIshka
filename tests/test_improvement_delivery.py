@@ -7,6 +7,7 @@ from pathlib import Path
 from improvement_delivery import (
     default_install_root,
     resolve_install_layout,
+    ensure_install_layout,
     resolve_updates_directory,
     save_change_bundle,
     save_improvement_suggestions,
