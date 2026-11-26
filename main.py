@@ -52,7 +52,7 @@ from supabase_backup import (
 )
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
+from improvement_delivery import (default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions)
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
@@ -3232,6 +3232,19 @@ class MoyaIshkaApp:
             (item["content"] for item in reversed(history) if item["role"] == "user"), ""
         )
         messages = [{"role": "system", "content": self._build_system_prompt(current_query)}]
+        try:
+            proposal_context = build_improvement_chat_context(
+                self._updates_directory(),
+                current_query,
+                history=history[-8:],
+                current_suggestions=self.improvement_suggestions,
+                current_patch_text=str(getattr(self, "pending_patch_text", "") or ""),
+            )
+            if proposal_context:
+                messages[0]["content"] += "\n\n" + proposal_context
+        except Exception:
+            # Proposal context is optional; a missing Updates folder must not break chat.
+            pass
         messages.extend(history)
         if bool(self.config.get("use_research_library", True)) and current_query:
             last_user = next((item for item in reversed(messages) if item["role"] == "user"), None)
@@ -3539,6 +3552,15 @@ class MoyaIshkaApp:
                 elif event == "improvement_analysis":
                     suggestions, automatic = payload
                     self.improvement_suggestions = list(suggestions)
+                    try:
+                        save_improvement_suggestions(
+                            self._updates_directory(),
+                            self.improvement_suggestions,
+                            source="automatic" if automatic else "manual",
+                        )
+                    except Exception:
+                        # Keep current suggestions available in this session even if disk is read-only.
+                        pass
                     self.improvement_listbox.delete(0, "end")
                     for index, item in enumerate(self.improvement_suggestions, 1):
                         self.improvement_listbox.insert("end", f"{index}. {item['title']}")
