@@ -6016,7 +6016,7 @@ class MoyaIshkaApp:
     def save_update_settings(self, show_message: bool = True) -> None:
         try:
             root = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
-            layout = resolve_install_layout(root)
+            layout = ensure_install_layout(root)
             current_app = Path(str(self.config.get("install_dir", ""))).expanduser().resolve() if self.config.get("install_dir") else None
             if current_app and (layout["updates"] == current_app or current_app in layout["updates"].parents):
                 raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
@@ -6055,7 +6055,7 @@ class MoyaIshkaApp:
         staged_dir: Path | None = None
         try:
             root = ensure_install_dir_writable(self.update_install_dir_var.get().strip())
-            layout = resolve_install_layout(root)
+            layout = ensure_install_layout(root)
             current_app = Path(str(self.config.get("install_dir", ""))).expanduser().resolve() if self.config.get("install_dir") else None
             if current_app and (layout["updates"] == current_app or current_app in layout["updates"].parents):
                 raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
@@ -6583,18 +6583,25 @@ def migrate_staged_exe_on_first_launch() -> bool:
         saved_config = load_json(CONFIG_PATH, {})
         if not isinstance(saved_config, dict):
             saved_config = {}
-        configured_dir = saved_config.get("install_dir")
         was_user_selected = bool(saved_config.get("install_dir_user_selected", False))
-        target_dir = resolve_install_dir(configured=configured_dir)
+        configured_root = str(saved_config.get("install_root_dir", "")).strip()
+        container_root = (
+            Path(configured_root).expanduser().resolve()
+            if configured_root
+            else default_install_root(
+                legacy_install_dir=saved_config.get("install_dir"),
+                running_exe=running_exe,
+            )
+        )
 
-        if not was_user_selected:
+        if not was_user_selected and not configured_root:
             chooser_root = tk.Tk()
             chooser_root.withdraw()
             try:
                 selected = filedialog.askdirectory(
                     parent=chooser_root,
-                    title="Выбери постоянную папку установки Моей ИИшки",
-                    initialdir=str(target_dir),
+                    title="Выбери корневую папку контейнера (в ней будут App и Updates)",
+                    initialdir=str(container_root),
                     mustexist=False,
                 )
             finally:
@@ -6602,10 +6609,14 @@ def migrate_staged_exe_on_first_launch() -> bool:
             if not selected:
                 # Keep the staged app usable; the user can set the target in Settings.
                 return False
-            target_dir = Path(selected).expanduser().resolve()
+            container_root = Path(selected).expanduser().resolve()
 
-        target_dir = ensure_install_dir_writable(target_dir)
+        layout = ensure_install_layout(container_root)
+        target_dir = ensure_install_dir_writable(layout["app"])
+        ensure_install_dir_writable(layout["updates"])
         target_exe = target_dir / "MoyaIshka.exe"
+        saved_config["install_root_dir"] = str(layout["root"])
+        saved_config["updates_dir"] = str(layout["updates"])
         saved_config["install_dir"] = str(target_dir)
         saved_config["install_dir_user_selected"] = True
         atomic_json_save(CONFIG_PATH, saved_config)
