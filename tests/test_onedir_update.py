@@ -7,7 +7,7 @@ from pathlib import Path
 
 from package_onedir import build_package
 from updater import _extract_package, _safe_member_path, validate_app_folder
-from updater_helper import validate_app_directory
+from updater_helper import validate_app_directory, _directory_updater_script
 
 
 def write_fake_app(root: Path, version: str = "4.2.1") -> Path:
@@ -158,6 +158,16 @@ class OnedirUpdateTests(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             self.assertEqual(destination.read_bytes(), b"verified")
             self.assertFalse(source.exists())
+
+    def test_directory_updater_keeps_install_folder_in_place(self):
+        script = _directory_updater_script()
+        self.assertIn("CopyDirectoryContents $TargetDir $BackupDir", script)
+        self.assertIn("VerifyBackupCopy $TargetDir $BackupDir", script)
+        self.assertIn("ClearDirectoryContents $TargetDir", script)
+        self.assertIn("CopyDirectoryContents $TempDir $TargetDir", script)
+        self.assertIn("VerifyFolder $TargetDir", script)
+        self.assertNotIn("Move-Item -LiteralPath $TargetDir -Destination $BackupDir", script)
+        self.assertNotIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
 
     def test_archive_path_traversal_is_rejected(self):
         for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):
