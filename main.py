@@ -6028,8 +6028,8 @@ class MoyaIshkaApp:
         self.config["auto_update_check"] = bool(self.auto_update_var.get())
         self.config["install_root_dir"] = str(root)
         self.config["updates_dir"] = str(layout["updates"])
-        # Keep the currently running installation as the update target until
-        # the user explicitly confirms migration into the new App directory.
+        # The running legacy copy stays in place for this session; subsequent
+        # updates target the saved container/App directory.
         self.update_install_dir_var.set(str(root))
         if hasattr(self, "actual_run_path_var"):
             current_run = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
