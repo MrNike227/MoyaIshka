@@ -49,6 +49,7 @@ from supabase_backup import (
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from improvement_delivery import default_install_root, resolve_install_layout, resolve_updates_directory, save_change_bundle
+from improvement_testing import ProposalTestError, test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
@@ -2139,6 +2140,7 @@ class MoyaIshkaApp:
         delivery_actions = ttk.Frame(self_dev, style="Panel.TFrame")
         delivery_actions.pack(fill="x", pady=(6, 2))
         ttk.Button(delivery_actions, text="Сохранить изменённые файлы в Updates", command=self.save_improvement_bundle).pack(side="left")
+        ttk.Button(delivery_actions, text="Тестировать последнее предложение", command=self.test_latest_improvement_bundle).pack(side="left", padx=8)
         ttk.Button(delivery_actions, text="Создать Draft PR на GitHub", style="Accent.TButton", command=self.create_improvement_pr).pack(side="left", padx=8)
         ttk.Button(delivery_actions, text="Открыть Updates", command=self.open_updates_folder).pack(side="left", padx=8)
 
@@ -3549,6 +3551,21 @@ class MoyaIshkaApp:
                 elif event == "patch_error":
                     self.improve_status_var.set(str(payload))
                     messagebox.showerror("Саморазвитие", str(payload))
+                elif event == "improvement_test_completed":
+                    self.improve_status_var.set(
+                        f"Тестирование завершено: {'успешно' if payload.get('passed') else 'есть ошибки'}. Отчёт: {payload.get('report_path', '')}"
+                    )
+                    messagebox.showinfo(
+                        "Проверка саморазвития",
+                        f"Результат: {'УСПЕШНО' if payload.get('passed') else 'ОШИБКИ'}\n"
+                        f"Проверено файлов: {payload.get('checked_files', 0)}\n"
+                        f"Код завершения unit-тестов: {payload.get('tests_exit_code', 'не запускались')}\n\n"
+                        f"Отчёт: {payload.get('report_path', '')}\n\n"
+                        "Изменения не применялись к установленной программе."
+                    )
+                elif event == "improvement_test_error":
+                    self.improve_status_var.set(f"Проверка предложения не пройдена: {payload}")
+                    messagebox.showerror("Проверка саморазвития", str(payload))
                 elif event == "improvement_pr_created":
                     self.improve_status_var.set(f"Draft PR создан: {payload.get('url', '')}")
                     messagebox.showinfo(
@@ -5674,6 +5691,39 @@ class MoyaIshkaApp:
         except Exception as exc:
             messagebox.showerror("Сохранение изменений", str(exc))
             self.improve_status_var.set(f"Не удалось сохранить пакет: {exc}")
+
+    def test_latest_improvement_bundle(self) -> None:
+        """Test the latest proposal in a disposable copy, never in the installed app."""
+        try:
+            proposals = self._updates_directory() / "Proposals"
+            candidates = [
+                p for p in proposals.iterdir()
+                if p.is_dir() and not p.name.startswith(".") and p.name != "Inbox"
+                and (p / "manifest.json").is_file()
+            ]
+            if not candidates:
+                messagebox.showinfo("Проверка саморазвития", "В Updates пока нет сохранённых предложений.")
+                return
+            bundle = max(candidates, key=lambda p: p.stat().st_mtime)
+            if not messagebox.askyesno(
+                "Тестирование предложения",
+                f"Проверить последнее предложение?\n\n{bundle.name}\n\n"
+                "Будет создана временная копия проекта, проверены SHA-256 и синтаксис, "
+                "затем запущены unit-тесты. Установленная программа и исходники не изменяются. "
+                "Код предложения будет исполняться тестами в отдельном процессе. Продолжить?",
+            ):
+                return
+            self.improve_status_var.set(f"Тестирую предложение {bundle.name} в отдельной копии…")
+            source_root = project_dir()
+            def worker() -> None:
+                try:
+                    report = test_change_bundle(bundle, source_root)
+                    self.events.put(("improvement_test_completed", report))
+                except Exception as exc:
+                    self.events.put(("improvement_test_error", str(exc)))
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as exc:
+            messagebox.showerror("Проверка саморазвития", str(exc))
 
     def save_github_pr_settings(self) -> None:
         repository = self.github_pr_repo_var.get().strip()
