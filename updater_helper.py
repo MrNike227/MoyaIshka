@@ -846,14 +846,14 @@ def _directory_updater_script() -> str:
 
     function CopyDirectoryContents([string]$Source, [string]$Destination, [string]$Purpose) {
         if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
-            throw "$Purpose: не найдена исходная папка $Source"
+            throw ($Purpose + ': не найдена исходная папка ' + $Source)
         }
         New-Item -ItemType Directory -Force -Path $Destination | Out-Null
         $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
         & $copy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /MT:8 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
         $copyCode = $LASTEXITCODE
         if ($copyCode -gt 7) {
-            throw "$Purpose: robocopy завершился с кодом $copyCode."
+            throw ($Purpose + ': robocopy завершился с кодом ' + $copyCode + '.')
         }
         return $copyCode
     }
@@ -945,7 +945,9 @@ def _directory_updater_script() -> str:
                 Log "КРИТИЧЕСКАЯ ОШИБКА ОТКАТА: $($_.Exception.Message)"
             }
         }
-    }    try {
+    }
+
+    try {
         Log "Начата установка onedir ${ExpectedVersion}: $StagedDir -> $TargetDir"
         if (-not (Test-Path -LiteralPath $StagedDir -PathType Container)) { throw "Не найдена папка обновления: $StagedDir" }
         $runningDeadline = (Get-Date).AddSeconds(120)
