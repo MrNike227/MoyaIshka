@@ -23,6 +23,14 @@ BACKUP_PREFIX = "MoyaIshka_backup_"
 ROOT_FILES = ("config.json", "assistant.db", "research_library.json")
 USER_DIRECTORIES = ("skills", "plugins")
 RESTORE_TARGETS = (*ROOT_FILES, *USER_DIRECTORIES)
+PRESERVED_BACKUP_CONFIG_KEYS = (
+    "auto_backup_enabled",
+    "backup_retention_count",
+    "backup_dir",
+    "backup_cloud_enabled",
+    "backup_cloud_retention_count",
+    "backup_legacy_migrated",
+)
 MAX_ARCHIVE_ENTRIES = 10000
 MAX_TOTAL_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -393,6 +401,23 @@ def restore_backup(
             config = json.loads(config_path.read_text(encoding="utf-8"))
             if not isinstance(config, dict):
                 raise BackupError("В резервной копии config.json имеет неверный формат.")
+        current_config_path = root / "config.json"
+        if current_config_path.is_file() and not current_config_path.is_symlink():
+            try:
+                current_config = json.loads(current_config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                current_config = {}
+            if isinstance(current_config, dict):
+                if not config_path.exists():
+                    config = {}
+                for key in PRESERVED_BACKUP_CONFIG_KEYS:
+                    if key in current_config:
+                        config[key] = current_config[key]
+                if config:
+                    config_path.write_text(
+                        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
         research_path = stage / "research_library.json"
         if research_path.exists():
             json.loads(research_path.read_text(encoding="utf-8"))

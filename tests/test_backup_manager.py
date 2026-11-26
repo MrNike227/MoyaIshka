@@ -75,11 +75,26 @@ class BackupManagerTests(unittest.TestCase):
     def test_restore_replaces_user_data_and_creates_pre_restore_snapshot(self):
         archive = create_backup(self.root, app_version="4.1.9")
         self._write_database("новый диалог")
-        (self.root / "config.json").write_text('{"assistant_name":"Новое имя","memory":[]}', encoding="utf-8")
+        backup_dir = str(Path(self.temp.name) / "separate_backups")
+        (self.root / "config.json").write_text(
+            json.dumps({
+                "assistant_name": "Новое имя",
+                "memory": [],
+                "backup_dir": backup_dir,
+                "backup_cloud_enabled": True,
+                "backup_retention_count": 14,
+                "backup_cloud_retention_count": 30,
+            }),
+            encoding="utf-8",
+        )
         (self.root / "skills" / "new.json").write_text("{}", encoding="utf-8")
         result = restore_backup(archive, self.root, app_version="4.1.9")
         restored_config = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(restored_config["assistant_name"], "Ишка")
+        self.assertEqual(restored_config["backup_dir"], backup_dir)
+        self.assertTrue(restored_config["backup_cloud_enabled"])
+        self.assertEqual(restored_config["backup_retention_count"], 14)
+        self.assertEqual(restored_config["backup_cloud_retention_count"], 30)
         self.assertEqual(restored_config["memory"], ["помнить факт"])
         self.assertEqual(self._read_database(), "исходный диалог")
         self.assertTrue((self.root / "skills" / "skill.json").is_file())
