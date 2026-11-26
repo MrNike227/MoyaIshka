@@ -118,7 +118,8 @@ def save_change_bundle(
         raise TypeError("Содержимое предложения должно быть текстом.")
     original_bytes = original_text.encode("utf-8")
     updated_bytes = updated_text.encode("utf-8")
-    patch_bytes = patch_text.encode("utf-8")
+    normalized_patch_text = patch_text.rstrip() + "\n"
+    patch_bytes = normalized_patch_text.encode("utf-8")
     if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES or len(patch_bytes) > MAX_PROPOSAL_FILE_BYTES:
         raise ValueError("Файл предложения слишком большой (максимум 2 МБ).")
     if len(original_bytes) + len(updated_bytes) + len(patch_bytes) > MAX_PROPOSAL_TOTAL_BYTES:
@@ -134,7 +135,7 @@ def save_change_bundle(
     try:
         file_path = staging / "files" / Path(*relative.parts)
         _write_text_atomic(file_path, updated_text)
-        _write_text_atomic(staging / "changes.patch", patch_text.rstrip() + "\n")
+        _write_text_atomic(staging / "changes.patch", normalized_patch_text)
         manifest: dict[str, Any] = {
             "schema": 1,
             "status": "review_only_not_applied",
