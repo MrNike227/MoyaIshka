@@ -23,6 +23,12 @@ class ReleaseBuildTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyinstaller==6.22.3", requirements)
 
+    def test_default_backup_folder_is_outside_application_directory(self):
+        from main import default_backup_directory
+        backup_dir = default_backup_directory()
+        self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
+        self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
+
     def test_application_version_is_419(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.1.9"', source)

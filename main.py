@@ -3185,14 +3185,41 @@ class MoyaIshkaApp:
                 event, payload = self.events.get_nowait()
                 if event == "backup_created":
                     self.backup_working = False
-                    self.backup_status_var.set(f"Резервная копия создана: {payload}")
+                    details = payload if isinstance(payload, dict) else {"path": str(payload), "cloud_status": ""}
+                    cloud_note = str(details.get("cloud_status", "")).strip()
+                    status = f"Резервная копия создана: {details.get('path', '')}"
+                    if cloud_note:
+                        status += "\\n" + cloud_note
+                    self.backup_status_var.set(status)
                     self._set_status("Резервная копия данных создана")
                 elif event == "backup_auto_result":
                     self.backup_working = False
-                    if payload:
+                    if isinstance(payload, dict):
+                        status = f"Автоматическая копия создана: {payload.get('path')}" if payload.get("path") else "Сегодняшняя копия уже существует."
+                        if payload.get("cloud_status"):
+                            status += "\\n" + str(payload["cloud_status"])
+                        self.backup_status_var.set(status)
+                    elif payload:
                         self.backup_status_var.set(f"Автоматическая копия создана: {payload}")
                     elif hasattr(self, "backup_status_var"):
                         self.backup_status_var.set("На сегодня резервная копия уже существует.")
+                elif event == "backup_upload_result":
+                    self.backup_upload_working = False
+                    uploaded, pending, error_text = payload
+                    if error_text:
+                        self.backup_status_var.set(f"Локальные копии сохранены. Облачная отправка ожидает повтора: {error_text}")
+                    elif uploaded:
+                        self.backup_status_var.set(f"В Google Drive отправлено копий: {uploaded}. В очереди осталось: {pending}.")
+                    elif pending:
+                        self.backup_status_var.set(f"Ожидают отправки в Google Drive: {pending}.")
+                    else:
+                        self.backup_status_var.set("Очередь облачных резервных копий пуста.")
+                elif event == "backup_cloud_list":
+                    self._show_cloud_backup_items(payload)
+                elif event == "backup_cloud_list_error":
+                    if self.cloud_backup_status_var is not None:
+                        self.cloud_backup_status_var.set(f"Не удалось получить список Google Drive: {payload}")
+                    self.backup_status_var.set(f"Google Drive: {payload}")
                 elif event == "backup_error":
                     self.backup_working = False
                     self.backup_status_var.set("Не удалось создать резервную копию.")
@@ -3481,6 +3508,7 @@ class MoyaIshkaApp:
                     else:
                         self.google_drive_status_var.set("Google Drive подключён. Создаю первую зашифрованную копию…")
                         self._start_cloud_sync(force=True)
+                    self.root.after(3500, self.upload_pending_backups_now)
                 elif event == "google_drive_auth_error":
                     self.google_drive_status_var.set(f"Ошибка подключения Google Drive: {payload}")
                     messagebox.showerror("Google Drive", str(payload))
@@ -3803,30 +3831,44 @@ class MoyaIshkaApp:
         values = load_json(BACKUP_UPLOAD_QUEUE_PATH, [])
         if not isinstance(values, list):
             return []
-        return list(dict.fromkeys(
-            Path(str(item)).name for item in values
-            if isinstance(item, str)
-            and Path(str(item)).name == str(item)
-            and str(item).lower().endswith(".zip")
-        ))
+        safe = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            try:
+                value = str(path.resolve())
+            except OSError:
+                continue
+            if value not in safe:
+                safe.append(value)
+        return safe
 
     def _save_backup_queue(self, values: list[str]) -> None:
-        safe = list(dict.fromkeys(
-            Path(str(item)).name for item in values
-            if isinstance(item, str)
-            and Path(str(item)).name == str(item)
-            and str(item).lower().endswith(".zip")
-        ))
+        safe = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            path = Path(item).expanduser()
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+                continue
+            value = str(path.resolve())
+            if value not in safe:
+                safe.append(value)
         atomic_json_save(BACKUP_UPLOAD_QUEUE_PATH, safe)
 
     def _queue_backup_upload(self, archive_path: Path) -> None:
         pending = self._backup_queue_items()
-        if archive_path.name not in pending:
-            pending.append(archive_path.name)
+        archive_value = str(archive_path.expanduser().resolve())
+        if archive_value not in pending:
+            pending.append(archive_value)
         self._save_backup_queue(pending)
 
     def _remove_backup_from_queue(self, filename: str) -> None:
-        self._save_backup_queue([item for item in self._backup_queue_items() if item != Path(filename).name])
+        target = str(Path(filename).expanduser().resolve())
+        self._save_backup_queue([item for item in self._backup_queue_items() if str(Path(item).resolve()) != target])
 
     @staticmethod
     def _backup_drive_client(package: dict[str, Any]) -> GoogleDriveVaultClient:
@@ -3917,7 +3959,7 @@ class MoyaIshkaApp:
         error_text = ""
         remaining = list(pending)
         for filename in pending:
-            archive = backup_dir / filename
+            archive = Path(filename).expanduser()
             if not archive.is_file() or archive.is_symlink():
                 remaining.remove(filename)
                 self._save_backup_queue(remaining)
