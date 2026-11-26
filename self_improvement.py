@@ -589,7 +589,7 @@ def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool
         relative.is_absolute()
         or ".." in relative.parts
         or not relative.parts
-        or relative_parts[0] in {".git", ".github"}
+        or any(part in {".git", ".github"} for part in relative_parts)
         or relative.suffix.lower() not in EDITABLE_SUFFIXES
     ):
         raise ValueError("Разрешено изменять только Python-файлы проекта вне служебных папок.")
