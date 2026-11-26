@@ -14,6 +14,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("dist\\MoyaIshka\\MoyaIshka.exe", build)
         self.assertIn("package_onedir.py", build)
         self.assertIn('--add-data "backup_manager.py;source_project"', build)
+        self.assertIn('--add-data "backup_cloud.py;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)

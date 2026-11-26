@@ -13,10 +13,12 @@ import json
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -29,7 +31,10 @@ from typing import Any
 
 from avatar_widget import AvatarWindow
 from auto_memory import extract_memory_candidate
-from backup_manager import create_backup, maybe_create_daily_backup, restore_backup
+from backup_manager import create_backup, maybe_create_daily_backup, restore_backup, inspect_backup
+from backup_cloud import (
+    BackupEncryptionError, decrypt_backup_file, encrypt_backup_file, sha256_file as backup_sha256_file,
+)
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir)
 from updater import check_latest_release, download_verified_update
@@ -87,11 +92,18 @@ def user_data_dir() -> Path:
     return directory
 
 
+def default_backup_directory() -> Path:
+    """Place backups beside, never inside, the replaceable application folder."""
+    app_folder = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    return app_folder.parent / "MoyaIshka_Backups"
+
+
 DATA_DIR = user_data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "assistant.db"
 CLOUD_SESSION_PATH = DATA_DIR / "cloud_session.dat"
 GOOGLE_DRIVE_SESSION_PATH = DATA_DIR / "google_drive_session.dat"
+BACKUP_UPLOAD_QUEUE_PATH = DATA_DIR / "backup_upload_queue.json"
 if os.environ.get("APPDATA"):
     LEGACY_DATA_DIR = Path(os.environ["APPDATA"]) / "CustomAI"
 else:
@@ -118,6 +130,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_memory": True,
     "auto_backup_enabled": True,
     "backup_retention_count": 7,
+    "backup_dir": "",
+    "backup_cloud_enabled": True,
+    "backup_cloud_retention_count": 7,
     "voice_tts": False,
     "voice_engine": "system",
     "tts_voice_id": "",
@@ -168,13 +183,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "backup_manager.py", "context_engine.py",
+            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -655,6 +670,11 @@ class MoyaIshkaApp:
         self.staged_update_version = ""
         self._last_update_check_day = ""
         self.backup_working = False
+        self.backup_upload_working = False
+        self.cloud_backup_dialog: tk.Toplevel | None = None
+        self.cloud_backup_listbox: tk.Listbox | None = None
+        self.cloud_backup_status_var: tk.StringVar | None = None
+        self.cloud_backup_items: list[dict[str, Any]] = []
         self.busy = False
         self.voice_busy = False
         self.voice_cancel_event: threading.Event | None = None
@@ -684,6 +704,7 @@ class MoyaIshkaApp:
         self.root.after(250, self._apply_windows_titlebar_theme)
         self.root.after(450, self._apply_high_dpi_windows_icon)
         self.root.after(4500, self._schedule_automatic_backup)
+        self.root.after(20000, self._schedule_backup_upload_retry)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
         if bool(self.config.get("self_improve_auto_enabled", False)):
@@ -1114,9 +1135,16 @@ class MoyaIshkaApp:
         backups.pack(fill="x", pady=(0, 10))
         ttk.Label(
             backups,
-            text="Ежедневно создаётся резервная копия истории диалогов, памяти ИИ, настроек, базы знаний, навыков и плагинов. Перед восстановлением текущие данные тоже сохраняются. Архивы хранятся локально и не зашифрованы отдельно — не передавай их посторонним. Сессии Google Drive и Supabase не копируются: они привязаны к текущей Windows-учётной записи.",
+            text="Ежедневные копии содержат историю, память, настройки, базу знаний, навыки и плагины. Google Drive хранит отдельный AES-256-GCM зашифрованный архив; без E2E-пароля его нельзя прочитать. Локальная копия остаётся запасной, а при отсутствии интернета отправка в облако ставится в очередь. Папка расположена рядом с папкой установки, а не внутри неё — автообновление её не удалит.",
             style="MutedPanel.TLabel", wraplength=900, justify="left",
         ).pack(anchor="w", pady=(0, 8))
+        self.backup_dir_var = tk.StringVar(value=str(self._backup_directory()))
+        backup_location = ttk.Frame(backups, style="Panel.TFrame")
+        backup_location.pack(fill="x", pady=(0, 7))
+        ttk.Label(backup_location, text="Папка на диске:", style="Panel.TLabel").pack(side="left", padx=(0, 8))
+        ttk.Entry(backup_location, textvariable=self.backup_dir_var, state="readonly").pack(side="left", fill="x", expand=True)
+        ttk.Button(backup_location, text="Выбрать…", command=self.choose_backup_directory).pack(side="left", padx=(8, 0))
+
         backup_options = ttk.Frame(backups, style="Panel.TFrame")
         backup_options.pack(fill="x", pady=(0, 6))
         self.auto_backup_var = tk.BooleanVar(value=bool(self.config.get("auto_backup_enabled", True)))
@@ -1124,18 +1152,40 @@ class MoyaIshkaApp:
             backup_options, "Создавать резервную копию автоматически каждый день",
             self.auto_backup_var, background_key="panel",
         ).pack(side="left")
-        ttk.Label(backup_options, text="Хранить копий:", style="Panel.TLabel").pack(side="left", padx=(18, 6))
+        ttk.Label(backup_options, text="Локально:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
         self.backup_retention_var = tk.StringVar(value=str(self.config.get("backup_retention_count", 7)))
         ttk.Combobox(
             backup_options, textvariable=self.backup_retention_var, state="readonly",
             width=5, values=["3", "7", "14", "30"],
         ).pack(side="left")
+        ttk.Label(backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
+        cloud_backup_options = ttk.Frame(backups, style="Panel.TFrame")
+        cloud_backup_options.pack(fill="x", pady=(2, 6))
+        self.backup_cloud_enabled_var = tk.BooleanVar(value=bool(self.config.get("backup_cloud_enabled", True)))
+        self._make_checkbox(
+            cloud_backup_options, "Шифровать и отправлять копии в Google Drive",
+            self.backup_cloud_enabled_var, background_key="panel",
+        ).pack(side="left")
+        ttk.Label(cloud_backup_options, text="В облаке хранить:", style="Panel.TLabel").pack(side="left", padx=(18, 5))
+        self.backup_cloud_retention_var = tk.StringVar(value=str(self.config.get("backup_cloud_retention_count", 7)))
+        ttk.Combobox(
+            cloud_backup_options, textvariable=self.backup_cloud_retention_var, state="readonly",
+            width=5, values=["3", "7", "14", "30"],
+        ).pack(side="left")
+        ttk.Label(cloud_backup_options, text="копий", style="MutedPanel.TLabel").pack(side="left", padx=(4, 0))
+
         backup_actions = ttk.Frame(backups, style="Panel.TFrame")
-        backup_actions.pack(fill="x", pady=(2, 4))
+        backup_actions.pack(fill="x", pady=(4, 4))
         ttk.Button(backup_actions, text="Создать копию сейчас", style="Accent.TButton", command=self.create_local_backup).pack(side="left")
-        ttk.Button(backup_actions, text="Восстановить из копии…", command=self.restore_local_backup).pack(side="left", padx=8)
-        ttk.Button(backup_actions, text="Открыть папку копий", command=self.open_backup_folder).pack(side="left")
-        self.backup_status_var = tk.StringVar(value="Папка резервных копий: " + str(DATA_DIR / "backups"))
+        ttk.Button(backup_actions, text="Восстановить с диска…", command=self.restore_local_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions, text="Восстановить из Google Drive…", command=self.restore_cloud_backup).pack(side="left", padx=7)
+        ttk.Button(backup_actions, text="Отправить ожидающие копии", command=self.upload_pending_backups_now).pack(side="left")
+        backup_actions2 = ttk.Frame(backups, style="Panel.TFrame")
+        backup_actions2.pack(fill="x", pady=(2, 0))
+        ttk.Button(backup_actions2, text="Открыть папку копий", command=self.open_backup_folder).pack(side="left")
+        ttk.Button(backup_actions2, text="Сохранить настройки копирования", command=self.save_backup_settings).pack(side="left", padx=7)
+        self.backup_status_var = tk.StringVar(value="Папка резервных копий: " + str(self._backup_directory()))
         ttk.Label(backups, textvariable=self.backup_status_var, style="MutedPanel.TLabel", wraplength=900).pack(anchor="w", pady=(6, 0))
 
         bottom = ttk.Frame(content)
@@ -3602,6 +3652,9 @@ class MoyaIshkaApp:
             "auto_memory": bool(self.auto_memory_var.get()) if hasattr(self, "auto_memory_var") else bool(self.config.get("auto_memory", True)),
             "auto_backup_enabled": bool(self.auto_backup_var.get()) if hasattr(self, "auto_backup_var") else bool(self.config.get("auto_backup_enabled", True)),
             "backup_retention_count": max(3, min(30, int(self.backup_retention_var.get()))) if hasattr(self, "backup_retention_var") else int(self.config.get("backup_retention_count", 7)),
+            "backup_dir": self.backup_dir_var.get().strip() if hasattr(self, "backup_dir_var") else str(self.config.get("backup_dir", "")),
+            "backup_cloud_enabled": bool(self.backup_cloud_enabled_var.get()) if hasattr(self, "backup_cloud_enabled_var") else bool(self.config.get("backup_cloud_enabled", True)),
+            "backup_cloud_retention_count": max(3, min(30, int(self.backup_cloud_retention_var.get()))) if hasattr(self, "backup_cloud_retention_var") else int(self.config.get("backup_cloud_retention_count", 7)),
             "voice_tts": bool(self.voice_tts_var.get()) if hasattr(self, "voice_tts_var") else bool(self.config.get("voice_tts", False)),
             "voice_engine": str(self.config.get("voice_engine", "system")),
             "tts_voice_id": str(self.config.get("tts_voice_id", "")),
@@ -3671,6 +3724,11 @@ class MoyaIshkaApp:
         if hasattr(self, "auto_backup_var"):
             self.auto_backup_var.set(bool(self.config.get("auto_backup_enabled", True)))
             self.backup_retention_var.set(str(self.config.get("backup_retention_count", 7)))
+            if hasattr(self, "backup_dir_var"):
+                self.backup_dir_var.set(str(self._backup_directory()))
+            if hasattr(self, "backup_cloud_enabled_var"):
+                self.backup_cloud_enabled_var.set(bool(self.config.get("backup_cloud_enabled", True)))
+                self.backup_cloud_retention_var.set(str(self.config.get("backup_cloud_retention_count", 7)))
         if hasattr(self, "voice_tts_var"):
             self.voice_tts_var.set(bool(self.config.get("voice_tts", False)))
         if hasattr(self, "tts_voice_combo"):

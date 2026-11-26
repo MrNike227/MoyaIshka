@@ -58,6 +58,7 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "voice_manager.py;source_project" ^
   --add-data "auto_memory.py;source_project" ^
   --add-data "backup_manager.py;source_project" ^
+  --add-data "backup_cloud.py;source_project" ^
   --add-data "avatar_widget.py;source_project" ^
   --add-data "plugin_manager.py;source_project" ^
   --add-data "self_improvement.py;source_project" ^
