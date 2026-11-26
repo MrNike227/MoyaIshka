@@ -3801,6 +3801,13 @@ class MoyaIshkaApp:
             retention = max(3, min(30, int(self.backup_retention_var.get())))
             cloud_retention = max(3, min(30, int(self.backup_cloud_retention_var.get())))
             backup_dir = Path(self.backup_dir_var.get().strip() or default_backup_directory()).expanduser().resolve()
+            install_dir = (
+                Path(sys.executable).resolve().parent
+                if getattr(sys, "frozen", False)
+                else Path(__file__).resolve().parent
+            )
+            if backup_dir == install_dir or install_dir in backup_dir.parents:
+                raise ValueError("Папку резервных копий нельзя размещать внутри папки установки программы. Выбери соседнюю папку на этом диске.")
             backup_dir.mkdir(parents=True, exist_ok=True)
             if not backup_dir.is_dir():
                 raise OSError("Выбранный путь не является папкой.")
@@ -4020,7 +4027,7 @@ class MoyaIshkaApp:
         return archive, note
 
     def create_local_backup(self) -> None:
-        if self.backup_working:
+        if self.backup_working or self.backup_upload_working:
             self.backup_status_var.set("Операция с резервной копией уже выполняется.")
             return
         if not self.save_backup_settings():
@@ -4062,7 +4069,11 @@ class MoyaIshkaApp:
     def _schedule_automatic_backup(self) -> None:
         if not self.root.winfo_exists():
             return
-        if bool(self.config.get("auto_backup_enabled", True)) and not self.backup_working:
+        if (
+            bool(self.config.get("auto_backup_enabled", True))
+            and not self.backup_working
+            and not self.backup_upload_working
+        ):
             self.backup_working = True
             threading.Thread(
                 target=self._automatic_backup_worker,
@@ -4288,6 +4299,9 @@ class MoyaIshkaApp:
 
     def _restore_selected_cloud_backup(self) -> None:
         if self.cloud_backup_listbox is None:
+            return
+        if self.backup_working or self.backup_upload_working:
+            messagebox.showwarning("Восстановление", "Дождись завершения текущей операции с резервной копией.")
             return
         selected = self.cloud_backup_listbox.curselection()
         if not selected or selected[0] >= len(self.cloud_backup_items):
