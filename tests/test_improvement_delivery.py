@@ -25,8 +25,8 @@ class ImprovementDeliveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             legacy = Path(temp) / "OldInstall"
             root = default_install_root(legacy_install_dir=legacy)
-            self.assertNotEqual(root, legacy)
-            self.assertEqual(root.parent, legacy.parent)
+            self.assertNotEqual(root, legacy.resolve())
+            self.assertEqual(root.name, "MoyaIshka_Container")
 
     def test_configured_root_is_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
