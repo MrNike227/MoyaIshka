@@ -18,7 +18,7 @@ class ImprovementTestingTests(unittest.TestCase):
         return save_change_bundle(
             Path(temp) / "Updates", "sample.py", "VALUE = 1\n",
             f"VALUE = {value}\n",
-            f"--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = {value}\n",
+            f"--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = {value}",
         )
 
     def test_passed_proposal_runs_in_copy_and_preserves_source(self):
