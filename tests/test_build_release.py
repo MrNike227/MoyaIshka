@@ -218,6 +218,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
+        self.assertEqual(source.count('b"4.2.3-smoke"'), 2)
         self.assertIn("import _cffi_backend", source)
 
     def test_github_actions_use_node24_compatible_action_majors(self):
