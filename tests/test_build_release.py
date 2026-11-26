@@ -303,15 +303,17 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("layout['updates']", method)
         self.assertIn("target_dir=destination", method)
 
-    def test_update_download_dialog_selects_app_folder_not_container_root(self):
+    def test_update_download_dialog_selects_container_root_and_targets_app(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         start = source.index('                elif event == "update_downloaded":')
         end = source.index('                elif event == "old_versions_scan_complete":', start)
         handler = source[start:end]
-        self.assertIn("папку программы (папку App)", handler)
-        self.assertNotIn("self.save_update_settings(show_message=False)", handler)
+        self.assertIn("корневую папку контейнера", handler)
+        self.assertIn("layout = ensure_install_layout(container_root)", handler)
+        self.assertIn('self.config["updates_dir"] = str(layout["updates"])', handler)
+        self.assertIn("destination_dir = ensure_install_dir_writable(layout[\"app\"])", handler)
         self.assertIn("self._apply_staged_update(destination_dir)", handler)
-        self.assertIn("target = destination_dir / \"MoyaIshka.exe\"", handler)
+        self.assertIn('target = destination_dir / "MoyaIshka.exe"', handler)
 
     def test_container_update_target_uses_app_and_keeps_updates_sibling(self):
         from improvement_delivery import resolve_install_layout
@@ -321,7 +323,29 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertEqual(layout["updates"].name, "Updates")
             self.assertEqual(layout["app"].parent, layout["updates"].parent)
             source = (ROOT / "main.py").read_text(encoding="utf-8")
-            self.assertIn('return resolve_install_layout(root)["app"]', source)
+            start = source.index("    def _selected_install_dir(self) -> Path:")
+            end = source.index("    def open_install_folder", start)
+            selector = source[start:end]
+            self.assertLess(selector.index('if root:'), selector.index('if raw:'))
+            self.assertIn('return resolve_install_layout(root)["app"]', selector)
+
+    def test_container_layout_is_created_on_application_start_and_before_update(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("install_layout = ensure_install_layout(self.config[\"install_root_dir\"])", source)
+        start = source.index("    def _start_staged_update_install(")
+        end = source.index("    def _install_staged_update_from_source", start)
+        installer = source[start:end]
+        self.assertIn("layout = ensure_install_layout(container_root)", installer)
+        self.assertIn('self.config["updates_dir"] = str(layout["updates"])', installer)
+        self.assertIn('self.config["install_dir"] = str(destination)', installer)
+
+    def test_inno_setup_does_not_reuse_legacy_install_path_and_creates_siblings(self):
+        installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
+        self.assertIn(r"DefaultDirName={localappdata}\\Programs\\MoyaIshka_Container\\App", installer)
+        self.assertIn("UsePreviousAppDir=no", installer)
+        self.assertIn(r'Name: "{app}\\..\\Updates"', installer)
+        self.assertIn(r'UninstallFilesDir={app}\\..\\Uninstall', installer)
+        self.assertIn(r'Name: "{app}\\..\\Uninstall"', installer)
 
     def test_staged_update_modes_share_one_install_implementation(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
