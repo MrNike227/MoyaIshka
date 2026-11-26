@@ -171,45 +171,45 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(apply_unified_diff(original, patch, "main.py"), "first\nSECOND\nthird\n")
 
     def test_apply_diff_relocates_unique_exact_context_when_hunk_line_is_stale(self):
-        original = "#!/usr/bin/env python3\\n# module header\\nVALUE = 1\\n"
+        original = "#!/usr/bin/env python3\n# module header\nVALUE = 1\n"
         patch = (
-            "--- a/main.py\\n+++ b/main.py\\n"
-            "@@ -1,1 +1,1 @@\\n"
-            "-VALUE = 1\\n+VALUE = 2\\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-VALUE = 1\n+VALUE = 2\n"
         )
         updated = apply_unified_diff(original, patch, "main.py")
-        self.assertEqual(updated, "#!/usr/bin/env python3\\n# module header\\nVALUE = 2\\n")
+        self.assertEqual(updated, "#!/usr/bin/env python3\n# module header\nVALUE = 2\n")
 
     def test_apply_diff_rejects_placeholder_context_not_in_source(self):
-        original = "#!/usr/bin/env python3\\nVALUE = 1\\n"
+        original = "#!/usr/bin/env python3\nVALUE = 1\n"
         patch = (
-            "--- a/main.py\\n+++ b/main.py\\n"
-            "@@ -1,1 +1,1 @@\\n"
-            "-# main.py original content\\n+# updated file\\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-# main.py original content\n+# updated file\n"
         )
         with self.assertRaisesRegex(ValueError, "шаблонный или устаревший текст"):
             apply_unified_diff(original, patch, "main.py")
 
     def test_apply_diff_rejects_ambiguous_context(self):
-        original = "def one():\\n    return 1\\n\\ndef two():\\n    return 1\\n"
+        original = "def one():\n    return 1\n\ndef two():\n    return 1\n"
         patch = (
-            "--- a/main.py\\n+++ b/main.py\\n"
-            "@@ -1,1 +1,1 @@\\n"
-            "-    return 1\\n+    return 2\\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-    return 1\n+    return 2\n"
         )
         with self.assertRaisesRegex(ValueError, "неоднозначен"):
             apply_unified_diff(original, patch, "main.py")
 
     def test_apply_diff_preserves_windows_crlf(self):
-        original = "first\\r\\nsecond\\r\\nthird\\r\\n"
+        original = "first\r\nsecond\r\nthird\r\n"
         patch = (
-            "--- a/main.py\\n+++ b/main.py\\n"
-            "@@ -1,3 +1,3 @@\\n"
-            " first\\n-second\\n+SECOND\\n third\\n"
+            "--- a/main.py\n+++ b/main.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " first\n-second\n+SECOND\n third\n"
         )
         self.assertEqual(
             apply_unified_diff(original, patch, "main.py"),
-            "first\\r\\nSECOND\\r\\nthird\\r\\n",
+            "first\r\nSECOND\r\nthird\r\n",
         )
 
     def test_local_self_improvement_uses_longer_ollama_timeout_and_larger_context(self):
