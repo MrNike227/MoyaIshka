@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 
+WINDOWS_GENERATED_METADATA_FILES = frozenset({"desktop.ini", "thumbs.db", "ehthumbs.db"})
+
+
 def user_install_dir() -> Path:
     """Default per-user install directory (used only when the user has not chosen one)."""
     local = os.environ.get("LOCALAPPDATA")
@@ -647,7 +650,7 @@ def delete_application_copy(path: str | Path, current_exe: str | Path | None = N
 
 
 def validate_app_directory(app_dir: str | Path, expected_version: str | None = None) -> dict[str, Any]:
-    """Verify every staged file against the build manifest before any install action."""
+    """Verify every manifest file and reject unexpected files except Windows shell caches."""
     root = Path(app_dir).resolve()
     try:
         manifest = json.loads((root / "build_manifest.json").read_text(encoding="utf-8"))
@@ -661,6 +664,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
     files = manifest.get("files")
     if not isinstance(files, list) or not files or len(files) > 20000:
         raise RuntimeError("Манифест содержит неверный список файлов.")
+
     seen: set[str] = set()
     for item in files:
         if not isinstance(item, dict):
@@ -682,12 +686,23 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         expected = str(item.get("sha256", "")).lower()
         if len(expected) != 64 or sha256_file(path).lower() != expected:
             raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
+
     actual_files: set[str] = set()
     for path in root.rglob("*"):
         if path.is_symlink():
             raise RuntimeError(f"Символическая ссылка запрещена в пакете: {path.relative_to(root)}.")
-        if path.is_file() and path.relative_to(root).as_posix() != "build_manifest.json":
-            actual_files.add(path.relative_to(root).as_posix().casefold())
+        if not path.is_file():
+            continue
+        relative_name = path.relative_to(root).as_posix()
+        if relative_name.casefold() == "build_manifest.json":
+            continue
+        key = relative_name.casefold()
+        # Explorer may create these harmless cache/customization files after
+        # extraction or first folder access. They are not app payload files.
+        if key not in seen and path.name.casefold() in WINDOWS_GENERATED_METADATA_FILES:
+            continue
+        actual_files.add(key)
+
     if actual_files != seen:
         missing = sorted(seen - actual_files)
         extra = sorted(actual_files - seen)
@@ -697,6 +712,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         if extra:
             details.append("лишние: " + ", ".join(extra[:8]))
         raise RuntimeError("Состав папки не совпадает с манифестом (" + "; ".join(details) + ").")
+
     exe = root / "MoyaIshka.exe"
     if not exe.is_file() or sha256_file(exe).lower() != str(manifest.get("exe_sha256", "")).lower():
         raise RuntimeError("Главный EXE не прошёл проверку SHA-256.")
@@ -742,41 +758,84 @@ def _directory_updater_script() -> str:
         if ([string]$manifest.entrypoint -ne 'MoyaIshka.exe') { throw 'Неверная точка входа.' }
         $items = @($manifest.files)
         if ($items.Count -lt 1 -or $items.Count -gt 20000) { throw 'Неверное число файлов в манифесте.' }
-        $manifestFullPath = [IO.Path]::GetFullPath($manifestPath)
-        $expectedPaths = @($items | ForEach-Object { ([string]$_.path).Replace('/', '\').ToLowerInvariant() } | Sort-Object -Unique)
-        $treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse)
-        $reparsePoints = @($treeItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
-        if ($reparsePoints.Count -gt 0) { throw 'Символические ссылки и reparse points в папке приложения запрещены.' }
+
         $base = [IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
-        $actualPaths = @(
-            Get-ChildItem -LiteralPath $Folder -File -Force -Recurse |
-                Where-Object { [IO.Path]::GetFullPath($_.FullName) -ine $manifestFullPath } |
-                ForEach-Object { $_.FullName.Substring($base.Length).Replace('\', '/').ToLowerInvariant() } |
-                Sort-Object -Unique
-        )
-        if ($actualPaths.Count -ne $expectedPaths.Count -or
-            @(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $actualPaths).Count -gt 0) {
-            throw 'Фактический состав папки не совпадает с build_manifest.json.'
-        }
+        $manifestFullPath = [IO.Path]::GetFullPath($manifestPath)
+        $expectedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($item in $items) {
             $relative = ([string]$item.path).Replace('/', '\')
             if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|\\)\.\.(\\|$)|:') {
-                throw "Небезопасный путь: $relative"
+                throw "Небезопасный путь в манифесте: $relative"
             }
             $path = [IO.Path]::GetFullPath((Join-Path $Folder $relative))
             if (-not $path.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)) { throw "Путь вне пакета: $relative" }
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Отсутствует файл: $relative" }
-            if ([long](Get-Item -LiteralPath $path).Length -ne [long]$item.size) { throw "Размер не совпадает: $relative" }
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne ([string]$item.sha256).ToLowerInvariant()) { throw "SHA-256 не совпадает: $relative" }
+            $key = $relative.Replace('\', '/')
+            if (-not $expectedPaths.Add($key)) { throw "Повторяющийся путь в манифесте: $relative" }
         }
-        $exe = Join-Path $Folder 'MoyaIshka.exe'
-        $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($hash -ne ([string]$manifest.exe_sha256).ToLowerInvariant()) { throw 'SHA-256 EXE не совпадает.' }
+
+        # Enumerate the tree once. The previous implementation performed two
+        # recursive scans and then re-hashed the entire installation three times.
+        $treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse -ErrorAction Stop)
+        $actualPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $reparsePoints = 0
+        foreach ($entry in $treeItems) {
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $reparsePoints++
+                continue
+            }
+            if ($entry.PSIsContainer) { continue }
+            $fullPath = [IO.Path]::GetFullPath($entry.FullName)
+            if ($fullPath -ieq $manifestFullPath) { continue }
+            $relativePath = $entry.FullName.Substring($base.Length).Replace('\', '/')
+            [void]$actualPaths.Add($relativePath)
+        }
+        if ($reparsePoints -gt 0) { throw "В папке приложения обнаружены символические ссылки/reparse points: $reparsePoints." }
+
+        $missing = @()
+        foreach ($expectedPath in $expectedPaths) {
+            if (-not $actualPaths.Contains($expectedPath)) { $missing += $expectedPath }
+        }
+        $extra = @()
+        $ignoredMetadata = @()
+        foreach ($actualPath in $actualPaths) {
+            if ($expectedPaths.Contains($actualPath)) { continue }
+            $leaf = ($actualPath -split '/')[-1].ToLowerInvariant()
+            if ($leaf -in @('desktop.ini', 'thumbs.db', 'ehthumbs.db')) {
+                $ignoredMetadata += $actualPath
+            } else {
+                $extra += $actualPath
+            }
+        }
+        if ($missing.Count -gt 0 -or $extra.Count -gt 0) {
+            $details = @()
+            if ($missing.Count -gt 0) { $details += "нет файлов ($($missing.Count)): $(($missing | Select-Object -First 6) -join ', ')" }
+            if ($extra.Count -gt 0) { $details += "лишние файлы ($($extra.Count)): $(($extra | Select-Object -First 6) -join ', ')" }
+            throw ("Фактический состав папки не совпадает с build_manifest.json: " + ($details -join '; '))
+        }
+        if ($ignoredMetadata.Count -gt 0) {
+            Log "Пропущены служебные файлы Проводника Windows: $(($ignoredMetadata | Select-Object -First 5) -join ', ')"
+        }
+
+        $exeHash = ''
+        foreach ($item in $items) {
+            $relative = ([string]$item.path).Replace('/', '\')
+            $path = [IO.Path]::GetFullPath((Join-Path $Folder $relative))
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Отсутствует файл: $relative" }
+            $file = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ([long]$file.Length -ne [long]$item.size) { throw "Размер не совпадает: $relative" }
+            $expectedHash = ([string]$item.sha256).ToLowerInvariant()
+            if ($expectedHash -notmatch '^[a-f0-9]{64}$') { throw "Неверная SHA-256 в манифесте: $relative" }
+            $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) { throw "SHA-256 не совпадает: $relative" }
+            if ($relative -ieq 'MoyaIshka.exe') { $exeHash = $actualHash }
+        }
+        if (-not $exeHash -or $exeHash -ne ([string]$manifest.exe_sha256).ToLowerInvariant()) {
+            throw 'Главный EXE не прошёл проверку SHA-256 из манифеста.'
+        }
         foreach ($dll in @('python311.dll','vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
             if (-not (Test-Path -LiteralPath (Join-Path $Folder ('_internal\' + $dll)) -PathType Leaf)) { throw "Не найден _internal\$dll" }
         }
-        return $hash
+        return $exeHash
     }
 
     function Rollback([string]$Reason) {
@@ -827,14 +886,25 @@ def _directory_updater_script() -> str:
             }
         }
 
+        $verifyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        Log "Проверяю загруженную папку по манифесту ($StagedDir)."
         $stagedHash = VerifyFolder $StagedDir
+        Log "Загруженная папка проверена за $([math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)) сек."
+
         if (Test-Path -LiteralPath $TempDir) { Remove-Item -LiteralPath $TempDir -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+        $copyTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $copy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
-        & $copy $StagedDir $TempDir /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-        if ($LASTEXITCODE -gt 7) { throw "Не удалось скопировать папку (robocopy $LASTEXITCODE)." }
+        & $copy $StagedDir $TempDir /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /MT:8 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+        $robocopyCode = $LASTEXITCODE
+        if ($robocopyCode -gt 7) { throw "Не удалось скопировать папку (robocopy $robocopyCode)." }
+        Log "Копирование завершено (robocopy $robocopyCode) за $([math]::Round($copyTimer.Elapsed.TotalSeconds, 1)) сек."
+
+        # Verify the copied folder once. After a same-volume directory rename,
+        # file contents do not change, so a third full-tree SHA pass is redundant.
         $copiedHash = VerifyFolder $TempDir
-        if ($copiedHash -ne $stagedHash) { throw 'Контрольная сумма главного EXE после копирования не совпала.' }
+        if ($copiedHash -ne $stagedHash) { throw 'SHA-256 главного EXE после копирования не совпадает.' }
+        Log "Копия проверена по манифесту. Общее время подготовки и проверки: $([math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)) сек."
 
         $hadPrevious = $false
         if (Test-Path -LiteralPath $TargetDir -PathType Container) {
@@ -860,9 +930,14 @@ def _directory_updater_script() -> str:
             Remove-Item -LiteralPath $TargetDir -Recurse -Force
         }
 
-        Move-Item -LiteralPath $TempDir -Destination $TargetDir
+        # TempDir and TargetDir share the same parent/volume; Directory.Move is
+        # a fast metadata rename and does not recopy hundreds of runtime files.
+        [System.IO.Directory]::Move($TempDir, $TargetDir)
         $NewInstalled = $true
-        $ExeHash = VerifyFolder $TargetDir
+        $targetExe = Join-Path $TargetDir 'MoyaIshka.exe'
+        if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) { throw 'После переключения папок не найден MoyaIshka.exe.' }
+        $ExeHash = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($ExeHash -ne $copiedHash) { throw 'SHA-256 установленного EXE после переключения папок не совпадает.' }
 
         if (Test-Path -LiteralPath $ReceiptPath) { Remove-Item -LiteralPath $ReceiptPath -Force }
         $env:MOYA_UPDATE_RECEIPT = $ReceiptPath

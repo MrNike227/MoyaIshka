@@ -30,7 +30,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
         self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
 
-    def test_application_version_is_419(self):
+    def test_application_version_is_420(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.2.0"', source)
 
@@ -277,7 +277,7 @@ class ReleaseBuildTests(unittest.TestCase):
         script = helper[script_start:script_end]
         self.assertLess(
             script.index("$base = [IO.Path]::GetFullPath($Folder)"),
-            script.index("$actualPaths = @("),
+            script.index("$treeItems = @(Get-ChildItem -LiteralPath $Folder -Force -Recurse"),
         )
 
     def test_move_current_build_copies_complete_onedir_folder(self):
@@ -290,6 +290,39 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("launch_windows_directory_replacement(", method)
         self.assertNotIn("os.replace(temporary, target)", method)
         self.assertIn("_internal", method)
+
+    def test_directory_updater_validates_once_per_copy_and_skips_final_full_hash(self):
+        helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
+        start = helper.index("def _directory_updater_script")
+        end = helper.index("def launch_windows_directory_replacement", start)
+        script = helper[start:end]
+        self.assertIn("$stagedHash = VerifyFolder $StagedDir", script)
+        self.assertIn("$copiedHash = VerifyFolder $TempDir", script)
+        self.assertNotIn("VerifyFolder $TargetDir", script)
+        self.assertIn("[System.IO.Directory]::Move($TempDir, $TargetDir)", script)
+        self.assertIn("/MT:8", script)
+        self.assertIn("Stopwatch]::StartNew()", script)
+
+    def test_directory_updater_uses_one_recursive_tree_scan(self):
+        helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
+        start = helper.index("    function VerifyFolder([string]$Folder) {")
+        end = helper.index("    function Rollback(", start)
+        verify = helper[start:end]
+        self.assertEqual(verify.count("Get-ChildItem -LiteralPath $Folder -Force -Recurse"), 1)
+        self.assertIn("HashSet[string]", verify)
+        self.assertIn("Фактический состав папки не совпадает", verify)
+
+    def test_directory_updater_ignores_only_windows_shell_metadata(self):
+        from updater_helper import validate_app_directory
+        with tempfile.TemporaryDirectory() as temp:
+            app = write_fake_app(Path(temp))
+            (app / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
+            (app / "_internal" / "Thumbs.db").write_bytes(b"cache")
+            (app / "_internal" / "ehthumbs.db").write_bytes(b"cache")
+            self.assertEqual(validate_app_directory(app, "4.2.0")["version"], "4.2.0")
+            (app / "_internal" / "unexpected.dll").write_bytes(b"unexpected")
+            with self.assertRaisesRegex(RuntimeError, "лишние"):
+                validate_app_directory(app, "4.2.0")
 
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
@@ -326,10 +359,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_419(self):
+    def test_windows_version_resource_is_420(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4, 1, 9, 0)", source)
-        self.assertIn("prodvers=(4, 1, 9, 0)", source)
+        self.assertIn("filevers=(4, 2, 0, 0)", source)
+        self.assertIn("prodvers=(4, 2, 0, 0)", source)
         self.assertIn("FileVersion', '4.2.0'", source)
         self.assertIn("ProductVersion', '4.2.0'", source)
 
