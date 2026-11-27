@@ -490,10 +490,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_428(self):
+    def test_windows_version_resource_is_429(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4, 2, 8, 0)", source)
-        self.assertIn("prodvers=(4, 2, 8, 0)", source)
+        self.assertIn("filevers=(4, 2, 9, 0)", source)
+        self.assertIn("prodvers=(4, 2, 9, 0)", source)
         self.assertIn("FileVersion', '4.2.9'", source)
         self.assertIn("ProductVersion', '4.2.9'", source)
 
