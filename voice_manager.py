@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Download and manage local Piper TTS voice packs.
 
-Voice models are downloaded on demand into the user's MoyaIshka data directory.
+Voice models are downloaded on demand into the user's ISH data directory.
 Each model is pinned to the upstream piper-voices v1.0.0 release and verified
 with SHA-256 before it can be selected. Voice configs are parsed and checked.
 """
@@ -102,7 +102,7 @@ def _download_to_file(
 ) -> int:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "MoyaIshka-VoiceManager/4.1.5.1", "Accept": "application/octet-stream"},
+        headers={"User-Agent": "ISH-VoiceManager/4.1.5.1", "Accept": "application/octet-stream"},
     )
     temporary = destination.with_name(destination.name + ".part")
     digest = hashlib.sha256()

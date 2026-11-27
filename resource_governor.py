@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Adaptive low-priority resource governor for MoyaIshka background work.
+"""Adaptive low-priority resource governor for ISH background work.
 
 The 5 GiB setting is a soft ceiling, not a hard OS memory limit. Work is paused
-when MoyaIshka/Ollama memory or system pressure gets close to the configured
+when ISH/Ollama memory or system pressure gets close to the configured
 budget. UI and interactive reply threads are not throttled by this module.
 """
 from __future__ import annotations

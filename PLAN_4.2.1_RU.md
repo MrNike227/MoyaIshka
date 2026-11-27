@@ -5,9 +5,9 @@
 Корневая папка выбирается пользователем. В ней находятся два независимых каталога:
 
 \`\`\`text
-MoyaIshka/
+ISH/
   App/
-    MoyaIshka.exe
+    ISH.exe
     _internal/
     build_manifest.json
   Updates/

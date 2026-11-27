@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Audit x64 DLL dependencies of the Python runtime in a PyInstaller onedir folder."""
+"""Audit x64 DLL dependencies of the ISH Python runtime in a PyInstaller onedir folder."""
 from __future__ import annotations
 
 import argparse
@@ -56,16 +56,16 @@ def verify_dependency_tree(app_dir: str | Path) -> dict[str, Any]:
     if os.name != "nt":
         raise RuntimeError("Проверка загрузчика DLL выполняется только на Windows.")
     root = Path(app_dir).resolve()
-    exe = root / "MoyaIshka.exe"
+    exe = root / "ISH.exe"
     runtime = root / "_internal"
     python_dll = runtime / "python311.dll"
     if not exe.is_file() or not python_dll.is_file():
-        raise RuntimeError("Ожидается onedir-папка с MoyaIshka.exe и _internal/python311.dll.")
+        raise RuntimeError("Ожидается onedir-папка с ISH.exe и _internal/python311.dll.")
     image = pefile.PE(str(exe), fast_load=True)
     machine = image.FILE_HEADER.Machine
     image.close()
     if machine != IMAGE_FILE_MACHINE_AMD64:
-        raise RuntimeError("MoyaIshka.exe должен быть x64.")
+        raise RuntimeError("ISH.exe должен быть x64.")
 
     dll_map: dict[str, Path] = {}
     for path in sorted(
@@ -140,7 +140,7 @@ def verify_dependency_tree(app_dir: str | Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("app_dir", help="путь к папке dist/MoyaIshka")
+    parser.add_argument("app_dir", help="путь к папке dist/ISH")
     args = parser.parse_args()
     try:
         result = verify_dependency_tree(args.app_dir)

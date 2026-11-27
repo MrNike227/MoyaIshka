@@ -66,11 +66,11 @@ def default_install_root(
     if legacy is None:
         local = os.environ.get("LOCALAPPDATA")
         base = Path(local) if local else Path.home() / "AppData" / "Local"
-        legacy = base / "Programs" / "MoyaIshka"
+        legacy = base / "Programs" / "ISH"
     if legacy.name.casefold() == "app":
         return legacy.parent
     # Keep an existing legacy installation untouched until the user confirms migration.
-    return legacy.parent / "MoyaIshka_Container"
+    return legacy.parent / "ISH_Container"
 
 
 def resolve_updates_directory(

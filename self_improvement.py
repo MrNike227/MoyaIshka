@@ -409,7 +409,7 @@ def _clean_suggestion_items(raw: list) -> list[dict[str, str]]:
             continue
         clean = {
             key: str(item.get(key, "")).strip()[:1800]
-            for key in ("title", "problem", "current", "proposed", "benefit")
+            for key in ("title", "problem", "location", "current", "proposed", "benefit")
         }
         if clean["title"] and clean["current"] and clean["proposed"]:
             result.append(clean)
@@ -629,7 +629,7 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
             add_section(old_header, new_header, section)
 
     if not result:
-        if "UNABLE_TO_CREATE_PATCH" in normalized:
+        if re.search(r"\bUNABLE_TO_CREATE_PATCH\b", normalized, re.IGNORECASE):
             raise ValueError(
                 "Модель сообщила, что не смогла подготовить изменения. Уточни задачу или выбери более узкий модуль."
             )
@@ -658,24 +658,119 @@ def split_multi_file_unified_diff(patch_text: str) -> dict[str, str]:
     raise ValueError(errors[-1] if errors else "Не удалось извлечь unified diff из ответа модели.")
 
 
+def build_multi_file_repair_context(
+    sources: dict[str, str | None],
+    patch_text: str = "",
+    *,
+    max_chars: int = 12_000,
+    head_lines: int = 20,
+    context_radius: int = 8,
+) -> str:
+    """Build bounded, line-numbered source excerpts for a trustworthy diff retry."""
+    if not isinstance(sources, dict) or not sources:
+        return "Нет исходников для повторной генерации diff."
+    if max_chars < 1_000:
+        raise ValueError("Лимит контекста исправления слишком мал.")
+
+    patches: dict[str, str] = {}
+    if patch_text:
+        try:
+            patches = split_multi_file_unified_diff(patch_text)
+        except ValueError:
+            # Even a malformed patch must not prevent us from showing the real
+            # file heads during recovery.
+            patches = {}
+
+    sections: list[str] = [
+        "НИЖЕ — ТОЧНЫЕ ФРАГМЕНТЫ ТЕКУЩИХ ФАЙЛОВ, ИЗ КОТОРЫХ ВАЛИДАТОР ПРИМЕНЯЕТ DIFF.",
+        "Нумерация строк начинается с 1. Не переноси строки из одного файла в другой.",
+        "Используй только реально показанные строки; не добавляй шаблонный shebang или импорты, которых нет в конкретном файле.",
+    ]
+    per_file_limit = max(900, (max_chars - sum(len(part) for part in sections)) // len(sources))
+
+    for relative, original in sources.items():
+        label = f"\nФАЙЛ: {relative}\n"
+        if original is None:
+            block = label + "Файл ещё не существует. Для него можно только добавить новый тестовый код.\n"
+            sections.append(block[:per_file_limit])
+            continue
+
+        lines = original.splitlines()
+        if not lines:
+            sections.append(label + "Файл существует, но пуст.\n")
+            continue
+
+        windows: list[tuple[int, int]] = [(1, min(len(lines), max(1, head_lines)))]
+        file_patch = patches.get(relative, "")
+        for match in re.finditer(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@", file_patch, re.MULTILINE):
+            anchor = int(match.group(1))
+            windows.append((
+                max(1, anchor - context_radius),
+                min(len(lines), anchor + context_radius),
+            ))
+
+        merged: list[list[int]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        body: list[str] = []
+        for start, end in merged:
+            body.extend(
+                f"{number:>5} | {lines[number - 1]}"
+                for number in range(start, end + 1)
+            )
+            if end < len(lines):
+                body.append("      | …")
+        block = label + "\n".join(body) + "\n"
+        if len(block) > per_file_limit:
+            block = block[: max(0, per_file_limit - 32)] + "\n… фрагмент сокращён\n"
+        sections.append(block)
+
+    result = "\n".join(sections)
+    if len(result) > max_chars:
+        result = result[: max_chars - 32] + "\n… контекст сокращён"
+    return result
+
+
 def apply_multi_file_unified_diff(
     sources: dict[str, str | None],
     patch_text: str,
+    *,
+    allow_subset: bool = False,
 ) -> dict[str, str]:
-    """Apply a multi-file diff to in-memory originals; None denotes a new file."""
+    """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
     patches = split_multi_file_unified_diff(patch_text)
-    if set(patches) != set(sources):
-        missing = sorted(set(sources) - set(patches))
-        extra = sorted(set(patches) - set(sources))
+    missing = sorted(set(sources) - set(patches))
+    extra = sorted(set(patches) - set(sources))
+    if extra or (missing and not allow_subset):
         raise ValueError(
-            "Список изменённых файлов в diff не совпадает с подготовленным пакетом. "
+            "Список файлов в diff не совпадает с подготовленным пакетом. "
             f"Нет в diff: {missing}; лишние: {extra}."
         )
+    if not patches:
+        raise ValueError("Diff не содержит ни одного файла для изменения.")
+    # Sources may also include read-only context modules. Only paths explicitly
+    # present in the diff are returned; callers can require particular files.
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
-        updated[relative] = apply_unified_diff(original or "", file_patch, relative)
+        try:
+            result = apply_unified_diff(original or "", file_patch, relative)
+        except ValueError as exc:
+            raise ValueError(f"Файл {relative}: {exc}") from exc
+        if original is not None and result == original:
+            raise ValueError(
+                f"Файл {relative}: diff не изменяет содержимое файла. "
+                "Вместо фиктивного или шаблонного блока создай реальное изменение, "
+                "используя точные строки именно этого файла."
+            )
+        updated[relative] = result
     return updated
+
+
 
 
 def generate_validated_multi_file_unified_diff(
@@ -683,22 +778,70 @@ def generate_validated_multi_file_unified_diff(
     messages: list[dict[str, str]],
     model_call: Callable[[list[dict[str, str]], int], str],
     max_attempts: int = 3,
+    *,
+    allow_subset: bool = False,
 ) -> str:
-    """Retry a combined diff until every requested source/test file applies exactly."""
+    """Retry a combined diff; optionally allow unchanged context-only files to be omitted."""
     if not isinstance(sources, dict) or not 1 <= len(sources) <= MAX_MULTI_FILE_PATCHES:
         raise ValueError(f"Пакет должен содержать от 1 до {MAX_MULTI_FILE_PATCHES} файлов.")
     attempts = max(1, min(int(max_attempts), 3))
     conversation = [dict(message) for message in messages]
     last_error: ValueError | None = None
     last_response = ""
+    scoped_retry_used = False
+    attempts_made = 0
     for attempt in range(attempts):
+        attempts_made = attempt + 1
         response = model_call(conversation, attempt)
         last_response = str(response or "")
+
+        # A refusal is not a malformed diff. Give the model one scoped recovery
+        # prompt, instead of treating the sentinel as patch syntax and repeating
+        # the same broad instruction.
+        if re.search(r"\bUNABLE_TO_CREATE_PATCH\b", last_response, re.IGNORECASE):
+            note = re.sub(r".*?\bUNABLE_TO_CREATE_PATCH\b", "", last_response, count=1, flags=re.IGNORECASE)
+            note = " ".join(note.split())[:400]
+            last_error = ValueError(
+                "Модель не смогла выбрать безопасное изменение в текущем объёме задачи."
+                + (f" Комментарий модели: {note}" if note else "")
+            )
+            if scoped_retry_used or attempt + 1 >= attempts:
+                break
+            scoped_retry_used = True
+            paths = ", ".join(sources)
+            repair_context = build_multi_file_repair_context(
+                sources,
+                max_chars=16_000,
+                head_lines=32,
+                context_radius=12,
+            )
+            scoped_retry = (
+                f"Предыдущий ответ был UNABLE_TO_CREATE_PATCH. Это не команда остановиться: "
+                "уменьши объём задачи и попробуй выполнить минимальное полезное изменение.\n"
+                f"Работай только с этими файлами: {paths}. Измени один узкий участок исходного модуля "
+                "и добавь/обнови один соответствующий тест. Не делай общий рефакторинг и не пытайся "
+                "реализовать все возможные улучшения сразу.\n"
+                "Не выдумывай функции и исходные строки. Используй приведённые ниже реальные фрагменты "
+                "и исходный контекст из первого сообщения. Если часть задачи не покрыта показанным кодом, "
+                "реализуй только ту безопасную часть, для которой кода достаточно.\n"
+                "Верни полноценный unified diff для каждого указанного файла. Не возвращай "
+                "UNABLE_TO_CREATE_PATCH только потому, что исходная просьба слишком широкая. "
+                "Используй этот маркер повторно лишь тогда, когда из переданного кода нельзя определить "
+                "ни одного безопасного и проверяемого изменения; в этом случае после маркера назови "
+                "конкретный отсутствующий файл, класс или функцию.\n"
+                f"{repair_context}"
+            )
+            conversation.extend([
+                {"role": "assistant", "content": last_response[:16_000]},
+                {"role": "user", "content": scoped_retry},
+            ])
+            continue
+
         try:
-            updated = apply_multi_file_unified_diff(sources, last_response)
+            updated = apply_multi_file_unified_diff(sources, last_response, allow_subset=allow_subset)
             sections = split_multi_file_unified_diff(last_response)
             for path, original in sources.items():
-                if original is None:
+                if original is None and path in sections:
                     sections[path] = sections[path].replace(
                         f"--- a/{path}\n", "--- /dev/null\n", 1
                     )
@@ -714,11 +857,29 @@ def generate_validated_multi_file_unified_diff(
                 f"--- a/{example_path}\n+++ b/{example_path}\n"
                 "@@ -1,1 +1,1 @@\n-СТАРАЯ_СТРОКА\n+НОВАЯ_СТРОКА"
             )
+            repair_context = build_multi_file_repair_context(
+                sources,
+                last_response,
+                max_chars=12_000,
+                head_lines=24,
+                context_radius=10,
+            )
+            scope_instruction = (
+                f"Разрешённые файлы и контекст: {paths}. Выведи diff только для файлов, которые действительно нужно изменить; неизменённые файлы можно не включать."
+                if allow_subset else
+                f"Создай diff для всех и только этих файлов: {paths}."
+            )
             retry_instruction = (
                 f"Предыдущий ответ не прошёл проверку: {exc}\n"
-                f"Создай ОДИН обычный unified diff для всех и только этих файлов: {paths}.\n"
+                f"{scope_instruction}\n"
                 "Для каждого файла обязательно выведи отдельную пару заголовков --- и +++ непосредственно "
                 "перед блоком @@. Не заменяй diff полным текстом файлов.\n"
+                "КРИТИЧЕСКИ ВАЖНО: используй нижеприведённые актуальные фрагменты как единственный источник "
+                "исходных строк. У каждого файла своё содержимое. Не копируй shebang, импорты или другие строки "
+                "из main.py в tests/test_*.py. Не повторяй фиктивные hunks вида -строка/+та же строка: "
+                "каждый включённый файл должен действительно измениться. Не создавай фиктивные блоки для файлов, которые нужны только как контекст.\n"
+                "Если предыдущий hunk не совпал, выбери реальный участок из соответствующего файла ниже и "
+                "перестрой diff целиком. Не пытайся исправить только номер строки, сохраняя выдуманный текст.\n"
                 "Для существующего файла используй --- a/путь.py и +++ b/путь.py. "
                 + (
                     "Для нового теста используй --- /dev/null и +++ b/путь_теста.py. "
@@ -726,17 +887,24 @@ def generate_validated_multi_file_unified_diff(
                 )
                 + "Не используй apply_patch, JSON, Markdown-таблицы или обычный текст. "
                 "Не добавляй пояснений, только diff. Не переименовывай и не удаляй файлы.\n"
-                f"Точный пример пары заголовков и hunk:\n{example}"
+                f"Точный пример пары заголовков и hunk:\n{example}\n\n"
+                f"{repair_context}"
             )
             conversation.extend([
                 {"role": "assistant", "content": last_response[:16_000]},
                 {"role": "user", "content": retry_instruction},
             ])
     detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
-    preview = " ".join(last_response.split())[:350]
-    suffix = f" Последний ответ модели: {preview!r}." if preview else ""
+    preview = last_response.strip()[:700]
+    suffix = f"\nПоследний ответ модели (фрагмент, переносы строк сохранены): {preview!r}." if preview else ""
+    if last_response and re.search(r"\bUNABLE_TO_CREATE_PATCH\b", last_response, re.IGNORECASE):
+        raise ValueError(
+            f"Модель не смогла подготовить безопасное изменение после {attempts_made} попыток. "
+            f"{detail} Уточни задачу до одного небольшого изменения в указанном модуле "
+            "или выбери файл, где находится нужная функция." + suffix
+        )
     raise ValueError(
-        f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}{suffix}"
+        f"Не удалось получить корректный многофайловый diff после {attempts_made} попыток. {detail}{suffix}"
     )
 
 
@@ -951,7 +1119,7 @@ def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool
     compile(updated, str(target), "exec")  # Syntax check before writing.
 
     appdata = os.environ.get("APPDATA")
-    backup_root = (Path(appdata) / "MoyaIshka" if appdata else Path.home() / ".moya_ishka") / "self_improve_backups"
+    backup_root = (Path(appdata) / "ISH" if appdata else Path.home() / ".ish") / "self_improve_backups"
     backup_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup = backup_root / f"{stamp}_{relative.name}.bak"

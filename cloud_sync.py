@@ -26,7 +26,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-APP_UA = "MoyaIshka/4.1.5.1-cloud"
+# Keep the remote table and AAD stable: existing encrypted ISH/MoyaIshka vault rows must remain decryptable.
+APP_UA = "ISH/4.2.9-cloud"
 VAULT_TABLE = "moyaishka_vault"
 VAULT_SCHEMA_VERSION = 1
 AAD = b"MoyaIshka encrypted cloud vault v1"
@@ -139,7 +140,7 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
     destination = _DATA_BLOB()
     flags = 0x1  # CRYPTPROTECT_UI_FORBIDDEN
     if protect:
-        ok = crypt32.CryptProtectData(ctypes.byref(source), ctypes.c_wchar_p("MoyaIshka cloud session"), None, None, None, flags, ctypes.byref(destination))
+        ok = crypt32.CryptProtectData(ctypes.byref(source), ctypes.c_wchar_p("ISH cloud session"), None, None, None, flags, ctypes.byref(destination))
     else:
         ok = crypt32.CryptUnprotectData(ctypes.byref(source), None, None, None, None, flags, ctypes.byref(destination))
     if not ok:

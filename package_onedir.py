@@ -23,8 +23,8 @@ def sha256_file(path: Path) -> str:
 
 def build_package(dist_dir: Path, output: Path, version: str) -> Path:
     root = dist_dir.resolve()
-    if not (root / "MoyaIshka.exe").is_file():
-        raise FileNotFoundError(f"Не найден {root / 'MoyaIshka.exe'}")
+    if not (root / "ISH.exe").is_file():
+        raise FileNotFoundError(f"Не найден {root / 'ISH.exe'}")
     for name in ("python311.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
         if not (root / "_internal" / name).is_file():
             raise RuntimeError(f"В onedir-папке отсутствует _internal/{name}")
@@ -40,11 +40,11 @@ def build_package(dist_dir: Path, output: Path, version: str) -> Path:
             })
     if not files or len(files) > 20000:
         raise RuntimeError("Неверное количество файлов в onedir-пакете.")
-    exe_hash = next(entry["sha256"] for entry in files if entry["path"] == "MoyaIshka.exe")
+    exe_hash = next(entry["sha256"] for entry in files if entry["path"] == "ISH.exe")
     manifest = {
         "schema": 1,
         "version": version,
-        "entrypoint": "MoyaIshka.exe",
+        "entrypoint": "ISH.exe",
         "exe_sha256": exe_hash,
         "files": files,
     }
@@ -54,10 +54,10 @@ def build_package(dist_dir: Path, output: Path, version: str) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as archive:
-        archive.writestr("MoyaIshka/", "")
+        archive.writestr("ISH/", "")
         for path in sorted(root.rglob("*")):
             if path.is_file():
-                archive.write(path, "MoyaIshka/" + path.relative_to(root).as_posix())
+                archive.write(path, "ISH/" + path.relative_to(root).as_posix())
     temporary.replace(output)
     Path(str(output) + ".sha256").write_text(
         f"{sha256_file(output)}  {output.name}\n", encoding="ascii"

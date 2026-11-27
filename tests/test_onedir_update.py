@@ -11,11 +11,11 @@ from updater_helper import validate_app_directory, _directory_updater_script
 
 
 def write_fake_app(root: Path, version: str = "4.2.1") -> Path:
-    app = root / "MoyaIshka"
+    app = root / "ISH"
     internal = app / "_internal"
     internal.mkdir(parents=True)
     content = {
-        "MoyaIshka.exe": b"fake exe",
+        "ISH.exe": b"fake exe",
         "_internal/python311.dll": b"python dll",
         "_internal/vcruntime140.dll": b"runtime 1",
         "_internal/vcruntime140_1.dll": b"runtime 2",
@@ -30,9 +30,9 @@ def write_fake_app(root: Path, version: str = "4.2.1") -> Path:
             "path": relative, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         })
-    exe_hash = next(item["sha256"] for item in entries if item["path"] == "MoyaIshka.exe")
+    exe_hash = next(item["sha256"] for item in entries if item["path"] == "ISH.exe")
     manifest = {
-        "schema": 1, "version": version, "entrypoint": "MoyaIshka.exe",
+        "schema": 1, "version": version, "entrypoint": "ISH.exe",
         "exe_sha256": exe_hash, "files": entries,
     }
     (app / "build_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -108,15 +108,15 @@ class OnedirUpdateTests(unittest.TestCase):
         def fake_extract(archive, destination, version):
             self.assertEqual(archive.read_bytes(), payload)
             self.assertEqual(version, "4.2.1")
-            app = destination / "MoyaIshka"
+            app = destination / "ISH"
             app.mkdir()
-            exe = app / "MoyaIshka.exe"
+            exe = app / "ISH.exe"
             exe.write_bytes(b"staged")
             return exe
 
         info = {
-            "package_url": "https://example.test/MoyaIshka.zip",
-            "checksum_url": "https://example.test/MoyaIshka.zip.sha256",
+            "package_url": "https://example.test/ISH.zip",
+            "checksum_url": "https://example.test/ISH.zip.sha256",
             "version": "4.2.1",
         }
         with tempfile.TemporaryDirectory() as temp:
@@ -194,13 +194,16 @@ class OnedirUpdateTests(unittest.TestCase):
         self.assertEqual(SHA256_CHUNK_BYTES, expected)
 
     def test_archive_path_traversal_is_rejected(self):
-        for path in ("../evil.txt", "MoyaIshka/../../evil.txt", "/MoyaIshka/file", "C:/evil.txt"):
+        for path in ("../evil.txt", "ISH/../../evil.txt", "/ISH/file", "C:/evil.txt"):
             with self.subTest(path=path), self.assertRaises(RuntimeError):
                 _safe_member_path(path)
 
-    def test_archive_root_must_be_moyaishka(self):
+    def test_legacy_archive_root_remains_accepted_for_upgrade(self):
+        self.assertEqual(_safe_member_path("MoyaIshka/MoyaIshka.exe"), ("MoyaIshka", "MoyaIshka.exe"))
+
+    def test_archive_root_must_be_ish(self):
         with self.assertRaisesRegex(RuntimeError, "корневую папку"):
-            _safe_member_path("OtherApp/MoyaIshka.exe")
+            _safe_member_path("OtherApp/ISH.exe")
 
     def test_folder_manifest_is_checked_file_by_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -234,7 +237,7 @@ class OnedirUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = write_fake_app(root)
-            output = root / "MoyaIshka.zip"
+            output = root / "ISH.zip"
             build_package(source, output, "4.2.1")
             staged = _extract_package(output, root / "update_staging", "4.2.1")
             self.assertTrue(staged.is_file())
@@ -246,8 +249,8 @@ class OnedirUpdateTests(unittest.TestCase):
             root = Path(temp)
             archive = root / "bad.zip"
             with zipfile.ZipFile(archive, "w") as bundle:
-                bundle.writestr("MoyaIshka/file.txt", "one")
-                bundle.writestr("MoyaIshka/file.txt", "two")
+                bundle.writestr("ISH/file.txt", "one")
+                bundle.writestr("ISH/file.txt", "two")
             with self.assertRaisesRegex(RuntimeError, "повторяется путь"):
                 _extract_package(archive, root / "stage", "4.2.1")
 

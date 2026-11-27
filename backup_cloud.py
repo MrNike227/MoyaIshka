@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Streaming E2E encryption for standalone MoyaIshka backup archives."""
+"""Streaming E2E encryption for standalone ISH backup archives.
+
+The legacy MAGIC and AAD values are intentionally stable so existing encrypted backups remain readable."""
 from __future__ import annotations
 
 import hashlib

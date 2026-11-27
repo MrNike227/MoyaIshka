@@ -26,7 +26,7 @@ def user_install_dir() -> Path:
     """Default per-user install directory (used only when the user has not chosen one)."""
     local = os.environ.get("LOCALAPPDATA")
     base = Path(local) if local else Path.home() / "AppData" / "Local"
-    return base / "Programs" / "MoyaIshka"
+    return base / "Programs" / "ISH"
 
 
 def resolve_install_dir(configured: str | Path | None = None, running_exe: str | Path | None = None) -> Path:
@@ -50,7 +50,7 @@ def ensure_install_dir_writable(directory: str | Path) -> Path:
     """Create and verify a selected installation directory before staging an install."""
     path = Path(directory).expanduser().resolve()
     if path == Path(path.anchor):
-        raise ValueError(r"Нельзя устанавливать приложение непосредственно в корень диска. Выбери отдельную папку, например C:\MoyaIshka.")
+        raise ValueError(r"Нельзя устанавливать приложение непосредственно в корень диска. Выбери отдельную папку, например C:\ISH.")
     path.mkdir(parents=True, exist_ok=True)
     probe = path / f".moya_write_test_{os.getpid()}"
     try:
@@ -68,8 +68,8 @@ def install_from_source(staged_path: str | Path, install_dir: str | Path | None 
 
     destination_dir = Path(install_dir) if install_dir else user_install_dir()
     destination_dir.mkdir(parents=True, exist_ok=True)
-    target = destination_dir / "MoyaIshka.exe"
-    temporary = destination_dir / "MoyaIshka.new.exe"
+    target = destination_dir / "ISH.exe"
+    temporary = destination_dir / "ISH.new.exe"
 
     # Copy to the destination volume first, then atomically rename into place.
     shutil.copy2(staged, temporary)
@@ -109,9 +109,9 @@ $ErrorActionPreference = 'Stop'
 $TargetPath = [System.IO.Path]::GetFullPath($TargetPath)
 $StagedPath = [System.IO.Path]::GetFullPath($StagedPath)
 $targetDir = Split-Path -Parent $TargetPath
-$backup = Join-Path $targetDir 'MoyaIshka.previous.exe'
-$oldSwap = Join-Path $targetDir 'MoyaIshka.rollback.exe'
-$tempTarget = Join-Path $targetDir 'MoyaIshka.installing.exe'
+$backup = Join-Path $targetDir 'ISH.previous.exe'
+$oldSwap = Join-Path $targetDir 'ISH.rollback.exe'
+$tempTarget = Join-Path $targetDir 'ISH.installing.exe'
 $newProcess = $null
 $hadPrevious = Test-Path -LiteralPath $TargetPath -PathType Leaf
 $previousHash = $null
@@ -166,7 +166,7 @@ function Restore-Previous([string]$Reason) {
                 }
             }
             if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
-                $alreadyRunning = Get-CimInstance Win32_Process -Filter "Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
+                $alreadyRunning = Get-CimInstance Win32_Process -Filter "Name='ISH.exe' OR Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
                     Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq [System.IO.Path]::GetFullPath($TargetPath)) }
                 if (-not $alreadyRunning) {
                     Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir | Out-Null
@@ -203,7 +203,7 @@ try {
 
     # Close an older instance that may still be running from the destination EXE.
     # The user has explicitly accepted the update; request a normal window close first.
-    $runningFromTarget = Get-CimInstance Win32_Process -Filter "Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
+    $runningFromTarget = Get-CimInstance Win32_Process -Filter "Name='ISH.exe' OR Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq [System.IO.Path]::GetFullPath($TargetPath)) }
     foreach ($entry in @($runningFromTarget)) {
         if (-not $entry) { continue }
@@ -219,7 +219,7 @@ try {
     $lockDeadline = (Get-Date).AddSeconds(10)
     $runningFromTarget = $null
     while ((Get-Date) -lt $lockDeadline) {
-        $runningFromTarget = Get-CimInstance Win32_Process -Filter "Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
+        $runningFromTarget = Get-CimInstance Win32_Process -Filter "Name='ISH.exe' OR Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq [System.IO.Path]::GetFullPath($TargetPath)) }
         if (-not $runningFromTarget) { break }
         Start-Sleep -Milliseconds 300
@@ -424,7 +424,7 @@ def launch_windows_replacement(
             stream.write(f"Целевой EXE: {target}\nВременный EXE: {staged}\n")
     except OSError as exc:
         raise OSError(f"Не удалось создать журнал обновления {log}: {exc}") from exc
-    helper_fd, helper_name = tempfile.mkstemp(prefix="MoyaIshka_Updater_", suffix=".ps1")
+    helper_fd, helper_name = tempfile.mkstemp(prefix="ISH_Updater_", suffix=".ps1")
     os.close(helper_fd)
     helper = Path(helper_name)
     try:
@@ -524,11 +524,12 @@ def apply_update(staged_path: str, target_path: str, process_id: str) -> int:
         return 1
 
 
-def _looks_like_moya_executable(filename: str) -> bool:
+def _looks_like_ish_executable(filename: str) -> bool:
     """Recognize only this application's executable names."""
     name = filename.casefold()
     return (
-        name in {"moyaishka.exe", "моя иишка.exe", "moyaishka_update.exe", "моя иишка_update.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
+        name in {"ish.exe", "moyaishka.exe", "моя иишка.exe", "ish_update.exe", "moyaishka_update.exe", "моя иишка_update.exe", "ish.previous.exe", "ish.installing.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
+        or (name.startswith("ish_") and name.endswith(".exe"))
         or (name.startswith("moyaishka_") and name.endswith(".exe"))
         or (name.startswith("моя иишка_") and name.endswith(".exe"))
     )
@@ -553,7 +554,7 @@ def scan_application_copies(
     roaming_app_data: str | Path | None = None,
     user_home: str | Path | None = None,
 ) -> list[dict[str, str | int | bool]]:
-    """Find likely MoyaIshka EXE copies in common install/download locations.
+    """Find likely ISH EXE copies in common install/download locations.
 
     This intentionally does not scan the entire disk. It checks the active and
     configured install folders, per-user Programs folders, the app's updater
@@ -573,7 +574,9 @@ def scan_application_copies(
         roots.append((Path(current_exe).expanduser().resolve().parent, 1))
     roots.extend([
         (local / "Programs", 4),
+        (local / "ISH", 3),
         (local / "MoyaIshka", 3),
+        (roaming / "ISH" / "update_staging", 2),
         (roaming / "MoyaIshka" / "update_staging", 2),
         (home / "Desktop", 2),
         (home / "Downloads", 2),
@@ -605,7 +608,7 @@ def scan_application_copies(
                 if name.casefold() not in prune_names and depth < max_depth
             ]
             for filename in filenames:
-                if not _looks_like_moya_executable(filename):
+                if not _looks_like_ish_executable(filename):
                     continue
                 candidate = current_dir / filename
                 try:
@@ -642,8 +645,8 @@ def delete_application_copy(path: str | Path, current_exe: str | Path | None = N
         running = Path(current_exe).expanduser().resolve()
         if target == running:
             raise ValueError("Нельзя удалить приложение, которое сейчас запущено.")
-    if not target.is_file() or not _looks_like_moya_executable(target.name):
-        raise ValueError("Выбранный файл не распознан как исполняемый файл Моей ИИшки.")
+    if not target.is_file() or not _looks_like_ish_executable(target.name):
+        raise ValueError("Выбранный файл не распознан как исполняемый файл ISH.")
     target.unlink()
 
 
@@ -660,7 +663,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
     version = str(manifest.get("version", "")).strip()
     if not version or (expected_version and version != expected_version.lstrip("v")):
         raise RuntimeError(f"Версия папки не совпадает с ожидаемой: {version or 'не указана'}.")
-    if manifest.get("entrypoint") != "MoyaIshka.exe":
+    if manifest.get("entrypoint") != "ISH.exe":
         raise RuntimeError("Неверная точка входа в манифесте.")
     files = manifest.get("files")
     if not isinstance(files, list) or not files or len(files) > 20000:
@@ -689,7 +692,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         actual_hash = sha256_file(path).lower()
         if len(expected) != 64 or actual_hash != expected:
             raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
-        if key == "moyaishka.exe":
+        if key == "ish.exe":
             exe_hash = actual_hash
 
     actual_files: set[str] = set()
@@ -764,7 +767,7 @@ def _directory_updater_script() -> str:
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Не найден build_manifest.json.' }
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$manifest.version -ne $ExpectedVersion) { throw "Ожидалась версия $ExpectedVersion, получена $($manifest.version)." }
-        if ([string]$manifest.entrypoint -ne 'MoyaIshka.exe') { throw 'Неверная точка входа.' }
+        if ([string]$manifest.entrypoint -ne 'ISH.exe') { throw 'Неверная точка входа.' }
         $items = @($manifest.files)
         if ($items.Count -lt 1 -or $items.Count -gt 20000) { throw 'Неверное число файлов в манифесте.' }
 
@@ -836,7 +839,7 @@ def _directory_updater_script() -> str:
             if ($expectedHash -notmatch '^[a-f0-9]{64}$') { throw "Неверная SHA-256 в манифесте: $relative" }
             $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actualHash -ne $expectedHash) { throw "SHA-256 не совпадает: $relative" }
-            if ($relative -ieq 'MoyaIshka.exe') { $exeHash = $actualHash }
+            if ($relative -ieq 'ISH.exe') { $exeHash = $actualHash }
         }
         if (-not $exeHash -or $exeHash -ne ([string]$manifest.exe_sha256).ToLowerInvariant()) {
             throw 'Главный EXE не прошёл проверку SHA-256 из манифеста.'
@@ -926,9 +929,10 @@ def _directory_updater_script() -> str:
                 ClearDirectoryContents $TargetDir
                 if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
                     [void](CopyDirectoryContents $BackupDir $TargetDir 'Восстановление резервной копии')
-                    $restoredExe = Join-Path $TargetDir 'MoyaIshka.exe'
+                    $restoredExe = Join-Path $TargetDir 'ISH.exe'
+                    if (-not (Test-Path -LiteralPath $restoredExe -PathType Leaf)) { $restoredExe = Join-Path $TargetDir 'MoyaIshka.exe' }
                     if (-not (Test-Path -LiteralPath $restoredExe -PathType Leaf)) {
-                        throw 'После отката не найден прежний MoyaIshka.exe.'
+                        throw 'После отката не найден прежний ISH.exe или MoyaIshka.exe.'
                     }
                     $restoredHash = (Get-FileHash -LiteralPath $restoredExe -Algorithm SHA256).Hash.ToLowerInvariant()
                     if ($PreviousExeHash -and $restoredHash -ne $PreviousExeHash) {
@@ -959,8 +963,8 @@ def _directory_updater_script() -> str:
         }
         if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { throw 'Программа не закрылась за 120 секунд.' }
 
-        $running = Get-CimInstance Win32_Process -Filter "Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) }
+        $running = Get-CimInstance Win32_Process -Filter "Name='ISH.exe' OR Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'ISH.exe') -or [IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) }
         foreach ($entry in @($running)) {
             if (-not $entry) { continue }
             $proc = Get-Process -Id ([int]$entry.ProcessId) -ErrorAction SilentlyContinue
@@ -981,19 +985,21 @@ def _directory_updater_script() -> str:
             $oldItems = @(Get-ChildItem -LiteralPath $TargetDir -Force -ErrorAction Stop)
             $HadPrevious = ($oldItems.Count -gt 0)
             if ($HadPrevious -and -not (
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'ISH.exe') -PathType Leaf) -or
                 (Test-Path -LiteralPath (Join-Path $TargetDir 'MoyaIshka.exe') -PathType Leaf) -or
                 (Test-Path -LiteralPath (Join-Path $TargetDir 'build_manifest.json') -PathType Leaf)
             )) {
-                throw 'Целевая папка уже содержит другие файлы и не распознана как установка Моей ИИшки. Выбери отдельную папку.'
+                throw 'Целевая папка уже содержит другие файлы и не распознана как установка ISH. Выбери отдельную папку.'
             }
         }
 
         # Take and verify a full backup before touching the current installation.
         # The target directory itself is never moved or renamed.
         if ($HadPrevious) {
-            $previousExe = Join-Path $TargetDir 'MoyaIshka.exe'
+            $previousExe = Join-Path $TargetDir 'ISH.exe'
+            if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) { $previousExe = Join-Path $TargetDir 'MoyaIshka.exe' }
             if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
-                throw 'В прежней установке отсутствует MoyaIshka.exe; замена отменена.'
+                throw 'В прежней установке отсутствует ISH.exe или MoyaIshka.exe; замена отменена.'
             }
             $PreviousExeHash = (Get-FileHash -LiteralPath $previousExe -Algorithm SHA256).Hash.ToLowerInvariant()
             [void](CopyDirectoryContents $TargetDir $BackupDir 'Создание резервной копии')
@@ -1008,9 +1014,9 @@ def _directory_updater_script() -> str:
         $TargetChanged = $true
         ClearDirectoryContents $TargetDir
         [void](CopyDirectoryContents $StagedDir $TargetDir 'Установка новой версии')
-        $targetExe = Join-Path $TargetDir 'MoyaIshka.exe'
+        $targetExe = Join-Path $TargetDir 'ISH.exe'
         if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) {
-            throw 'После копирования в папку установки не найден MoyaIshka.exe.'
+            throw 'После копирования в папку установки не найден ISH.exe.'
         }
         $ExeHash = VerifyFolder $TargetDir
         if ($ExeHash -ne $stagedHash) {
@@ -1021,7 +1027,7 @@ def _directory_updater_script() -> str:
         $env:MOYA_UPDATE_RECEIPT = $ReceiptPath
         $env:MOYA_UPDATE_VERSION = $ExpectedVersion
         $env:MOYA_UPDATE_SHA256 = $ExeHash
-        $env:MOYA_UPDATE_TARGET = Join-Path $TargetDir 'MoyaIshka.exe'
+        $env:MOYA_UPDATE_TARGET = Join-Path $TargetDir 'ISH.exe'
         $NewProcess = Start-Process -FilePath $env:MOYA_UPDATE_TARGET -WorkingDirectory $TargetDir -PassThru -ErrorAction Stop
         Log "Новая программа запущена PID $($NewProcess.Id); проверяю подтверждение."
         $limit = (Get-Date).AddSeconds(90)
@@ -1031,7 +1037,7 @@ def _directory_updater_script() -> str:
                 try {
                     $receipt = Get-Content -LiteralPath $ReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
                     if ($receipt.confirmed -eq $true -and [string]$receipt.version -eq $ExpectedVersion -and
-                        [string]$receipt.sha256 -eq $ExeHash -and [string]$receipt.target -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) {
+                        [string]$receipt.sha256 -eq $ExeHash -and [string]$receipt.target -ieq (Join-Path $TargetDir 'ISH.exe')) {
                         $confirmed = $true
                         break
                     }
@@ -1102,7 +1108,7 @@ def launch_windows_directory_replacement(
     log.parent.mkdir(parents=True, exist_ok=True)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.unlink(missing_ok=True)
-    helper_fd, helper_name = tempfile.mkstemp(prefix="MoyaIshka_DirUpdater_", suffix=".ps1")
+    helper_fd, helper_name = tempfile.mkstemp(prefix="ISH_DirUpdater_", suffix=".ps1")
     os.close(helper_fd)
     helper = Path(helper_name)
     try:

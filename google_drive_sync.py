@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Google Drive primary cloud vault for MoyaIshka.
+"""Google Drive primary cloud vault for ISH.
 
 Uses the narrow drive.file OAuth scope and stores one encrypted vault file in a
 visible `Moya Ishka Cloud` folder. OAuth is a desktop loopback + PKCE flow.
@@ -47,8 +47,9 @@ class _NoRedirectResumableUploadHandler(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(request.full_url, code, message, headers, response)
 
 
+# Stable remote filename retained so existing Google Drive vaults remain discoverable.
 VAULT_FILENAME = "moyaishka-vault.enc"
-APP_UA = "MoyaIshka/4.1.5.1 (Google Drive vault)"
+APP_UA = "ISH/4.2.9 (Google Drive vault)"
 
 
 class GoogleDriveError(RuntimeError):
@@ -119,8 +120,8 @@ def authorize_desktop(client_id: str, client_secret: str, timeout: int = 240) ->
                 status, body = 400, "Подключение Google Drive отменено или отклонено. Можно закрыть это окно."
             else:
                 callback["code"] = (params.get("code") or [""])[0]
-                status, body = 200, "Google Drive подключён. Вернись в приложение «Моя ИИшка». Это окно можно закрыть."
-            encoded = ("<!doctype html><meta charset='utf-8'><title>Моя ИИшка</title>"
+                status, body = 200, "Google Drive подключён. Вернись в приложение ISH. Это окно можно закрыть."
+            encoded = ("<!doctype html><meta charset='utf-8'><title>ISH</title>"
                        "<body style='font:16px Segoe UI,Arial;background:#111827;color:#f8fafc;padding:40px'>"
                        f"<h2>{body}</h2></body>").encode("utf-8")
             self.send_response(status)
@@ -320,7 +321,7 @@ class GoogleDriveVaultClient:
 
     @staticmethod
     def _multipart(metadata: dict[str, Any], content: bytes) -> tuple[bytes, str]:
-        boundary = "moyaishka_" + secrets.token_hex(16)
+        boundary = "ish_" + secrets.token_hex(16)
         chunks = [
             f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("ascii"),
             _json_bytes(metadata),
@@ -401,7 +402,7 @@ class GoogleDriveVaultClient:
         return self._backup_folder_id
 
     def list_backup_files(self) -> list[dict[str, Any]]:
-        """List only encrypted backups created in MoyaIshka's private Drive folder."""
+        """List only encrypted backups created in ISH's private Drive folder."""
         folder = self._backup_folder()
         rows = self._list(
             f"'{folder}' in parents and trashed = false",
@@ -471,7 +472,7 @@ class GoogleDriveVaultClient:
                 "moya_app_version": str(app_version)[:40],
                 "moya_backup_kind": str(backup_kind)[:20],
             },
-            "description": "MoyaIshka encrypted backup; AES-256-GCM",
+            "description": "ISH encrypted backup; AES-256-GCM",
         }
         local_md5 = backup_file_md5(source)
         query = urllib.parse.urlencode({"uploadType": "resumable", "fields": "id,name,size,md5Checksum,modifiedTime,appProperties"})

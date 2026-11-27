@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Verified local backups for MoyaIshka user data.
+"""Verified local backups for ISH user data.
 
 Backups include conversations, memory, preferences, research data, skills and
 user plugins. Windows DPAPI cloud-session files are intentionally excluded.
@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 BACKUP_FORMAT_VERSION = 1
-BACKUP_PREFIX = "MoyaIshka_backup_"
+BACKUP_PREFIX = "ISH_backup_"
 ROOT_FILES = ("config.json", "assistant.db", "research_library.json")
 USER_DIRECTORIES = ("skills", "plugins")
 RESTORE_TARGETS = (*ROOT_FILES, *USER_DIRECTORIES)

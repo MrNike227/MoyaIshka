@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Private, local-first intelligent memory for MoyaIshka.
+"""Private, local-first intelligent memory for ISH.
 
 Legacy memory remains a list of strings. Metadata is kept in a parallel list,
 so existing settings, backup archives and cloud snapshots stay compatible.

@@ -1,13 +1,13 @@
-ПАТЧ ДЛЯ GITHUB — МОЯ ИИШКА 4.1.5
+ПАТЧ ДЛЯ GITHUB — ISH 4.1.5
 
-1. Распакуйте всё содержимое архива в корень локальной папки репозитория MoyaIshka_v4.1.1.
+1. Распакуйте всё содержимое архива в корень локальной папки репозитория MrNike227/MoyaIshka.
 2. Согласитесь на замену файлов. Папку .git не удаляйте.
 3. Убедитесь, что добавлена папка hooks с hook-cryptography.py.
 4. Сделайте Commit и Push в ветку main.
 5. GitHub → Actions → Build Windows release → Run workflow.
 6. Укажите release_tag: v4.1.5 и запустите workflow.
-7. Дождитесь тестов, сборки и шага Verify frozen EXE crypto imports. В Releases должны быть MoyaIshka.exe и MoyaIshka.exe.sha256.
+7. Дождитесь тестов, сборки и шага Verify frozen EXE crypto imports. В Releases должны быть ISH.exe и ISH.exe.sha256.
 
 Сборка использует Node.js 24 runtime через actions/checkout@v7.0.1 и actions/setup-python@v7.1.0. Node.js устанавливать на ПК пользователя не нужно. Старое softprops/action-gh-release@v2 удалено.
 
-ВАЖНО: старая сборка 4.1.4 падает при запуске из-за отсутствующего cryptography и не сможет обновить себя. После успешной публикации v4.1.5 скачайте MoyaIshka.exe вручную и замените старый EXE в папке установки, например D:\ISH. Не удаляйте %APPDATA%\MoyaIshka: там настройки и пользовательские данные.
+ВАЖНО: старая сборка 4.1.4 падает при запуске из-за отсутствующего cryptography и не сможет обновить себя. После успешной публикации v4.1.5 скачайте ISH.exe вручную и замените старый EXE в папке установки, например D:\ISH. Не удаляйте %APPDATA%\MoyaIshka: там настройки и пользовательские данные.

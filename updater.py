@@ -64,7 +64,7 @@ def _unlink_best_effort(path: Path, *, attempts: int = 5) -> bool:
 def _get(url: str) -> bytes:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "MoyaIshka-Updater/4", "Accept": "application/vnd.github+json"},
+        headers={"User-Agent": "ISH-Updater/4", "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(request, timeout=90) as response:
         return response.read()
@@ -74,7 +74,7 @@ def _download_to(url: str, destination: Path, max_bytes: int = MAX_PACKAGE_BYTES
     """Stream package bytes to disk and hash incrementally instead of holding a ZIP in RAM."""
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "MoyaIshka-Updater/4", "Accept": "application/octet-stream"},
+        headers={"User-Agent": "ISH-Updater/4", "Accept": "application/octet-stream"},
     )
     digest = hashlib.sha256()
     total = 0
@@ -123,8 +123,11 @@ def check_latest_release(repository: str, current_version: str) -> dict[str, Any
     data = json.loads(_get(f"https://api.github.com/repos/{repository}/releases/latest").decode("utf-8"))
     tag = str(data.get("tag_name", ""))
     assets = data.get("assets", [])
-    package = next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
-    checksum = next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
+    # Prefer new ISH assets, but keep old package names readable during migration.
+    package = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
+    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
+    checksum = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
+    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
     return {
         "version": tag.lstrip("v"),
         "url": data.get("html_url", ""),
@@ -143,8 +146,8 @@ def _safe_member_path(name: str) -> tuple[str, ...]:
     parts = tuple(part for part in raw.rstrip("/").split("/") if part)
     if not parts or any(part in {".", ".."} for part in parts):
         raise RuntimeError("Архив содержит небезопасный путь.")
-    if parts[0].casefold() != "moyaishka":
-        raise RuntimeError("Архив должен содержать только корневую папку MoyaIshka.")
+    if parts[0].casefold() not in {"ish", "moyaishka"}:
+        raise RuntimeError("Архив должен содержать только корневую папку ISH.")
     return parts
 
 
@@ -165,7 +168,7 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
     version = str(manifest.get("version", "")).strip()
     if not version or (expected_version and version != expected_version.lstrip("v")):
         raise RuntimeError(f"Версия пакета не совпадает: {version or 'не указана'}.")
-    if manifest.get("entrypoint") != "MoyaIshka.exe":
+    if manifest.get("entrypoint") != "ISH.exe":
         raise RuntimeError("Неверная точка входа пакета обновления.")
     entries = manifest.get("files")
     if not isinstance(entries, list) or not entries or len(entries) > MAX_PACKAGE_FILES:
@@ -193,7 +196,7 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
         actual_hash = _sha256_file(path)
         if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or actual_hash != expected_hash:
             raise RuntimeError(f"Контрольная сумма файла пакета не совпадает: {relative}.")
-        if key == "moyaishka.exe":
+        if key == "ish.exe":
             exe_hash = actual_hash
     actual_files: set[str] = set()
     for path in root.rglob("*"):
@@ -219,9 +222,9 @@ def validate_app_folder(app_dir: Path, expected_version: str | None = None) -> d
 
 
 def _extract_package(archive: Path, destination: Path, expected_version: str) -> Path:
-    extracting = destination / "MoyaIshka.extracting"
-    app_dir = extracting / "MoyaIshka"
-    final_dir = destination / "MoyaIshka"
+    extracting = destination / "ISH.extracting"
+    app_dir = extracting / "ISH"
+    final_dir = destination / "ISH"
     if extracting.exists():
         shutil.rmtree(extracting)
     extracting.mkdir(parents=True)
@@ -242,7 +245,8 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
                 mode = (item.external_attr >> 16) & 0xFFFF
                 if (mode & 0o170000) not in (0, 0o040000, 0o100000):
                     raise RuntimeError("Архив содержит неподдерживаемый тип файла.")
-                target = extracting.joinpath(*parts)
+                normalized_parts = ("ISH", *parts[1:])
+                target = extracting.joinpath(*normalized_parts)
                 if item.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
@@ -253,7 +257,7 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
         if final_dir.exists():
             shutil.rmtree(final_dir)
         app_dir.replace(final_dir)
-        return final_dir / "MoyaIshka.exe"
+        return final_dir / "ISH.exe"
     finally:
         if extracting.exists():
             shutil.rmtree(extracting, ignore_errors=True)
@@ -267,17 +271,17 @@ def download_verified_update(info: dict[str, Any], target_dir: Path) -> Path:
     bounded retry handles brief Windows Defender/indexer sharing violations.
     """
     if not info.get("package_url") or not info.get("checksum_url"):
-        raise RuntimeError("В релизе не найдены MoyaIshka.zip и MoyaIshka.zip.sha256.")
+        raise RuntimeError("В релизе не найдены ISH.zip и ISH.zip.sha256.")
     checksum_text = _get(str(info["checksum_url"])).decode("utf-8", errors="replace").strip()
     match = re.search(r"\b([a-fA-F0-9]{64})\b", checksum_text)
     if not match:
         raise RuntimeError("Файл контрольной суммы имеет неверный формат.")
     target_dir.mkdir(parents=True, exist_ok=True)
     # Keep every attempt isolated: no shared archive, .tmp file, or extraction folder.
-    attempt_dir = target_dir / f"MoyaIshka_update_{uuid.uuid4().hex}"
+    attempt_dir = target_dir / f"ISH_update_{uuid.uuid4().hex}"
     attempt_dir.mkdir(parents=False, exist_ok=False)
-    archive = attempt_dir / "MoyaIshka_update.zip"
-    temporary = attempt_dir / "MoyaIshka_update.part"
+    archive = attempt_dir / "ISH_update.zip"
+    temporary = attempt_dir / "ISH_update.part"
     try:
         actual, _ = _download_to(str(info["package_url"]), temporary, MAX_PACKAGE_BYTES)
         if actual.lower() != match.group(1).lower():

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Private per-user Supabase Storage mirror for encrypted MoyaIshka backups."""
+"""Private per-user Supabase Storage mirror for encrypted ISH backups."""
 from __future__ import annotations
 import base64, hashlib, json, os, re, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 from typing import Any
 
+# Existing private bucket ID is retained to keep access to previously uploaded backups.
 BUCKET_NAME = "moyaishka-backups"
 TUS_CHUNK_BYTES = 6 * 1024 * 1024
 MAX_SUPABASE_FILE_BYTES = 50_000_000
@@ -51,7 +52,7 @@ class SupabaseBackupClient:
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": "Bearer " + self.access_token, "apikey": self.publishable_key,
-                "User-Agent": "MoyaIshka/4.1.9 (Supabase encrypted backup)", "Accept": "application/json"}
+                "User-Agent": "ISH/4.2.9 (Supabase encrypted backup)", "Accept": "application/json"}
 
     @staticmethod
     def _error_text(raw: bytes) -> str:
