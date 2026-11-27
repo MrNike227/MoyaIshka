@@ -780,7 +780,10 @@ def generate_validated_multi_file_unified_diff(
     conversation = [dict(message) for message in messages]
     last_error: ValueError | None = None
     last_response = ""
+    scoped_retry_used = False
+    attempts_made = 0
     for attempt in range(attempts):
+        attempts_made = attempt + 1
         response = model_call(conversation, attempt)
         last_response = str(response or "")
 
@@ -794,8 +797,9 @@ def generate_validated_multi_file_unified_diff(
                 "Модель не смогла выбрать безопасное изменение в текущем объёме задачи."
                 + (f" Комментарий модели: {note}" if note else "")
             )
-            if attempt + 1 >= attempts:
+            if scoped_retry_used or attempt + 1 >= attempts:
                 break
+            scoped_retry_used = True
             paths = ", ".join(sources)
             repair_context = build_multi_file_repair_context(
                 sources,
@@ -882,12 +886,12 @@ def generate_validated_multi_file_unified_diff(
     suffix = f"\nПоследний ответ модели (фрагмент, переносы строк сохранены): {preview!r}." if preview else ""
     if last_response and re.search(r"\bUNABLE_TO_CREATE_PATCH\b", last_response, re.IGNORECASE):
         raise ValueError(
-            f"Модель не смогла подготовить безопасное изменение после {attempts} попыток. "
+            f"Модель не смогла подготовить безопасное изменение после {attempts_made} попыток. "
             f"{detail} Уточни задачу до одного небольшого изменения в указанном модуле "
             "или выбери файл, где находится нужная функция." + suffix
         )
     raise ValueError(
-        f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}{suffix}"
+        f"Не удалось получить корректный многофайловый diff после {attempts_made} попыток. {detail}{suffix}"
     )
 
 
