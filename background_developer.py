@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,8 +32,11 @@ def _safe_target(project_root: Path, relative_path: str) -> tuple[Path, str]:
     ):
         raise ValueError("Фоновая разработка разрешена только для Python-модулей проекта вне служебных папок.")
     root = project_root.expanduser().resolve()
-    target = (root / relative).resolve()
-    if root not in target.parents or not target.is_file() or target.is_symlink():
+    candidate = root / relative
+    if candidate.is_symlink():
+        raise ValueError("Выбранный файл не должен быть символической ссылкой.")
+    target = candidate.resolve()
+    if root not in target.parents or not target.is_file():
         raise ValueError("Выбранный файл отсутствует, является ссылкой или находится вне проекта.")
     return target, relative.as_posix()
 
@@ -134,7 +138,7 @@ def run_background_development(
     if not suggestions:
         result: dict[str, Any] = {
             "status": "no_suggestions",
-            "tested_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds"),
+            "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "target": relative,
             "passed": None,
             "message": "Анализ завершён: надёжных улучшений для выбранного файла не найдено.",
