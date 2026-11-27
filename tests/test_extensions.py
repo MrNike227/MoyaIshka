@@ -172,7 +172,7 @@ class PatchTests(unittest.TestCase):
 
     def test_parse_suggestions_repairs_literal_newlines_and_trailing_commas(self):
         response = (
-            '{"suggestions":[{"title":"Логи","problem":"Строка первая\\nстрока вторая",'
+            '{"suggestions":[{"title":"Логи","problem":"Строка первая\nстрока вторая",'
             '"current":"print(1)","proposed":"logger.info(1)",'
             '"benefit":"Диагностика",},],}'
         )
@@ -321,11 +321,11 @@ class PatchTests(unittest.TestCase):
 
 class DiffRegenerationTests(unittest.TestCase):
     def test_missing_hunk_retries_until_a_valid_patch_is_generated(self):
-        original = "def answer():\\n    return 1\\n"
+        original = "def answer():\n    return 1\n"
         responses = [
             "Вот описание изменений без diff.",
-            "--- a/main.py\\n+++ b/main.py\\nизменений пока нет",
-            "--- a/main.py\\n+++ b/main.py\\n@@ -1,2 +1,2 @@\\n def answer():\\n-    return 1\\n+    return 2\\n",
+            "--- a/main.py\n+++ b/main.py\nизменений пока нет",
+            "--- a/main.py\n+++ b/main.py\n@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
         ]
         calls = []
 
@@ -346,7 +346,7 @@ class DiffRegenerationTests(unittest.TestCase):
         self.assertIn("не было корректного заголовка блока изменений @@", calls[1][1][-1]["content"])
         self.assertEqual(
             apply_unified_diff(original, patch, "main.py"),
-            "def answer():\\n    return 2\\n",
+            "def answer():\n    return 2\n",
         )
 
     def test_missing_hunk_after_all_attempts_returns_clear_error(self):
@@ -358,7 +358,7 @@ class DiffRegenerationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "после 3 попыток"):
             generate_validated_unified_diff(
-                "value = 1\\n",
+                "value = 1\n",
                 "main.py",
                 [{"role": "user", "content": "Измени значение"}],
                 model_call,
@@ -375,7 +375,7 @@ class DiffRegenerationTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             generate_validated_unified_diff(
-                "value = 1\\n",
+                "value = 1\n",
                 "main.py",
                 [{"role": "user", "content": "Измени значение"}],
                 model_call,
