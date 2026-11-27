@@ -354,7 +354,7 @@ def test_change_bundle(
         # A unified diff may omit only the final newline marker. Preserve strict
         # comparison of every actual source line while accepting CRLF/LF variants.
         normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-        return normalized[:-1] if normalized.endswith("\\n") else normalized
+        return normalized[:-1] if normalized.endswith("\n") else normalized
 
     for relative, _old, new, _old_text in checked:
         name = relative.as_posix()
