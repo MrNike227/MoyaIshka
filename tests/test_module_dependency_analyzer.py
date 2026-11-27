@@ -6,6 +6,8 @@ from module_dependency_analyzer import (
     analyze_module_dependencies,
     build_dependency_context,
     format_dependency_report,
+    build_project_architecture_index,
+    format_project_architecture_index,
 )
 
 
