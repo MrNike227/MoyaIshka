@@ -259,6 +259,45 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             "# -*- coding: utf-8 -*-\nVALUE = 10\nOTHER = 20\n",
         )
 
+    def test_repeated_sections_preserve_context_lines_that_look_like_hunk_headers(self):
+        sources = {"plugin_manager.py": "@@ literal marker\\nVALUE = 1\\nOTHER = 2\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,2 +1,2 @@
+ @@ literal marker
+-VALUE = 1
++VALUE = 10
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -3,1 +3,1 @@
+-OTHER = 2
++OTHER = 20
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(
+            updated["plugin_manager.py"],
+            "@@ literal marker\\nVALUE = 10\\nOTHER = 20\\n",
+        )
+
+    def test_repeated_sections_recalculate_downstream_new_offsets(self):
+        sources = {"plugin_manager.py": "A\\nB\\nC\\nD\\nE\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,1 +1,1 @@
+-A
++A
+X
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -4,1 +4,1 @@
+-D
++D2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -4,1 +5,1 @@", sections["plugin_manager.py"])
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "A\\nX\\nB\\nC\\nD2\\nE\\n")
+
     def test_exact_duplicate_hunk_is_deduplicated(self):
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
