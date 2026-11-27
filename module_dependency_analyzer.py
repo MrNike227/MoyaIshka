@@ -237,8 +237,12 @@ def analyze_module_dependencies(
 
     direct_dependencies = sorted(edges.get(relative, set()))
     transitive_dependencies = walk(relative, edges)
-    direct_dependents = sorted(reverse.get(relative, set()))
-    transitive_dependents = walk(relative, reverse)
+    def is_test_module(path: str) -> bool:
+        parts = PurePosixPath(path).parts
+        return bool(parts and parts[0].casefold() == "tests" and PurePosixPath(path).name.startswith("test_"))
+
+    direct_dependents = [path for path in sorted(reverse.get(relative, set())) if not is_test_module(path)]
+    transitive_dependents = [path for path in walk(relative, reverse) if not is_test_module(path)]
     affected_modules = sorted({relative, *direct_dependents, *transitive_dependents})
     tests = []
     for path in sorted(tree_by_path):
