@@ -560,7 +560,11 @@ def _extract_multi_diff_hunks(lines: list[str]) -> str:
             if hunk_was_wrapped or cumulative_line_delta:
                 # The old coordinate is measured in the untouched source.
                 # Recalculate the new coordinate after every earlier hunk delta.
-                new_start = old_start + cumulative_line_delta + (1 if old_count == 0 else 0)
+                new_start = (
+                    old_start + cumulative_line_delta + 1 if old_count == 0
+                    else old_start + cumulative_line_delta - 1 if new_count == 0
+                    else old_start + cumulative_line_delta
+                )
                 hunk_header = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@"
             cumulative_line_delta += new_count - old_count
         body.append(hunk_header + "\n")
@@ -652,25 +656,34 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
         # Models sometimes split one file into several Git sections. Merge
         # independent hunks, deduplicate identical hunks, and reject overlaps.
         existing_body = result[path].split("+++ b/" + path + "\n", 1)[1]
-        existing_hunks = ["@@ " + item for item in existing_body.split("@@ ")[1:] if item.strip()]
-        incoming_hunks = ["@@ " + item for item in hunks.split("@@ ")[1:] if item.strip()]
-        combined: list[tuple[int, str, int]] = []
+
+        def split_hunk_blocks(body: str) -> list[str]:
+            starts = [match.start() for match in re.finditer(r"(?m)^@@ ", body)]
+            return [
+                body[start:starts[index + 1] if index + 1 < len(starts) else len(body)]
+                for index, start in enumerate(starts)
+            ]
+
+        existing_hunks = split_hunk_blocks(existing_body)
+        incoming_hunks = split_hunk_blocks(hunks)
+        combined: list[tuple[int, str, int, int]] = []
         seen_hunks: set[str] = set()
         for item in existing_hunks + incoming_hunks:
             if item in seen_hunks:
                 continue
             seen_hunks.add(item)
             header = item.split("\n", 1)[0]
-            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@", header)
+            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? +([0-9]+)(?:,([0-9]+))? @@", header)
             if not match:
-                raise ValueError(f"Файл {path}: повреждён заголовок повторного блока @@.")
+                raise ValueError(f"Файл {path}: повреждённый заголовок повторного блока @@.")
             old_start = int(match.group(1))
             old_count = int(match.group(2) or 1)
-            combined.append((old_start, item, old_count))
+            new_count = int(match.group(4) or 1)
+            combined.append((old_start, item, old_count, new_count))
         combined.sort(key=lambda item: item[0])
         for previous, current in zip(combined, combined[1:]):
-            prev_start, _, prev_count = previous
-            curr_start, _, curr_count = current
+            prev_start, _, prev_count, _ = previous
+            curr_start, _, curr_count, _ = current
             overlaps = curr_start < prev_start + prev_count
             same_insertion_anchor = (
                 curr_start == prev_start and (prev_count == 0 or curr_count == 0)
@@ -680,9 +693,26 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
                     f"Diff содержит повторные или пересекающиеся изменения файла {path}; "
                     "оставь один согласованный блок для этого участка."
                 )
+
+        # Rebuild new-file coordinates after sorting, including deltas from
+        # hunks that arrived in separate repeated sections of the same path.
+        cumulative_delta = 0
+        normalized_hunks: list[str] = []
+        for old_start, item, old_count, new_count in combined:
+            if old_count == 0:
+                new_start = old_start + cumulative_delta + 1
+            elif new_count == 0:
+                new_start = old_start + cumulative_delta - 1
+            else:
+                new_start = old_start + cumulative_delta
+            header, separator, remainder = item.partition("\n")
+            normalized_hunks.append(
+                f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+                + (remainder if separator else "")
+            )
+            cumulative_delta += new_count - old_count
         result[path] = (
-            f"--- a/{path}\n+++ b/{path}\n"
-            + "".join(item[1] for item in combined)
+            f"--- a/{path}\n+++ b/{path}\n" + "".join(normalized_hunks)
         )
 
 
