@@ -230,7 +230,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
-        self.assertEqual(source.count('b"4.2.8-smoke"'), 2)
+        self.assertIn('smoke_aad = f"{APP_VERSION}-smoke".encode("ascii")', source)
+        self.assertEqual(source.count("smoke_aad"), 3)
         self.assertIn("import _cffi_backend", source)
 
     def test_github_actions_use_node24_compatible_action_majors(self):
@@ -625,14 +626,19 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("split_multi_file_unified_diff", apply_method)
         self.assertIn("нельзя применить пакет к исходникам напрямую", apply_method.lower())
         self.assertIn("split_multi_file_unified_diff", pr_method)
-        self.assertIn("пока принимает один файл", pr_method)
+        self.assertIn("if multi_file:", pr_method)
+        self.assertIn("find_matching_tested_proposal_bundle", pr_method)
+        self.assertIn("create_draft_pull_request_from_bundle", pr_method)
+        self.assertIn("if multi_file and bundle_dir is not None:", pr_method)
+        self.assertIn("create_draft_pull_request(", pr_method)
 
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
     def test_inno_setup_installer_version_is_428(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
         self.assertIn("AppVersion=4.2.8", installer)
+
+
+if __name__ == "__main__":
+    unittest.main()
