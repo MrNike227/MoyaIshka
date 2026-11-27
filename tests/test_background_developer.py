@@ -32,10 +32,12 @@ def test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> 
 
 class BackgroundDeveloperTests(unittest.TestCase):
     def test_reviewer_approval_requires_json_boolean_true(self):
-        self.assertTrue(_has_explicit_reviewer_approval({"approved": True}))
-        self.assertFalse(_has_explicit_reviewer_approval({"approved": "true"}))
-        self.assertFalse(_has_explicit_reviewer_approval({"approved": "false"}))
-        self.assertFalse(_has_explicit_reviewer_approval({"approved": 1}))
+        self.assertTrue(_has_explicit_reviewer_approval({"approved": True, "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": "true", "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": "false", "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": 1, "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": True, "findings": ["Проблема"]}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": True, "findings": "нет"}))
         self.assertFalse(_has_explicit_reviewer_approval([]))
     def make_project(self, root: Path) -> None:
         (root / "tests").mkdir(parents=True)
