@@ -222,9 +222,8 @@ class ImprovementTestingTests(unittest.TestCase):
             self.make_project(root)
             bundle = self.make_multi_bundle(temp, 2)
             (root / "tests" / "test_sample_feature.py").write_text("VALUE = 99\n", encoding="utf-8")
-            result = test_change_bundle(bundle, root)
-            self.assertFalse(result["passed"])
-            self.assertIn("уже существует", result["error"])
+            with self.assertRaisesRegex(ProposalTestError, "уже существует"):
+                test_change_bundle(bundle, root)
 
 
     def test_guest_runner_rejects_non_sandbox_account_even_with_marker(self):
