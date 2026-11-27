@@ -3697,18 +3697,79 @@ class MoyaIshkaApp:
                 elif event == "patch_error":
                     self.improve_status_var.set(str(payload))
                     messagebox.showerror("Саморазвитие", str(payload))
+                elif event == "windows_sandbox_status":
+                    self.windows_sandbox_status_busy = False
+                    ready = bool(payload.get("ready"))
+                    supported = bool(payload.get("supported"))
+                    self.windows_sandbox_status_var.set(
+                        "Windows Sandbox готова. Тесты выполняются без сети и доступа к личным папкам."
+                        if ready else str(payload.get("reason") or "Windows Sandbox пока не готова.")
+                    )
+                    if hasattr(self, "sandbox_install_button"):
+                        self.sandbox_install_button.configure(
+                            state="normal" if supported and not self.windows_sandbox_install_busy else "disabled"
+                        )
+                        self.sandbox_install_button.configure(
+                            text="Проверить / восстановить Windows Sandbox"
+                            if payload.get("installed") and not ready else "Установить Windows Sandbox"
+                        )
+                elif event == "windows_sandbox_status_error":
+                    self.windows_sandbox_status_busy = False
+                    self.windows_sandbox_status_var.set(f"Не удалось проверить Windows Sandbox: {payload}")
+                    if hasattr(self, "sandbox_install_button") and not self.windows_sandbox_install_busy:
+                        self.sandbox_install_button.configure(state="normal")
+                elif event == "windows_sandbox_install_complete":
+                    self.windows_sandbox_install_busy = False
+                    status = payload.get("sandbox_status") or {}
+                    success = bool(payload.get("success"))
+                    restart = bool(payload.get("restart_required") or status.get("restart_required"))
+                    if hasattr(self, "sandbox_install_button"):
+                        self.sandbox_install_button.configure(state="normal")
+                    if success and restart:
+                        self.windows_sandbox_status_var.set("Компонент включён. Перезагрузи компьютер для завершения установки.")
+                        messagebox.showinfo(
+                            "Windows Sandbox установлена",
+                            "Компонент Windows Sandbox включён. Требуется перезагрузка Windows. "
+                            "После перезагрузки нажми «Проверить состояние». До этого тестовый код запускаться не будет.",
+                        )
+                    elif success and status.get("ready"):
+                        self.windows_sandbox_status_var.set("Windows Sandbox готова. Изолированное тестирование разрешено.")
+                        messagebox.showinfo("Windows Sandbox", "Установка и проверка завершены. Изолированное тестирование готово.")
+                    else:
+                        reason = str(status.get("reason") or payload.get("error") or "Windows не подтвердила готовность компонента.")
+                        self.windows_sandbox_status_var.set(reason)
+                        messagebox.showwarning("Windows Sandbox", f"Установка завершена не полностью.\n\n{reason}")
+                    self.refresh_windows_sandbox_status()
+                elif event == "windows_sandbox_install_error":
+                    self.windows_sandbox_install_busy = False
+                    self.windows_sandbox_status_var.set(f"Установка не завершена: {payload}")
+                    if hasattr(self, "sandbox_install_button"):
+                        self.sandbox_install_button.configure(state="normal")
                 elif event == "improvement_test_completed":
-                    self.improve_status_var.set(
-                        f"Тестирование завершено: {'успешно' if payload.get('passed') else 'есть ошибки'}. Отчёт: {payload.get('report_path', '')}"
-                    )
-                    messagebox.showinfo(
-                        "Проверка саморазвития",
-                        f"Результат: {'УСПЕШНО' if payload.get('passed') else 'ОШИБКИ'}\n"
-                        f"Проверено файлов: {payload.get('checked_files', 0)}\n"
-                        f"Код завершения unit-тестов: {payload.get('tests_exit_code', 'не запускались')}\n\n"
-                        f"Отчёт: {payload.get('report_path', '')}\n\n"
-                        "Изменения не применялись к установленной программе."
-                    )
+                    sandboxed = bool(payload.get("sandboxed"))
+                    if sandboxed:
+                        result_label = "УСПЕШНО" if payload.get("passed") else "ОШИБКИ"
+                        self.improve_status_var.set(
+                            f"Windows Sandbox: {result_label}. Отчёт: {payload.get('report_path', '')}"
+                        )
+                        messagebox.showinfo(
+                            "Проверка саморазвития",
+                            f"Windows Sandbox: {result_label}\n"
+                            f"Проверено файлов: {payload.get('checked_files', 0)}\n"
+                            f"Тестов выполнено: {payload.get('tests_run', 0)}\n"
+                            f"Ошибок: {payload.get('failures', 0) + payload.get('errors', 0)}\n"
+                            "Сеть: отключена\nКопия проекта: только чтение\n\n"
+                            f"Отчёт: {payload.get('report_path', '')}\n\n"
+                            "Изменения не применялись к установленной программе."
+                        )
+                    else:
+                        self.improve_status_var.set("Тестирование заблокировано: Windows Sandbox не запущена.")
+                        messagebox.showwarning(
+                            "Безопасное тестирование недоступно",
+                            f"Код не запускался на основном компьютере.\n\n"
+                            f"Причина: {payload.get('error', 'Windows Sandbox не готова.')}\n\n"
+                            f"Отчёт: {payload.get('report_path', '')}",
+                        )
                 elif event == "improvement_test_error":
                     self.improve_status_var.set(f"Проверка предложения не пройдена: {payload}")
                     messagebox.showerror("Проверка саморазвития", str(payload))
@@ -6017,14 +6078,13 @@ class MoyaIshkaApp:
             if not messagebox.askyesno(
                 "Тестирование предложения",
                 f"Проверить последнее предложение?\n\n{bundle.name}\n\n"
-                "Будет создана временная копия проекта, проверены SHA-256 и синтаксис, "
-                "затем запущены unit-тесты во временной копии. Рабочие исходники не заменяются. "
-                "Важно: это не изолированная песочница. Тестовый код выполняется с правами текущей "
-                "учётной записи Windows и может обращаться к другим файлам и сети. Продолжай только "
-                "если доверяешь коду предложения. Продолжить?",
+                "Код будет запущен только в Windows Sandbox. Сеть и буфер обмена отключены, "
+                "копия проекта доступна только для чтения, а наружу разрешена запись только в отдельную "
+                "папку результатов. Личные папки, установленные файлы и облачные каталоги не передаются. "
+                "Если Windows Sandbox не готова, тестирование будет заблокировано. Продолжить?",
             ):
                 return
-            self.improve_status_var.set(f"Тестирую предложение {bundle.name} в отдельной копии…")
+            self.improve_status_var.set(f"Подготавливаю изолированную Windows Sandbox для предложения {bundle.name}…")
             source_root = project_dir()
             def worker() -> None:
                 try:
