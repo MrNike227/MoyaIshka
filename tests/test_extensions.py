@@ -464,11 +464,11 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_428(self):
+    def test_application_release_version_is_429(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.8")
+        self.assertEqual(APP_VERSION, "4.2.9")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main
