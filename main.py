@@ -83,7 +83,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.3"
+APP_VERSION = "4.2.4"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -5585,8 +5585,11 @@ class MoyaIshkaApp:
                 if mode == "Только онлайн":
                     raise
                 errors.append(f"Онлайн: {exc}")
-        if mode == "Только онлайн":
-            raise RuntimeError("Для обычного ответа облачной модели нужен API-ключ. Это не требуется для интернет-поиска: запросы «поищи в интернете …» и страница «Интернет и знания» работают без ключа.")
+        if mode == "Только онлайн" and settings["api_key"]:
+            raise RuntimeError("Для самоанализа в режиме «Только онлайн» требуется API-ключ. Для локального самоанализа переключи обычный режим на «Только локально» или удали API-ключ из настроек.")
+        # Self-analysis is an independent maintenance task: when no cloud API
+        # key is configured, allow it to use the configured local Ollama model,
+        # even if ordinary chat is currently set to "Только онлайн".
         try:
             return self._call_ollama(settings, messages)
         except Exception as exc:
