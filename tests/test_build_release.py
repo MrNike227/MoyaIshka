@@ -568,6 +568,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"tests/test_supabase_backup.py"', source)
         self.assertIn('"windows_sandbox.py"', source)
         self.assertIn("request_windows_sandbox_install", source)
+        self.assertIn("record_windows_sandbox_install", source)
+        self.assertIn("record_windows_sandbox_install(result)", source)
         self.assertIn("get_windows_sandbox_status", source)
         self.assertIn("<Networking>Disable</Networking>", sandbox)
         self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
