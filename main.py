@@ -3375,11 +3375,8 @@ class MoyaIshkaApp:
                 try:
                     data = post_json(base + "/api/chat", payload, timeout=request_timeout)
                     break
-                except urllib.error.HTTPError as exc:
-                    try:
-                        error_body = exc.read().decode("utf-8", errors="replace")
-                    except Exception:
-                        error_body = str(exc)
+                except RuntimeError as exc:
+                    error_body = str(exc)
                     access_violation = (
                         self_improvement
                         and not cpu_fallback
@@ -3387,7 +3384,7 @@ class MoyaIshkaApp:
                         and ("0xc0000005" in error_body.casefold() or "3221225477" in error_body)
                     )
                     if not access_violation:
-                        raise RuntimeError(f"Ollama вернула HTTP {exc.code}: {error_body[:700]}") from exc
+                        raise
                     cpu_fallback = True
                     continue
             try:
