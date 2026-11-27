@@ -27,6 +27,7 @@ class WindowsSandboxTests(unittest.TestCase):
             self.assertEqual(values["MemoryInMB"], "4096")
             self.assertEqual(values["Networking"], "Disable")
             self.assertEqual(values["VGpu"], "Disable")
+            self.assertEqual(values["ProtectedClient"], "Enable")
             self.assertEqual(values["ClipboardRedirection"], "Disable")
             self.assertEqual(values["AudioInput"], "Disable")
             self.assertEqual(values["VideoInput"], "Disable")
