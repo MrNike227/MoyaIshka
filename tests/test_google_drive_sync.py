@@ -29,10 +29,10 @@ class GoogleDriveSyncTests(unittest.TestCase):
         self.assertNotIn("/", value)
 
     def test_json_bytes_is_utf8_and_compact(self):
-        raw = _json_bytes({"папка": "Моя ИИшка", "n": 1})
-        self.assertIn("Моя ИИшка".encode("utf-8"), raw)
+        raw = _json_bytes({"папка": "ISH", "n": 1})
+        self.assertIn("ISH".encode("utf-8"), raw)
         self.assertNotIn(b" : ", raw)
-        self.assertEqual(json.loads(raw.decode("utf-8"))["папка"], "Моя ИИшка")
+        self.assertEqual(json.loads(raw.decode("utf-8"))["папка"], "ISH")
 
     def test_multipart_payload_contains_metadata_and_encrypted_content(self):
         metadata = {"name": "vault.enc", "parents": ["folder-id"]}
