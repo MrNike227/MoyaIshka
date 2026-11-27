@@ -294,6 +294,7 @@ def create_sandbox_config(
     memory = max(2048, min(int(memory_mb), 8192))
     xml = f"""<Configuration>
   <VGpu>Disable</VGpu>
+  <ProtectedClient>Enable</ProtectedClient>
   <Networking>Disable</Networking>
   <ClipboardRedirection>Disable</ClipboardRedirection>
   <AudioInput>Disable</AudioInput>
