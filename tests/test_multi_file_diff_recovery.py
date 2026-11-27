@@ -112,6 +112,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             [{"role": "user", "content": "Измени модуль и добавь тест"}],
             model_call,
             max_attempts=3,
+            allow_subset=True,
         )
         self.assertIn("--- a/feature.py", result)
         self.assertIn("--- /dev/null", result)
