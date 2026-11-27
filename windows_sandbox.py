@@ -19,7 +19,7 @@ from xml.sax.saxutils import escape
 
 FEATURE_NAME = "Containers-DisposableClientVM"
 MINIMUM_BUILD = 18362
-SUPPORTED_EDITIONS = {"Professional", "ProfessionalN", "Enterprise", "Education", "EnterpriseS", "IoTEnterprise"}
+SUPPORTED_EDITIONS = {"Professional", "ProfessionalN", "Enterprise", "Education", "ProfessionalEducation", "ProfessionalEducationN"}
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_MEMORY_MB = 4096
 MAX_INSTALL_RESULT_BYTES = 32 * 1024
@@ -42,9 +42,11 @@ def _host_details() -> dict[str, Any]:
         ) as key:
             edition = str(winreg.QueryValueEx(key, "EditionID")[0])
             build = int(winreg.QueryValueEx(key, "CurrentBuildNumber")[0])
-    except (OSError, ValueError, TypeError):
-        version = __import__("sys").getwindowsversion()
-        edition, build = "", int(version.build)
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "supported": False,
+            "reason": f"Не удалось подтвердить редакцию и сборку Windows: {exc}",
+        }
     machine = platform.machine().casefold()
     if build < MINIMUM_BUILD:
         return {
