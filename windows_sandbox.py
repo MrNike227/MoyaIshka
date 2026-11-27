@@ -391,24 +391,24 @@ def wait_for_sandbox_completion(
     deadline = time.monotonic() + max(60, min(int(timeout_seconds) + 120, 900))
     while time.monotonic() < deadline:
         total_bytes = 0
-        entry_count = 0
         try:
-            for current, directories, filenames in os.walk(directory, topdown=True, followlinks=False):
-                for name in list(directories):
-                    item = Path(current) / name
-                    entry_count += 1
-                    if entry_count > 512 or _is_reparse_point(item):
+            # The guest is expected to create exactly these three small JSON files.
+            # Reject directories, links, ADS-like extras and all other output names.
+            allowed_names = {"runner_result.json", "host_report.json", "complete.json"}
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name not in allowed_names:
                         if sandbox_process is not None and sandbox_process.poll() is None:
                             sandbox_process.kill()
-                        raise RuntimeError("Sandbox создала слишком много объектов или reparse point в папке результатов.")
-                for name in filenames:
-                    item = Path(current) / name
-                    entry_count += 1
-                    if entry_count > 512 or _is_reparse_point(item):
+                        raise RuntimeError("Sandbox создала неожиданный объект в папке результатов; отчёт отклонён.")
+                    item = Path(entry.path)
+                    info = entry.stat(follow_symlinks=False)
+                    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                    if item.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_flag) or not stat.S_ISREG(info.st_mode):
                         if sandbox_process is not None and sandbox_process.poll() is None:
                             sandbox_process.kill()
-                        raise RuntimeError("Sandbox создала слишком много объектов или reparse point в папке результатов.")
-                    total_bytes += item.stat().st_size
+                        raise RuntimeError("Sandbox создала ссылку или не-файл в папке результатов; отчёт отклонён.")
+                    total_bytes += int(info.st_size)
                     if total_bytes > max_result_bytes:
                         if sandbox_process is not None and sandbox_process.poll() is None:
                             sandbox_process.kill()
