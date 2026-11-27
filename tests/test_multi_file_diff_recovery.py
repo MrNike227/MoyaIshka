@@ -303,7 +303,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             split_multi_file_unified_diff(patch)
 
     def test_context_line_starting_with_hunk_marker_is_not_a_header(self):
-        sources = {"plugin_manager.py": "@@ source marker\\nVALUE = 1\\n"}
+        sources = {"plugin_manager.py": "@@ source marker\nVALUE = 1\n"}
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
 @@ -1,2 +1,2 @@
@@ -312,10 +312,10 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
 +VALUE = 2
 """
         updated = apply_multi_file_unified_diff(sources, patch)
-        self.assertEqual(updated["plugin_manager.py"], "@@ source marker\\nVALUE = 2\\n")
+        self.assertEqual(updated["plugin_manager.py"], "@@ source marker\nVALUE = 2\n")
 
     def test_context_lines_resembling_file_headers_are_not_new_sections(self):
-        source = "--- a/decoy.py\\n+++ b/decoy.py\\nVALUE = 1\\n"
+        source = "--- a/decoy.py\n+++ b/decoy.py\nVALUE = 1\n"
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
 @@ -1,3 +1,3 @@
@@ -327,7 +327,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
         updated = apply_multi_file_unified_diff({"plugin_manager.py": source}, patch)
         self.assertEqual(
             updated["plugin_manager.py"],
-            "--- a/decoy.py\\n+++ b/decoy.py\\nVALUE = 2\\n",
+            "--- a/decoy.py\n+++ b/decoy.py\nVALUE = 2\n",
         )
 
     def test_wrapped_added_line_is_recovered(self):
