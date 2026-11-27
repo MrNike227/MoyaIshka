@@ -69,12 +69,12 @@ def _prepare_guest_runner(readonly_root: Path) -> Path:
         )
     executable = Path(sys.executable).resolve()
     internal = executable.parent / "_internal"
-    if not executable.is_file() or not internal.is_dir():
-        raise ProposalTestError("Не найден полный каталог _internal установленной сборки EXE.")
+    if executable.name.casefold() != "moyai shka.exe".replace(" ", "") or not executable.is_file() or not internal.is_dir():
+        raise ProposalTestError("Для тестирования требуется полная сборка MoyaIshka.exe с каталогом _internal.")
     runner = readonly_root / "Runner"
     runner.mkdir(parents=True, exist_ok=True)
     shutil.copy2(executable, runner / executable.name)
-    shutil.copytree(internal, runner / "_internal", ignore=_ignore_sandbox_copy)
+    shutil.copytree(internal, runner / "_internal")
     return runner / executable.name
 
 
