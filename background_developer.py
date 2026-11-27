@@ -107,8 +107,13 @@ def _load_recent_development_lessons(updates_dir: Path, limit: int = 5) -> list[
 
 
 def _has_explicit_reviewer_approval(review_data: Any) -> bool:
-    """Accept only a JSON boolean true; strings such as 'false' are not approval."""
-    return isinstance(review_data, dict) and review_data.get("approved") is True
+    """Require an explicit approval and an empty structured findings list."""
+    return (
+        isinstance(review_data, dict)
+        and review_data.get("approved") is True
+        and isinstance(review_data.get("findings"), list)
+        and not review_data["findings"]
+    )
 
 
 def run_background_development(
@@ -374,7 +379,7 @@ def run_background_development(
         review_start = review_text.find("{")
         review_end = review_text.rfind("}")
         review_data = json.loads(review_text[review_start:review_end + 1]) if review_start >= 0 and review_end > review_start else {}
-        review_approved = bool(report.get("passed")) and review_data.get("approved") is True
+        review_approved = bool(report.get("passed")) and _has_explicit_reviewer_approval(review_data)
         review_summary = str(review_data.get("summary", ""))[:1500]
         raw_findings = review_data.get("findings", [])
         review_findings = [str(item)[:500] for item in raw_findings[:10]] if isinstance(raw_findings, list) else []
