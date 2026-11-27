@@ -54,6 +54,7 @@ from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
+from windows_sandbox import get_windows_sandbox_status, request_windows_sandbox_install, wait_for_install_result
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
@@ -759,6 +760,8 @@ class MoyaIshkaApp:
         self.voice_download_busy = False
         self.voice_download_progress_value = 0
         self.research_busy = False
+        self.windows_sandbox_install_busy = False
+        self.windows_sandbox_status_busy = False
         self._auto_research_after_id: str | None = None
         self.pending_attachment: tuple[str, str] | None = None
         self.search_var = tk.StringVar()
@@ -785,6 +788,7 @@ class MoyaIshkaApp:
         self.root.after(20000, self._schedule_backup_upload_retry)
         self.root.after(6500, self._maybe_check_updates)
         self.root.after(12000, self._schedule_auto_research)
+        self.root.after(1800, self.refresh_windows_sandbox_status)
         if bool(self.config.get("self_improve_auto_enabled", False)):
             self.root.after(25000, self._run_scheduled_improvement_analysis)
         if self._any_cloud_session_ready() and bool(self.config.get("cloud_auto_sync", True)):
@@ -2152,6 +2156,21 @@ class MoyaIshkaApp:
         ttk.Button(patch_actions, text="Сохранить diff", command=self.save_patch_file).pack(side="left")
         ttk.Button(patch_actions, text="Применить проверенный diff", style="Accent.TButton", command=self.apply_improvement).pack(side="left", padx=8)
         ttk.Button(patch_actions, text="Открыть папку исходников", command=lambda: self._open_local_folder(project_dir())).pack(side="left", padx=8)
+
+        sandbox_frame = ttk.LabelFrame(self_dev, text="Защищённое тестирование — Windows Sandbox", padding=10)
+        sandbox_frame.pack(fill="x", pady=(8, 6))
+        ttk.Label(
+            sandbox_frame,
+            text="Перед запуском кода, созданного ИИ, Моя ИИшка проверяет Windows Sandbox. При необходимости приложение установит системный компонент через запрос администратора Windows. Может потребоваться перезагрузка; сама программа компьютер не перезагружает. Без готовой песочницы тестовый код не запускается.",
+            style="MutedPanel.TLabel", wraplength=880, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        self.windows_sandbox_status_var = tk.StringVar(value="Состояние Windows Sandbox ещё не проверено.")
+        ttk.Label(sandbox_frame, textvariable=self.windows_sandbox_status_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(0, 8))
+        sandbox_actions = ttk.Frame(sandbox_frame, style="Panel.TFrame")
+        sandbox_actions.pack(fill="x")
+        self.sandbox_install_button = ttk.Button(sandbox_actions, text="Установить Windows Sandbox", command=self.install_windows_sandbox)
+        self.sandbox_install_button.pack(side="left")
+        ttk.Button(sandbox_actions, text="Проверить состояние", command=self.refresh_windows_sandbox_status).pack(side="left", padx=8)
 
         delivery_actions = ttk.Frame(self_dev, style="Panel.TFrame")
         delivery_actions.pack(fill="x", pady=(6, 2))
@@ -5927,6 +5946,54 @@ class MoyaIshkaApp:
         except Exception as exc:
             messagebox.showerror("Сохранение изменений", str(exc))
             self.improve_status_var.set(f"Не удалось сохранить пакет: {exc}")
+
+    def refresh_windows_sandbox_status(self) -> None:
+        """Check Windows Sandbox away from the Tk event loop."""
+        if self.windows_sandbox_status_busy:
+            return
+        self.windows_sandbox_status_busy = True
+        if hasattr(self, "windows_sandbox_status_var"):
+            self.windows_sandbox_status_var.set("Проверяю состояние Windows Sandbox…")
+
+        def worker() -> None:
+            try:
+                self.events.put(("windows_sandbox_status", get_windows_sandbox_status()))
+            except Exception as exc:
+                self.events.put(("windows_sandbox_status_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True, name="MoyaSandboxStatus").start()
+
+    def install_windows_sandbox(self) -> None:
+        """Enable the built-in Windows optional feature using an explicit UAC prompt."""
+        if self.windows_sandbox_install_busy:
+            return
+        if not messagebox.askyesno(
+            "Установка Windows Sandbox",
+            "Моя ИИшка включит встроенный компонент Windows Sandbox через системный запрос UAC. "
+            "Потребуются права администратора. Windows может запросить перезагрузку; приложение "
+            "не будет перезагружать компьютер самостоятельно. Продолжить?",
+        ):
+            return
+        self.windows_sandbox_install_busy = True
+        if hasattr(self, "sandbox_install_button"):
+            self.sandbox_install_button.configure(state="disabled")
+        self.windows_sandbox_status_var.set("Ожидаю подтверждения администратора и установки компонента…")
+
+        def worker() -> None:
+            result_dir: Path | None = None
+            try:
+                result_path = request_windows_sandbox_install()
+                result_dir = result_path.parent
+                result = wait_for_install_result(result_path, timeout_seconds=900)
+                result["sandbox_status"] = get_windows_sandbox_status()
+                self.events.put(("windows_sandbox_install_complete", result))
+            except Exception as exc:
+                self.events.put(("windows_sandbox_install_error", str(exc)))
+            finally:
+                if result_dir is not None:
+                    shutil.rmtree(result_dir, ignore_errors=True)
+
+        threading.Thread(target=worker, daemon=True, name="MoyaSandboxInstall").start()
 
     def test_latest_improvement_bundle(self) -> None:
         """Test the latest proposal in a disposable copy, never in the installed app."""
