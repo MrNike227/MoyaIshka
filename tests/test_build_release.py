@@ -34,7 +34,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
         self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
 
-    def test_application_version_is_422(self):
+    def test_application_version_is_424(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.2.4"', source)
 
@@ -475,10 +475,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_423(self):
+    def test_windows_version_resource_is_424(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4, 2, 3, 0)", source)
-        self.assertIn("prodvers=(4, 2, 3, 0)", source)
+        self.assertIn("filevers=(4, 2, 4, 0)", source)
+        self.assertIn("prodvers=(4, 2, 4, 0)", source)
         self.assertIn("FileVersion', '4.2.4'", source)
         self.assertIn("ProductVersion', '4.2.4'", source)
 
