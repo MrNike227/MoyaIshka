@@ -205,18 +205,13 @@ class SelfImprovementModelSelectionTests(unittest.TestCase):
 class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
     def test_self_improvement_retries_on_cpu_after_llama_server_access_violation(self):
         from unittest.mock import patch
-        import urllib.error
-        import io
-
         calls = []
 
         def fake_post(_url, payload, timeout=None):
             calls.append(payload)
             if len(calls) == 1:
-                body = b'{"error":"llama-server process has terminated: exit status 0xc0000005"}'
-                raise urllib.error.HTTPError(
-                    "http://127.0.0.1:11434/api/chat", 500, "Internal Server Error",
-                    {}, io.BytesIO(body),
+                raise RuntimeError(
+                    'HTTP 500: {"error":"llama-server process has terminated: exit status 0xc0000005"}'
                 )
             return {"message": {"content": "Проверка завершена"}, "done_reason": "stop"}
 
@@ -240,13 +235,8 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
 
     def test_ordinary_chat_does_not_silently_switch_to_cpu_after_access_violation(self):
         from unittest.mock import patch
-        import urllib.error
-        import io
-
-        body = b'{"error":"llama-server process has terminated: exit status 0xc0000005"}'
-        failure = urllib.error.HTTPError(
-            "http://127.0.0.1:11434/api/chat", 500, "Internal Server Error",
-            {}, io.BytesIO(body),
+        failure = RuntimeError(
+            'HTTP 500: {"error":"llama-server process has terminated: exit status 0xc0000005"}'
         )
         settings = {
             "ollama_url": "http://127.0.0.1:11434",
