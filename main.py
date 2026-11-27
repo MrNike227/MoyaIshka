@@ -3480,7 +3480,9 @@ class ISHApp:
                         for message in reversed(conversation):
                             if message.get("role") == "user":
                                 message["content"] = str(message.get("content", "")) + (
-                                    "\\n\\nПовторная попытка: сохрани требуемый JSON-формат, "
+                                    "
+
+Повторная попытка: сохрани требуемый JSON-формат, "
                                     "дай только самые важные и краткие предложения; не повторяй "
                                     "одинаковые слова, символы или фрагменты."
                                 )
