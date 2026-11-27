@@ -515,9 +515,14 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn("except ValueError as first_error", source)
-        self.assertIn("repaired_response = self._current_model_call(repair_messages)", source)
-        self.assertIn("Не добавляй пояснений, Markdown или полный файл", source)
+        helper = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
+        self.assertIn("generate_validated_unified_diff", source)
+        self.assertIn("generate_validated_unified_diff(", source)
+        self.assertIn("max_attempts=3", source)
+        self.assertIn("generation_attempt=attempt", source)
+        self.assertIn("def generate_validated_unified_diff(", helper)
+        self.assertIn("apply_unified_diff(original, diff, expected_path)", helper)
+        self.assertIn("Не добавляй пояснений, Markdown или полный файл", helper)
 
     def test_portable_exe_is_checked_without_python_on_path(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
