@@ -77,13 +77,18 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         "$p=Get-CimInstance Win32_Processor; "
         "Write-Output ('MOYA_STATE=' + [string]$f.State); "
         "Write-Output ('MOYA_HYPERVISOR=' + [string]$c.HypervisorPresent); "
-        "Write-Output ('MOYA_VIRT=' + [string](($p | Where-Object {$_.VirtualizationFirmwareEnabled -ne $true}).Count -eq 0))"
+        "Write-Output ('MOYA_VIRT=' + [string](($p | Where-Object {$_.VirtualizationFirmwareEnabled -ne $true}).Count -eq 0)); "
+        "Write-Output ('MOYA_MEM_MB=' + [string][math]::Floor($c.TotalPhysicalMemory / 1MB)); "
+        "Write-Output ('MOYA_CORES=' + [string](($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum))"
     )
     try:
         completed = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+        ),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         result["reason"] = f"Не удалось проверить компонент Windows Sandbox: {exc}"
@@ -105,6 +110,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     result["restart_required"] = state in {"EnablePending", "DisablePending"}
     result["installed"] = state == "Enabled"
     result["virtualization_ready"] = values.get("MOYA_VIRT", "").casefold() == "true"
+    result["memory_mb"] = int(values.get("MOYA_MEM_MB", "0") or 0)
+    result["logical_processors"] = int(values.get("MOYA_CORES", "0") or 0)
     executable = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsSandbox.exe"
     result["ready"] = (
         result["installed"] and not result["restart_required"]
@@ -116,6 +123,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         result["reason"] = "Компонент Windows Sandbox ещё не установлен."
     elif not result["virtualization_ready"]:
         result["reason"] = "Включи Intel VT-x / AMD-V (виртуализацию) в BIOS/UEFI и перезагрузи ПК."
+    elif result["memory_mb"] < 4096 or result["logical_processors"] < 2:
+        result["reason"] = "Для Windows Sandbox нужно не менее 4 ГБ ОЗУ и двух логических процессоров."
     elif not executable.is_file():
         result["reason"] = "Компонент отмечен как включённый, но WindowsSandbox.exe не найден."
     elif values.get("MOYA_HYPERVISOR", "").casefold() != "true":
