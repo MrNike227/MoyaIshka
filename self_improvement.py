@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 EDITABLE_SUFFIXES = {".py"}
 
@@ -581,6 +582,58 @@ def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> st
     output.extend(source_lines[source_index:])
     return "".join(output)
 
+
+
+def generate_validated_unified_diff(
+    original: str,
+    expected_path: str,
+    messages: list[dict[str, str]],
+    model_call: Callable[[list[dict[str, str]], int], str],
+    max_attempts: int = 3,
+) -> str:
+    """Ask the model for a patch, retry malformed output, and validate before returning."""
+    attempts = max(1, min(int(max_attempts), 3))
+    conversation = [dict(message) for message in messages]
+    last_error: ValueError | None = None
+
+    for attempt in range(attempts):
+        response = model_call(conversation, attempt)
+        try:
+            diff = extract_unified_diff(response, expected_path)
+            apply_unified_diff(original, diff, expected_path)
+            return diff
+        except ValueError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            previous = str(response or "")[:12_000]
+            if "блок изменений @@" in str(exc).casefold():
+                correction = (
+                    f"В прошлом ответе не было корректного заголовка блока изменений @@. "
+                    f"Сгенерируй diff заново для файла {expected_path}. "
+                    "Начни ответ строго с --- a/путь и +++ b/путь, затем обязательно добавь "
+                    "хотя бы один настоящий заголовок вида @@ -12,3 +12,4 @@ и строки изменений. "
+                    "Не возвращай описание, план, JSON, обычный код или строку UNABLE_TO_CREATE_PATCH. "
+                    "Контекстные и удаляемые строки копируй точно из исходника. "
+                    "Сделай минимальное изменение и выведи только unified diff."
+                )
+            else:
+                correction = (
+                    f"Предыдущий diff не прошёл проверку: {exc}. "
+                    f"Сгенерируй заново минимальный diff только для {expected_path}. "
+                    "Используй точные строки из переданного исходника, реальные номера строк и стандартные "
+                    "заголовки @@ -N,N +N,N @@. Не добавляй пояснений, Markdown или полный файл."
+                )
+            conversation.extend([
+                {"role": "assistant", "content": previous},
+                {"role": "user", "content": correction},
+            ])
+
+    detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
+    raise ValueError(
+        f"Не удалось получить применимый diff после {attempts} попыток. "
+        f"Последняя причина: {detail} Повтори генерацию или уточни нужный участок кода."
+    )
 
 def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool = True) -> Path:
     relative = Path(relative_path)

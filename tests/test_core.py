@@ -201,6 +201,22 @@ class SelfImprovementModelSelectionTests(unittest.TestCase):
 
         self.assertEqual(result, "online self-analysis result")
 
+    def test_diff_regeneration_increases_model_temperature_gradually(self):
+        app = self._app()
+        temperatures = []
+        app._call_ollama = lambda settings, _messages: (
+            temperatures.append(settings["temperature"]) or "ok"
+        )
+        for attempt in range(3):
+            self.assertEqual(
+                app._current_model_call(
+                    [{"role": "user", "content": "Подготовь diff"}],
+                    generation_attempt=attempt,
+                ),
+                "ok",
+            )
+        self.assertEqual(temperatures, [0.15, 0.25, 0.35])
+
 
 class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
     def test_self_improvement_retries_on_cpu_after_llama_server_access_violation(self):
@@ -232,6 +248,74 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
         self.assertNotIn("num_gpu", calls[0]["options"])
         self.assertEqual(calls[1]["options"]["num_gpu"], 0)
         self.assertEqual(calls[1]["options"]["num_batch"], 32)
+
+    def test_self_analysis_retries_once_with_repeat_penalty_after_token_loop(self):
+        from unittest.mock import patch
+        calls = []
+
+        def fake_post(_url, payload, timeout=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    'HTTP 500: {"error":"prediction aborted, token repeat limit reached"}'
+                )
+            return {"message": {"content": '{"suggestions":[]}'}, "done_reason": "stop"}
+
+        settings = {
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+            "task_profile": "self_improvement",
+            "temperature": 0.15,
+        }
+        messages = [{"role": "user", "content": "Проведи аудит кода"}]
+        with patch.object(main_module, "post_json", side_effect=fake_post):
+            result = MoyaIshkaApp._call_ollama(settings, messages)
+
+        self.assertEqual(result, '{"suggestions":[]}')
+        self.assertEqual(len(calls), 2)
+        first = calls[0]["options"]
+        retry = calls[1]["options"]
+        self.assertNotIn("repeat_penalty", first)
+        self.assertEqual(retry["repeat_penalty"], 1.15)
+        self.assertEqual(retry["repeat_last_n"], 128)
+        self.assertEqual(retry["temperature"], 0.25)
+        self.assertEqual(retry["num_predict"], 768)
+        self.assertEqual(retry["num_batch"], 32)
+        self.assertIn("не повторяй", calls[1]["messages"][-1]["content"].casefold())
+
+    def test_repeated_token_error_after_retry_returns_clear_message(self):
+        from unittest.mock import patch
+        failure = RuntimeError(
+            'HTTP 500: {"error":"prediction aborted, token repeat limit reached"}'
+        )
+        settings = {
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+            "task_profile": "self_improvement",
+        }
+        with patch.object(main_module, "post_json", side_effect=failure) as post:
+            with self.assertRaisesRegex(RuntimeError, "зациклилась на повторяющихся токенах"):
+                MoyaIshkaApp._call_ollama(
+                    settings, [{"role": "user", "content": "Проведи аудит"}]
+                )
+        self.assertEqual(post.call_count, 2)
+
+    def test_ordinary_chat_does_not_retry_after_token_repeat_limit(self):
+        from unittest.mock import patch
+        failure = RuntimeError(
+            'HTTP 500: {"error":"prediction aborted, token repeat limit reached"}'
+        )
+        settings = {
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+            "task_profile": "chat",
+        }
+        with patch.object(main_module, "post_json", side_effect=failure) as post:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
+                MoyaIshkaApp._call_ollama(
+                    settings, [{"role": "user", "content": "Привет"}]
+                )
+        self.assertEqual(post.call_count, 1)
 
     def test_ordinary_chat_does_not_silently_switch_to_cpu_after_access_violation(self):
         from unittest.mock import patch

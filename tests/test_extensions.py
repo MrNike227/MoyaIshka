@@ -6,7 +6,7 @@ from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, parse_improvement_suggestions
+from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -172,7 +172,7 @@ class PatchTests(unittest.TestCase):
 
     def test_parse_suggestions_repairs_literal_newlines_and_trailing_commas(self):
         response = (
-            '{"suggestions":[{"title":"Логи","problem":"Строка первая\\nстрока вторая",'
+            '{"suggestions":[{"title":"Логи","problem":"Строка первая\nстрока вторая",'
             '"current":"print(1)","proposed":"logger.info(1)",'
             '"benefit":"Диагностика",},],}'
         )
@@ -317,6 +317,73 @@ class PatchTests(unittest.TestCase):
             apply_unified_diff("different\n", patch, "main.py")
 
 
+
+
+class DiffRegenerationTests(unittest.TestCase):
+    def test_missing_hunk_retries_until_a_valid_patch_is_generated(self):
+        original = "def answer():\n    return 1\n"
+        responses = [
+            "Вот описание изменений без diff.",
+            "--- a/main.py\n+++ b/main.py\nизменений пока нет",
+            "--- a/main.py\n+++ b/main.py\n@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
+        ]
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append((attempt, list(messages)))
+            return responses[attempt]
+
+        patch = generate_validated_unified_diff(
+            original,
+            "main.py",
+            [{"role": "system", "content": "Верни diff."}],
+            model_call,
+            max_attempts=3,
+        )
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([item[0] for item in calls], [0, 1, 2])
+        self.assertIn("не было корректного заголовка блока изменений @@", calls[1][1][-1]["content"])
+        self.assertEqual(
+            apply_unified_diff(original, patch, "main.py"),
+            "def answer():\n    return 2\n",
+        )
+
+    def test_missing_hunk_after_all_attempts_returns_clear_error(self):
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append(attempt)
+            return "Пояснение вместо diff."
+
+        with self.assertRaisesRegex(ValueError, "после 3 попыток"):
+            generate_validated_unified_diff(
+                "value = 1\n",
+                "main.py",
+                [{"role": "user", "content": "Измени значение"}],
+                model_call,
+                max_attempts=3,
+            )
+        self.assertEqual(calls, [0, 1, 2])
+
+    def test_retry_count_is_bounded_to_three(self):
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append(attempt)
+            return "Нет блока."
+
+        with self.assertRaises(ValueError):
+            generate_validated_unified_diff(
+                "value = 1\n",
+                "main.py",
+                [{"role": "user", "content": "Измени значение"}],
+                model_call,
+                max_attempts=20,
+            )
+        self.assertEqual(calls, [0, 1, 2])
+
+
 class PluginTests(unittest.TestCase):
     def test_skill_create_and_prompt(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -340,7 +407,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.4")
+        self.assertEqual(APP_VERSION, "4.2.5")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main

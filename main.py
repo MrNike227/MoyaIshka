@@ -51,7 +51,7 @@ from supabase_backup import (
     MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
 )
 from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
+from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
@@ -83,7 +83,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.4"
+APP_VERSION = "4.2.5"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -218,7 +218,7 @@ def prepare_source_workspace() -> Path:
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.4_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.5_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
             "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_github_pr.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
@@ -3353,14 +3353,23 @@ class MoyaIshkaApp:
         parts: list[str] = []
         for attempt in range(3):
             cpu_fallback = False
+            repeat_fallback = False
             while True:
                 options = {
                     "temperature": float(settings.get("temperature", 0.7)),
                     "num_ctx": context_window,
                     "num_thread": min(logical_threads, 4) if cpu_fallback else logical_threads,
-                    "num_batch": 32 if cpu_fallback else num_batch,
-                    "num_predict": max_tokens,
+                    "num_batch": 32 if (cpu_fallback or repeat_fallback) else num_batch,
+                    "num_predict": min(max_tokens, 768) if repeat_fallback else max_tokens,
                 }
+                if repeat_fallback:
+                    # Ask Ollama to sample away from a degenerate repeated-token loop.
+                    options.update({
+                        "temperature": max(float(settings.get("temperature", 0.7)), 0.25),
+                        "repeat_penalty": 1.15,
+                        "repeat_last_n": 128,
+                        "top_k": 40,
+                    })
                 if cpu_fallback:
                     # Ollama's per-request num_gpu=0 disables GPU layer offload
                     # without changing the user's global Ollama configuration.
@@ -3377,11 +3386,31 @@ class MoyaIshkaApp:
                     break
                 except RuntimeError as exc:
                     error_body = str(exc)
+                    lowered_error = error_body.casefold()
+                    repeat_limit = "token repeat limit reached" in lowered_error
+                    if self_improvement and repeat_limit and not repeat_fallback:
+                        repeat_fallback = True
+                        # Preserve the JSON schema while asking for fewer, concise findings.
+                        for message in reversed(conversation):
+                            if message.get("role") == "user":
+                                message["content"] = str(message.get("content", "")) + (
+                                    "\\n\\nПовторная попытка: сохрани требуемый JSON-формат, "
+                                    "дай только самые важные и краткие предложения; не повторяй "
+                                    "одинаковые слова, символы или фрагменты."
+                                )
+                                break
+                        continue
+                    if self_improvement and repeat_limit:
+                        raise RuntimeError(
+                            "Ollama остановила самоанализ: локальная модель зациклилась на повторяющихся токенах. "
+                            "Повторная попытка с защитными параметрами не помогла. Попробуй другую локальную "
+                            "модель или обнови Ollama."
+                        ) from exc
                     access_violation = (
                         self_improvement
                         and not cpu_fallback
-                        and "llama-server" in error_body.casefold()
-                        and ("0xc0000005" in error_body.casefold() or "3221225477" in error_body)
+                        and "llama-server" in lowered_error
+                        and ("0xc0000005" in lowered_error or "3221225477" in error_body)
                     )
                     if not access_violation:
                         raise
@@ -5586,14 +5615,14 @@ class MoyaIshkaApp:
         self._set_status("Python-плагины разрешены" if enabled else "Python-плагины выключены")
 
     # Review-first self-improvement. The model only proposes a patch; user approves it.
-    def _current_model_call(self, messages: list[dict[str, str]]) -> str:
+    def _current_model_call(self, messages: list[dict[str, str]], generation_attempt: int = 0) -> str:
         settings = {
             "online_url": self.config.get("online_url", ""),
             "online_model": self.config.get("online_model", ""),
             "api_key": self.api_key,
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
-            "temperature": 0.15,
+            "temperature": min(0.35, 0.15 + max(0, int(generation_attempt)) * 0.10),
             "task_profile": "self_improvement",
             "resource_pressure": bool(self.resource_governor.snapshot().system_pressure),
         }
@@ -5844,32 +5873,15 @@ class MoyaIshkaApp:
 
         def worker() -> None:
             try:
-                response = self._current_model_call(messages)
-                try:
-                    diff = extract_unified_diff(response, relative)
-                    apply_unified_diff(source, diff, relative)
-                except ValueError as first_error:
-                    # Retry once when the model returns prose or code instead of a unified diff.
-                    repair_messages = messages + [
-                        {"role": "assistant", "content": str(response)[:30000]},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Предыдущий ответ не является применимым unified diff: {first_error}. "
-                                f"Верни исправленный diff только для файла {relative}. "
-                                "Не добавляй пояснений, Markdown или полный файл. "
-                                "Используй строки --- a/путь и +++ b/путь, затем стандартные заголовки @@ -N,N +N,N @@. "
-                                "Строки контекста и удаления должны посимвольно совпадать с переданным исходником. "
-                                "Не используй заглушки вроде '# main.py original content', '# остальной код без изменений' "
-                                "или вымышленные строки. Если нужного фрагмента нет в переданном контексте, "
-                                "не создавай diff и сообщи, что нужен более точный фрагмент. "
-                                "Не меняй задачу и не добавляй новых изменений."
-                            ),
-                        },
-                    ]
-                    repaired_response = self._current_model_call(repair_messages)
-                    diff = extract_unified_diff(repaired_response, relative)
-                    apply_unified_diff(source, diff, relative)
+                diff = generate_validated_unified_diff(
+                    source,
+                    relative,
+                    messages,
+                    lambda prompt_messages, attempt: self._current_model_call(
+                        prompt_messages, generation_attempt=attempt
+                    ),
+                    max_attempts=3,
+                )
                 self.events.put(("patch_generated", diff))
             except Exception as exc:
                 self.events.put(("patch_error", str(exc)))
@@ -6853,8 +6865,8 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.4-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.4-smoke")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.5-smoke")
+        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.5-smoke")
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
