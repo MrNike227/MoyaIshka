@@ -534,7 +534,7 @@ def _multi_diff_candidates(response: str) -> list[str]:
 
 def _extract_multi_diff_hunks(lines: list[str]) -> str:
     """Extract hunks and repair wrapped lines without leaving stale @@ offsets."""
-    start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
+    start = next((i for i, line in enumerate(lines) if re.match(r"^@@ -\d+", line)), None)
     if start is None:
         return ""
 
@@ -572,11 +572,11 @@ def _extract_multi_diff_hunks(lines: list[str]) -> str:
     for line in lines[start:]:
         value = line.rstrip("\r\n")
         stripped = value.lstrip()
-        if stripped.startswith("@@ "):
+        if value.startswith("@@ "):
             flush_hunk()
             hunk_header = stripped
             active_marker = None
-        elif stripped.startswith("\\ No newline at end of file"):
+        elif value.startswith("\\ No newline at end of file"):
             hunk_lines.append("\\ No newline at end of file")
             active_marker = None
         elif value and value[0] in " +-":
@@ -622,14 +622,14 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
     pairs: list[tuple[int, int]] = []
 
     for index, line in enumerate(lines):
-        old_line = line.lstrip(" \t")
+        old_line = line
         if not old_line.startswith("--- "):
             continue
         old_header = old_line[4:].strip().split("\t", 1)[0].strip('"')
         if old_header != "/dev/null" and not old_header.startswith("a/"):
             continue
         for next_index in range(index + 1, min(len(lines), index + 7)):
-            next_line = lines[next_index].lstrip(" \t")
+            next_line = lines[next_index]
             if next_line.startswith("+++ "):
                 new_header = next_line[4:].strip().split("\t", 1)[0].strip('"')
                 if new_header.startswith("b/"):
@@ -688,8 +688,8 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
 
     if pairs:
         for position, (old_index, new_index) in enumerate(pairs):
-            old_header = lines[old_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
-            new_header = lines[new_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
+            old_header = lines[old_index][4:].strip().split("\t", 1)[0].strip('"')
+            new_header = lines[new_index][4:].strip().split("\t", 1)[0].strip('"')
             section_end = pairs[position + 1][0] if position + 1 < len(pairs) else len(lines)
             add_section(old_header, new_header, lines[new_index + 1:section_end])
     else:
