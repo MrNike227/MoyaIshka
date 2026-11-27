@@ -117,7 +117,7 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         return result
 
     # CIM read-only queries are available to a standard user. Never call
-    # Get-WindowsOptionalFeature here: it requires an elevated PowerShell token.
+    # Administrative optional-feature queries are deliberately excluded from this status path.
     command = (
         "$ErrorActionPreference='Stop'; "
         "$c=Get-CimInstance Win32_ComputerSystem; "
