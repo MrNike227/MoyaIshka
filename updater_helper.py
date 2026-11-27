@@ -690,7 +690,7 @@ def validate_app_directory(app_dir: str | Path, expected_version: str | None = N
         actual_hash = sha256_file(path).lower()
         if len(expected) != 64 or actual_hash != expected:
             raise RuntimeError(f"SHA-256 не совпадает: {relative}.")
-        if key == "moyaishka.exe":
+        if key == "ish.exe":
             exe_hash = actual_hash
 
     actual_files: set[str] = set()
