@@ -321,8 +321,8 @@ def run_background_development(
         sources, change_messages, model_call, max_attempts=3, allow_subset=True,
     )
     updated_files = apply_multi_file_unified_diff(sources, patch, allow_subset=True)
-    if updated_files.get(relative) == original:
-        raise ValueError("Модель не предложила фактического изменения программного модуля.")
+    if relative not in updated_files or updated_files[relative] == original:
+        raise ValueError("Модель не предложила фактического изменения выбранного программного модуля.")
     if updated_files.get(test_relative) is None:
         raise ValueError("Модель не подготовила соответствующий файл unit-тестов.")
     for changed_path, updated_text in updated_files.items():
