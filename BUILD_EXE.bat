@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.2.5 onedir Windows application...
+echo Building Moya Ishka 4.2.6 onedir Windows application...
 
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
@@ -60,11 +60,15 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "intelligent_memory.py;source_project" ^
   --add-data "backup_manager.py;source_project" ^
   --add-data "backup_cloud.py;source_project" ^
+  --add-data "supabase_backup.py;source_project" ^
   --add-data "avatar_widget.py;source_project" ^
   --add-data "plugin_manager.py;source_project" ^
   --add-data "self_improvement.py;source_project" ^
   --add-data "improvement_delivery.py;source_project" ^
   --add-data "improvement_testing.py;source_project" ^
+  --add-data "windows_sandbox.py;source_project" ^
+  --add-data "background_developer.py;source_project" ^
+  --add-data "module_dependency_analyzer.py;source_project" ^
   --add-data "github_pr.py;source_project" ^
   --add-data "updater.py;source_project" ^
   --add-data "updater_helper.py;source_project" ^
@@ -87,7 +91,7 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "SUPABASE_SETUP_RU.md;source_project" ^
   --add-data "GOOGLE_DRIVE_SETUP_RU.md;source_project" ^
   --add-data "CHANGELOG_RU.md;source_project" ^
-  --add-data "PLAN_4.2.5_RU.md;source_project" ^
+  --add-data "PLAN_4.2.6_RU.md;source_project" ^
   --add-data "LICENSE.txt;source_project" ^
   --add-data "THIRD_PARTY_NOTICES.md;source_project" ^
   --add-data "licenses/GPL-3.0.txt;source_project/licenses" ^
@@ -121,9 +125,9 @@ if errorlevel 1 goto dependency_failed
 if errorlevel 1 goto crypto_bundle_failed
 %PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/MoyaIshka/TEST_WINDOWS10.ps1')"
 if errorlevel 1 goto failed
-%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.2.5
+%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.2.6
 if errorlevel 1 goto failed
-%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.2.5')"
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.2.6')"
 if errorlevel 1 goto failed
 
 echo.

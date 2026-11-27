@@ -18,11 +18,18 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "intelligent_memory.py;source_project"', build)
         self.assertIn('--add-data "improvement_delivery.py;source_project"', build)
         self.assertIn('--add-data "improvement_testing.py;source_project"', build)
+        self.assertIn('--add-data "module_dependency_analyzer.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
-        self.assertIn('--add-data "PLAN_4.2.5_RU.md;source_project"', build)
+        self.assertIn('--add-data "PLAN_4.2.6_RU.md;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)
+
+    def test_module_dependency_analyzer_is_in_packaged_source_workspace(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("from module_dependency_analyzer import analyze_module_dependencies", source)
+        self.assertIn('"module_dependency_analyzer.py"', source)
+        self.assertIn('"tests/test_module_dependency_analyzer.py"', source)
 
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -36,7 +43,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_application_version_is_424(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.2.5"', source)
+        self.assertIn('APP_VERSION = "4.2.6"', source)
 
     def test_legacy_update_repository_is_migrated(self):
         from main import migrate_update_repository
@@ -218,7 +225,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
-        self.assertEqual(source.count('b"4.2.5-smoke"'), 2)
+        self.assertEqual(source.count('b"4.2.6-smoke"'), 2)
         self.assertIn("import _cffi_backend", source)
 
     def test_github_actions_use_node24_compatible_action_majors(self):
@@ -424,7 +431,7 @@ class ReleaseBuildTests(unittest.TestCase):
                 })
             manifest = {
                 "schema": 1,
-                "version": "4.2.5",
+                "version": "4.2.6",
                 "entrypoint": "MoyaIshka.exe",
                 "exe_sha256": hashlib.sha256(payloads["MoyaIshka.exe"]).hexdigest(),
                 "files": entries,
@@ -434,11 +441,11 @@ class ReleaseBuildTests(unittest.TestCase):
             (app / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
             (internal / "Thumbs.db").write_bytes(b"cache")
             (internal / "ehthumbs.db").write_bytes(b"cache")
-            self.assertEqual(validate_app_directory(app, "4.2.5")["version"], "4.2.5")
+            self.assertEqual(validate_app_directory(app, "4.2.6")["version"], "4.2.6")
 
             (internal / "unexpected.dll").write_bytes(b"unexpected")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
-                validate_app_directory(app, "4.2.5")
+                validate_app_directory(app, "4.2.6")
 
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
@@ -477,10 +484,10 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_windows_version_resource_is_424(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4, 2, 4, 0)", source)
-        self.assertIn("prodvers=(4, 2, 4, 0)", source)
-        self.assertIn("FileVersion', '4.2.5'", source)
-        self.assertIn("ProductVersion', '4.2.5'", source)
+        self.assertIn("filevers=(4, 2, 6, 0)", source)
+        self.assertIn("prodvers=(4, 2, 6, 0)", source)
+        self.assertIn("FileVersion', '4.2.6'", source)
+        self.assertIn("ProductVersion', '4.2.6'", source)
 
 
 
@@ -492,7 +499,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.2.5 onedir", workflow)
+        self.assertIn("Build Windows release — verified 4.2.6 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
@@ -516,8 +523,9 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         helper = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
-        self.assertIn("generate_validated_unified_diff", source)
-        self.assertIn("generate_validated_unified_diff(", source)
+        self.assertIn("generate_validated_multi_file_unified_diff", source)
+        self.assertIn("generate_validated_multi_file_unified_diff(", source)
+        self.assertIn("apply_multi_file_unified_diff(sources, patch)", source)
         self.assertIn("max_attempts=3", source)
         self.assertIn("generation_attempt=attempt", source)
         self.assertIn("def generate_validated_unified_diff(", helper)
@@ -536,25 +544,84 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.5]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.6]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
     def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.5' }}", workflow)
-        self.assertIn("- name: Update v4.2.5 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.2.5", workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.6' }}", workflow)
+        self.assertIn("- name: Update v4.2.6 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.2.6", workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.5 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.6 tag to validated root source"))
     def test_windows10_script_checks_exact_target_os_without_python(self):
         script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
         self.assertIn("19045", script)
         self.assertIn("--self-test-imports", script)
         self.assertIn("PYTHONHOME", script)
         self.assertIn("PYTHONPATH", script)
+
+    def test_windows_sandbox_is_bundled_and_required_for_proposal_tests(self):
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
+        sandbox = (ROOT / "windows_sandbox.py").read_text(encoding="utf-8")
+        self.assertIn('--add-data "windows_sandbox.py;source_project"', build)
+        self.assertIn('--add-data "supabase_backup.py;source_project"', build)
+        self.assertIn('"supabase_backup.py"', source)
+        self.assertIn('"tests/test_intelligent_memory.py"', source)
+        self.assertIn('"tests/test_supabase_backup.py"', source)
+        self.assertIn('"windows_sandbox.py"', source)
+        self.assertIn("request_windows_sandbox_install", source)
+        self.assertIn("record_windows_sandbox_install", source)
+        self.assertIn("record_windows_sandbox_install(result)", source)
+        self.assertIn("get_windows_sandbox_status", source)
+        self.assertIn("<ProtectedClient>Enable</ProtectedClient>", sandbox)
+        self.assertIn("<Networking>Disable</Networking>", sandbox)
+        self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
+        self.assertIn("if sandbox_executor is None:", testing)
+        self.assertIn("_run_windows_sandbox", testing)
+        self.assertIn("_is_windows_sandbox_guest", testing)
+        self.assertIn("WDAGUtilityAccount", testing)
+        self.assertIn("MOYA_WINDOWS_SANDBOX", testing)
+        self.assertIn("return 3", testing)
+        self.assertIn("allowed_names = {", sandbox)
+        self.assertIn("_is_reparse_point", sandbox)
+        self.assertNotIn('["-m", "unittest", "discover"', testing)
+
+
+    def test_self_improvement_generates_and_tests_matching_multi_file_changes(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
+        delivery = (ROOT / "improvement_delivery.py").read_text(encoding="utf-8")
+        testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
+        background = (ROOT / "background_developer.py").read_text(encoding="utf-8")
+        self.assertIn("generate_validated_multi_file_unified_diff", main)
+        self.assertIn("apply_multi_file_unified_diff", main)
+        self.assertIn("related_test_path", main)
+        self.assertIn("tests/test_*.py", main)
+        self.assertIn("split_multi_file_unified_diff", source)
+        self.assertIn("editable_test_files", source)
+        self.assertIn("save_multi_change_bundle", delivery)
+        self.assertIn("MAX_PROPOSAL_FILES", delivery)
+        self.assertIn('if base_hash == "absent":', testing)
+        self.assertIn("apply_multi_file_unified_diff", testing)
+        self.assertIn("save_multi_change_bundle", background)
+        self.assertIn("tests/test_background_developer.py", main)
+
+    def test_multi_file_patch_is_never_applied_directly_or_sent_as_single_file_pr(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        apply_method = main[main.index("    def apply_improvement("):main.index("    # Updates are obtained", main.index("    def apply_improvement("))]
+        pr_method = main[main.index("    def create_improvement_pr("):main.index("    def open_updates_folder(", main.index("    def create_improvement_pr("))]
+        self.assertIn("split_multi_file_unified_diff", apply_method)
+        self.assertIn("нельзя применить пакет к исходникам напрямую", apply_method.lower())
+        self.assertIn("split_multi_file_unified_diff", pr_method)
+        self.assertIn("пока принимает один файл", pr_method)
+
+
 
 if __name__ == "__main__":
     unittest.main()

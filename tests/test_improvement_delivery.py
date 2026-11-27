@@ -10,6 +10,7 @@ from improvement_delivery import (
     ensure_install_layout,
     resolve_updates_directory,
     save_change_bundle,
+    save_multi_change_bundle,
     save_improvement_suggestions,
     build_improvement_chat_context,
     load_improvement_suggestions,
@@ -241,6 +242,65 @@ class ImprovementDeliveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(SyntaxError):
                 save_change_bundle(Path(temp) / "Updates", "main.py", "x=1\n", "def (", "patch")
+
+
+    def test_multi_file_bundle_supports_new_test_file_and_hashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            changes = [
+                {
+                    "path": "feature.py",
+                    "original_text": "VALUE = 1\n",
+                    "updated_text": "VALUE = 2\n",
+                },
+                {
+                    "path": "tests/test_feature.py",
+                    "original_text": None,
+                    "updated_text": "import unittest\nimport feature\n\nclass FeatureTests(unittest.TestCase):\n    def test_value(self):\n        self.assertEqual(feature.VALUE, 2)\n",
+                },
+            ]
+            patch = (
+                "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+                "--- /dev/null\n+++ b/tests/test_feature.py\n@@ -0,0 +1,6 @@\n"
+                "+import unittest\n+import feature\n+\n+class FeatureTests(unittest.TestCase):\n+    def test_value(self):\n+        self.assertEqual(feature.VALUE, 2)\n"
+            )
+            bundle = save_multi_change_bundle(Path(temp) / "Updates", changes, patch)
+            self.assertEqual((bundle / "files" / "feature.py").read_text(encoding="utf-8"), "VALUE = 2\n")
+            self.assertTrue((bundle / "files" / "tests" / "test_feature.py").is_file())
+            manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["files"]), 2)
+            test_entry = next(item for item in manifest["files"] if item["path"] == "tests/test_feature.py")
+            self.assertEqual(test_entry["base_sha256"], "absent")
+            self.assertEqual(test_entry["sha256"], hashlib.sha256(changes[1]["updated_text"].encode()).hexdigest())
+
+    def test_multi_file_bundle_requires_program_and_matching_test(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "соответствующий тест"):
+                save_multi_change_bundle(
+                    Path(temp) / "Updates",
+                    [
+                        {"path": "feature.py", "original_text": "VALUE = 1\n", "updated_text": "VALUE = 2\n"},
+                        {"path": "other.py", "original_text": "VALUE = 3\n", "updated_text": "VALUE = 4\n"},
+                    ],
+                    "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+                    "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-VALUE = 3\n+VALUE = 4\n",
+                )
+
+    def test_multi_file_bundle_rejects_duplicate_and_unapproved_test_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            duplicate = [
+                {"path": "feature.py", "original_text": "x=1\n", "updated_text": "x=2\n"},
+                {"path": "feature.py", "original_text": "x=1\n", "updated_text": "x=3\n"},
+            ]
+            with self.assertRaisesRegex(ValueError, "повторяется"):
+                save_multi_change_bundle(updates, duplicate, "patch")
+            wrong_test = [
+                {"path": "feature.py", "original_text": "x=1\n", "updated_text": "x=2\n"},
+                {"path": "tests/helper.py", "original_text": None, "updated_text": "x=1\n"},
+            ]
+            with self.assertRaisesRegex(ValueError, "test_"):
+                save_multi_change_bundle(updates, wrong_test, "patch")
+
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from auto_memory import extract_memory_candidate
 from plugin_manager import PluginManager
-from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions
+from self_improvement import apply_unified_diff, build_model_source_context, editable_project_files, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, split_multi_file_unified_diff, apply_multi_file_unified_diff, generate_validated_multi_file_unified_diff, related_test_path
 from updater import version_tuple
 from updater_helper import install_from_source, _powershell_script, write_powershell_updater_script, user_install_dir, resolve_install_dir, ensure_install_dir_writable, scan_application_copies, delete_application_copy
 from windows_control import handle_voice_command
@@ -384,6 +384,68 @@ class DiffRegenerationTests(unittest.TestCase):
         self.assertEqual(calls, [0, 1, 2])
 
 
+
+class MultiFileDiffTests(unittest.TestCase):
+    def setUp(self):
+        self.sources = {
+            "feature.py": "VALUE = 1\n",
+            "tests/test_feature.py": None,
+        }
+        self.patch = (
+            "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+            "--- /dev/null\n+++ b/tests/test_feature.py\n@@ -0,0 +1,5 @@\n"
+            "+import unittest\n+import feature\n+\n"
+            "+class FeatureTests(unittest.TestCase):\n"
+            "+    def test_value(self): self.assertEqual(feature.VALUE, 2)\n"
+        )
+
+    def test_split_and_apply_combined_program_and_new_test_diff(self):
+        patches = split_multi_file_unified_diff(self.patch)
+        self.assertEqual(set(patches), set(self.sources))
+        updated = apply_multi_file_unified_diff(self.sources, self.patch)
+        self.assertEqual(updated["feature.py"], "VALUE = 2\n")
+        self.assertIn("class FeatureTests", updated["tests/test_feature.py"])
+
+    def test_multi_file_diff_rejects_duplicate_file_headers(self):
+        duplicate = (
+            self.patch
+            + "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 3\n"
+        )
+        with self.assertRaisesRegex(ValueError, "повторное изменение"):
+            split_multi_file_unified_diff(duplicate)
+
+    def test_multi_file_diff_rejects_unexpected_or_missing_file(self):
+        with self.assertRaisesRegex(ValueError, "не совпадает"):
+            apply_multi_file_unified_diff({"feature.py": self.sources["feature.py"]}, self.patch)
+
+    def test_multi_file_generator_retries_invalid_file_set(self):
+        answers = [
+            "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n",
+            self.patch,
+        ]
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append(attempt)
+            return answers[attempt]
+
+        result = generate_validated_multi_file_unified_diff(
+            self.sources,
+            [{"role": "system", "content": "Return the code and its tests."}],
+            model_call,
+            max_attempts=3,
+        )
+        self.assertEqual(calls, [0, 1])
+        self.assertEqual(set(apply_multi_file_unified_diff(self.sources, result)), set(self.sources))
+
+    def test_related_test_path_uses_known_project_test_modules(self):
+        self.assertEqual(related_test_path("main.py"), "tests/test_core.py")
+        self.assertEqual(related_test_path("improvement_delivery.py"), "tests/test_improvement_delivery.py")
+        self.assertEqual(related_test_path("pkg/my_feature.py"), "tests/test_my_feature.py")
+
+
+
+
 class PluginTests(unittest.TestCase):
     def test_skill_create_and_prompt(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -407,7 +469,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.5")
+        self.assertEqual(APP_VERSION, "4.2.6")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main

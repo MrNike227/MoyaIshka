@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 EDITABLE_SUFFIXES = {".py"}
@@ -443,6 +443,158 @@ def parse_improvement_suggestions(response: str) -> list[dict[str, str]]:
     raise ValueError(
         "Модель вернула ответ без корректного списка предложений. Повтори анализ."
     )
+
+
+MAX_MULTI_FILE_PATCHES = 10
+
+
+def editable_test_files() -> list[str]:
+    """Return safe project test modules; tests remain separate from normal source targets."""
+    root = project_dir()
+    result: list[str] = []
+    tests_root = root / "tests"
+    if not tests_root.is_dir() or tests_root.is_symlink():
+        return result
+    for path in tests_root.glob("test_*.py"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if len(relative) <= 240:
+                result.append(relative)
+        except (OSError, ValueError):
+            continue
+    return sorted(result)
+
+
+def related_test_path(source_relative_path: str) -> str:
+    """Choose the conventional test module paired with a source module."""
+    source = PurePosixPath(str(source_relative_path).replace("\\", "/"))
+    stem = source.stem
+    known = {
+        "main": "tests/test_core.py",
+        "self_improvement": "tests/test_extensions.py",
+        "improvement_delivery": "tests/test_improvement_delivery.py",
+        "improvement_testing": "tests/test_improvement_testing.py",
+        "windows_sandbox": "tests/test_windows_sandbox.py",
+        "background_developer": "tests/test_background_developer.py",
+    }
+    candidate = known.get(stem, f"tests/test_{stem}.py")
+    return candidate
+
+
+def split_multi_file_unified_diff(patch_text: str) -> dict[str, str]:
+    """Split a combined unified diff into normalized, independently applicable file patches."""
+    if not isinstance(patch_text, str) or not patch_text.strip():
+        raise ValueError("Модель не вернула многофайловый diff.")
+    normalized = patch_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines(keepends=True)
+    header_indexes = [
+        index for index in range(len(lines) - 1)
+        if lines[index].startswith("--- ") and lines[index + 1].startswith("+++ ")
+    ]
+    if not header_indexes:
+        raise ValueError("В diff не найдены пары заголовков --- / +++.")
+    if len(header_indexes) > MAX_MULTI_FILE_PATCHES:
+        raise ValueError(f"В одном пакете разрешено не более {MAX_MULTI_FILE_PATCHES} Python-файлов.")
+
+    result: dict[str, str] = {}
+    for position, header_index in enumerate(header_indexes):
+        old_header = lines[header_index][4:].strip().split("\t", 1)[0].strip('"')
+        new_header = lines[header_index + 1][4:].strip().split("\t", 1)[0].strip('"')
+        old_path = _normalize_diff_path(old_header)
+        new_path = _normalize_diff_path(new_header)
+        if new_path == "/dev/null":
+            raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
+        relative = PurePosixPath(new_path)
+        if (
+            not new_path
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+            or any(part.casefold() in {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"} for part in relative.parts)
+            or relative.suffix.casefold() != ".py"
+            or len(new_path) > 240
+        ):
+            raise ValueError(f"Недопустимый путь Python-файла в diff: {new_path!r}.")
+        if old_path != "/dev/null" and old_path != new_path:
+            raise ValueError("Переименование файлов в пакете пока не поддерживается.")
+        if new_path in result:
+            raise ValueError(f"Diff содержит повторное изменение файла: {new_path}.")
+        body_end = header_indexes[position + 1] if position + 1 < len(header_indexes) else len(lines)
+        body = lines[header_index + 2:body_end]
+        body = [
+            line for line in body
+            if not line.startswith(("diff --git ", "index ", "similarity index ", "rename from ", "rename to "))
+        ]
+        if not any(line.startswith("@@ ") for line in body):
+            raise ValueError(f"Для файла {new_path} отсутствует блок изменений @@.")
+        result[new_path] = (
+            f"--- a/{new_path}\n+++ b/{new_path}\n" + "".join(body)
+        )
+    return result
+
+
+def apply_multi_file_unified_diff(
+    sources: dict[str, str | None],
+    patch_text: str,
+) -> dict[str, str]:
+    """Apply a multi-file diff to in-memory originals; None denotes a new file."""
+    patches = split_multi_file_unified_diff(patch_text)
+    if set(patches) != set(sources):
+        missing = sorted(set(sources) - set(patches))
+        extra = sorted(set(patches) - set(sources))
+        raise ValueError(
+            "Список изменённых файлов в diff не совпадает с подготовленным пакетом. "
+            f"Нет в diff: {missing}; лишние: {extra}."
+        )
+    updated: dict[str, str] = {}
+    for relative, file_patch in patches.items():
+        original = sources[relative]
+        updated[relative] = apply_unified_diff(original or "", file_patch, relative)
+    return updated
+
+
+def generate_validated_multi_file_unified_diff(
+    sources: dict[str, str | None],
+    messages: list[dict[str, str]],
+    model_call: Callable[[list[dict[str, str]], int], str],
+    max_attempts: int = 3,
+) -> str:
+    """Retry a combined diff until every requested source/test file applies exactly."""
+    if not isinstance(sources, dict) or not 1 <= len(sources) <= MAX_MULTI_FILE_PATCHES:
+        raise ValueError(f"Пакет должен содержать от 1 до {MAX_MULTI_FILE_PATCHES} файлов.")
+    attempts = max(1, min(int(max_attempts), 3))
+    conversation = [dict(message) for message in messages]
+    last_error: ValueError | None = None
+    for attempt in range(attempts):
+        response = model_call(conversation, attempt)
+        try:
+            apply_multi_file_unified_diff(sources, response)
+            return response.strip() + "\n"
+        except ValueError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            paths = ", ".join(sources)
+            conversation.extend([
+                {"role": "assistant", "content": str(response or "")[:16_000]},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Предыдущий многофайловый diff не прошёл проверку: {exc}\n"
+                        f"Сгенерируй заново один объединённый unified diff только для файлов: {paths}. "
+                        "Для каждого существующего файла укажи точные пары --- a/path и +++ b/path. "
+                        "Для нового тестового файла используй --- /dev/null и +++ b/path. "
+                        "Каждый файл должен иметь свой блок @@; не добавляй переименований или удалений. "
+                        "Контекстные и удаляемые строки копируй точно. Выведи только diff."
+                    ),
+                },
+            ])
+    detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
+    raise ValueError(
+        f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}"
+    )
+
 
 def apply_unified_diff(original: str, patch_text: str, expected_path: str) -> str:
     """Apply a single-file unified diff, relocating unique exact hunks safely."""
