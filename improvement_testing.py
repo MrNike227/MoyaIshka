@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from improvement_delivery import _safe_relative_path, _write_text_atomic
-from self_improvement import apply_unified_diff
+from self_improvement import split_multi_file_unified_diff, apply_multi_file_unified_diff
 from windows_sandbox import _is_reparse_point
 
 
@@ -210,16 +210,19 @@ def test_change_bundle(
     timeout_seconds: int = 600,
     sandbox_executor: Callable[[Path, Path, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Verify a proposal and test it in Windows Sandbox, never on the host.
+    """Verify all files and their combined diff, then test the full proposal in Windows Sandbox.
 
-    sandbox_executor is an injection point used only by deterministic unit tests.
-    Production callers omit it, selecting the real Windows Sandbox runner.
+    New Python test files are supported. Production callers never execute generated code on the host.
     """
-    bundle, source = Path(bundle_dir).expanduser().resolve(), Path(source_root).expanduser().resolve()
+    bundle = Path(bundle_dir).expanduser().resolve()
+    source = Path(source_root).expanduser().resolve()
     if not bundle.is_dir() or not source.is_dir():
         raise ProposalTestError("Не найдена папка предложения или исходников.")
+    if _is_reparse_point(bundle) or _is_reparse_point(source):
+        raise ProposalTestError("Папка предложения или исходников содержит недопустимую ссылку.")
+
     manifest_path = bundle / "manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_size > 128 * 1024:
+    if _is_reparse_point(manifest_path) or not manifest_path.is_file() or manifest_path.stat().st_size > 128 * 1024:
         raise ProposalTestError("Манифест предложения отсутствует, слишком велик или является ссылкой.")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -228,64 +231,131 @@ def test_change_bundle(
     if not isinstance(manifest, dict):
         raise ProposalTestError("Манифест предложения имеет неверный формат.")
     entries = manifest.get("files")
-    if manifest.get("schema") != 1 or not isinstance(entries, list) or len(entries) != 1:
-        raise ProposalTestError("Пакет должен содержать один изменённый Python-файл.")
+    if (
+        manifest.get("schema") != 1
+        or not isinstance(entries, list)
+        or not 1 <= len(entries) <= 10
+    ):
+        raise ProposalTestError("Пакет должен содержать от 1 до 10 изменённых Python-файлов.")
+
     patch_meta = manifest.get("patch")
     if not isinstance(patch_meta, dict) or patch_meta.get("path") != "changes.patch":
         raise ProposalTestError("В манифесте отсутствует корректная ссылка на diff.")
-    patch_path = (bundle / "changes.patch").resolve()
-    if bundle not in patch_path.parents or not patch_path.is_file():
-        raise ProposalTestError("Файл diff предложения не найден.")
-    if patch_path.stat().st_size > 2 * 1024 * 1024:
-        raise ProposalTestError("Размер diff превышает безопасный лимит 2 МБ.")
+    patch_path = bundle / "changes.patch"
+    if _is_reparse_point(patch_path) or not patch_path.is_file():
+        raise ProposalTestError("Файл diff предложения не найден или является ссылкой.")
+    patch_resolved = patch_path.resolve()
+    if bundle not in patch_resolved.parents or patch_path.stat().st_size > 2 * 1024 * 1024:
+        raise ProposalTestError("Diff вышел за пределы пакета или превышает 2 МБ.")
     patch_bytes = patch_path.read_bytes()
     if len(patch_bytes) != patch_meta.get("size") or _sha256(patch_bytes) != patch_meta.get("sha256"):
         raise ProposalTestError("Контрольная сумма diff не совпадает.")
     try:
         patch_text = patch_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ProposalTestError("Файл diff не является текстом UTF-8.") from exc
+        file_patches = split_multi_file_unified_diff(patch_text)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ProposalTestError(f"Многофайловый diff повреждён: {exc}") from exc
 
-    checked, total = [], 0
+    checked: list[tuple[Any, bytes, bytes, str | None]] = []
+    total = 0
+    sources: dict[str, str | None] = {}
+    seen: set[str] = set()
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ProposalTestError("Запись файла в манифесте имеет неверный формат.")
         try:
             relative = _safe_relative_path(entry.get("path", ""))
         except Exception as exc:
             raise ProposalTestError(str(exc)) from exc
-        original = (source / Path(*relative.parts)).resolve()
-        candidate = (bundle / "files" / Path(*relative.parts)).resolve()
-        if source not in original.parents or bundle not in candidate.parents or not original.is_file() or not candidate.is_file():
-            raise ProposalTestError(f"Не найден исходный или изменённый файл: {relative.as_posix()}")
-        old, new = original.read_bytes(), candidate.read_bytes()
-        total += len(new)
-        if len(new) > 2 * 1024 * 1024 or total > 8 * 1024 * 1024:
-            raise ProposalTestError("Размер пакета превышает безопасный лимит.")
-        if _sha256(new) != entry.get("sha256"):
-            raise ProposalTestError(f"SHA-256 изменённого файла не совпадает: {relative.as_posix()}")
-        try:
-            source_hash = _normalized_text_sha256(old)
-        except UnicodeDecodeError as exc:
-            raise ProposalTestError(f"Исходник {relative.as_posix()} не является UTF-8.") from exc
-        if source_hash != entry.get("base_sha256"):
-            raise ProposalTestError(f"Исходник {relative.as_posix()} уже изменился. Создай предложение заново.")
-        try:
-            compile(new.decode("utf-8"), relative.as_posix(), "exec")
-        except Exception as exc:
-            raise ProposalTestError(f"Ошибка синтаксиса {relative.as_posix()}: {exc}") from exc
-        checked.append((relative, old, new))
+        relative_name = relative.as_posix()
+        if relative_name in seen:
+            raise ProposalTestError(f"Файл повторяется в манифесте: {relative_name}.")
+        seen.add(relative_name)
 
-    patch_matches = []
-    for relative, old, new in checked:
+        source_candidate = source / Path(*relative.parts)
+        bundle_candidate = bundle / "files" / Path(*relative.parts)
+        # Reject reparse points in every existing component, including parent junctions.
+        for candidate, boundary in ((source_candidate, source), (bundle_candidate, bundle / "files")):
+            current = candidate
+            while current != boundary.parent:
+                if os.path.lexists(current) and _is_reparse_point(current):
+                    raise ProposalTestError(f"Путь содержит символическую ссылку или junction: {relative_name}.")
+                current = current.parent
+        source_exists = os.path.lexists(source_candidate)
+        candidate_resolved = bundle_candidate.resolve()
+        if source not in source_candidate.resolve(strict=False).parents:
+            raise ProposalTestError(f"Исходный путь выходит за пределы проекта: {relative_name}.")
+        if bundle not in candidate_resolved.parents:
+            raise ProposalTestError(f"Файл предложения выходит за пределы пакета: {relative_name}.")
+        if not bundle_candidate.is_file():
+            raise ProposalTestError(f"Не найден файл предложения: {relative_name}.")
+
+        base_hash = entry.get("base_sha256")
+        if base_hash == "absent":
+            if source_exists:
+                raise ProposalTestError(
+                    f"Новый файл {relative_name} уже существует в исходниках. Создай предложение заново."
+                )
+            old = b""
+            old_text: str | None = None
+        else:
+            if not source_exists or not source_candidate.is_file():
+                raise ProposalTestError(f"Исходный файл {relative_name} отсутствует.")
+            old = source_candidate.read_bytes()
+            try:
+                source_hash = _normalized_text_sha256(old)
+            except UnicodeDecodeError as exc:
+                raise ProposalTestError(f"Исходник {relative_name} не является UTF-8.") from exc
+            if source_hash != base_hash:
+                raise ProposalTestError(f"Исходник {relative_name} уже изменился. Создай предложение заново.")
+            try:
+                old_text = old.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ProposalTestError(f"Исходник {relative_name} не является UTF-8.") from exc
+
+        new = bundle_candidate.read_bytes()
+        total += len(old) + len(new)
+        if len(new) > 2 * 1024 * 1024 or total > 8 * 1024 * 1024:
+            raise ProposalTestError("Размер файлов пакета превышает безопасный лимит.")
+        if _sha256(new) != entry.get("sha256") or len(new) != entry.get("size"):
+            raise ProposalTestError(f"Размер или SHA-256 изменённого файла не совпадает: {relative_name}.")
         try:
-            reconstructed = apply_unified_diff(old.decode("utf-8"), patch_text, relative.as_posix())
             updated_text = new.decode("utf-8")
-        except (UnicodeDecodeError, ValueError):
-            continue
-        normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n")
-        if normalize(reconstructed) == normalize(updated_text):
-            patch_matches.append(relative.as_posix())
-    if len(patch_matches) != 1:
-        raise ProposalTestError("Сохранённый diff не соответствует ровно одному изменённому файлу.")
+            compile(updated_text, relative_name, "exec")
+        except Exception as exc:
+            raise ProposalTestError(f"Файл {relative_name} содержит некорректный Python: {exc}") from exc
+        sources[relative_name] = old_text
+        checked.append((relative, old, new, old_text))
+
+    if set(file_patches) != seen:
+        missing = sorted(seen - set(file_patches))
+        extra = sorted(set(file_patches) - seen)
+        raise ProposalTestError(
+            f"Состав diff не совпадает с манифестом. Нет в diff: {missing}; лишние: {extra}."
+        )
+    if len(seen) > 1:
+        has_source = any(not path.startswith("tests/") for path in seen)
+        has_test = any(
+            path.startswith("tests/") and Path(path).name.startswith("test_")
+            for path in seen
+        )
+        if not has_source or not has_test:
+            raise ProposalTestError(
+                "Многофайловый пакет должен включать изменение программы и тест tests/test_*.py."
+            )
+
+    try:
+        reconstructed_files = apply_multi_file_unified_diff(sources, patch_text)
+    except ValueError as exc:
+        raise ProposalTestError(f"Diff не совпадает с исходниками: {exc}") from exc
+    for relative, _old, new, _old_text in checked:
+        name = relative.as_posix()
+        try:
+            updated_text = new.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProposalTestError(f"Файл предложения {name} не является UTF-8.") from exc
+        if reconstructed_files.get(name) != updated_text:
+            raise ProposalTestError(f"Сохранённый diff не соответствует содержимому файла {name}.")
 
     report: dict[str, Any] = {
         "schema": 1, "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
