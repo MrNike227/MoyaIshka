@@ -47,6 +47,7 @@ class _NoRedirectResumableUploadHandler(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(request.full_url, code, message, headers, response)
 
 
+# Stable remote filename retained so existing Google Drive vaults remain discoverable.
 VAULT_FILENAME = "moyaishka-vault.enc"
 APP_UA = "ISH/4.2.9 (Google Drive vault)"
 
