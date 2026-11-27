@@ -5,6 +5,7 @@ import base64, hashlib, json, os, re, time, urllib.error, urllib.parse, urllib.r
 from pathlib import Path
 from typing import Any
 
+# Existing private bucket ID is retained to keep access to previously uploaded backups.
 BUCKET_NAME = "moyaishka-backups"
 TUS_CHUNK_BYTES = 6 * 1024 * 1024
 MAX_SUPABASE_FILE_BYTES = 50_000_000
