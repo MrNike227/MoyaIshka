@@ -84,6 +84,39 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             set(self.sources),
         )
 
+    def test_retry_can_omit_unchanged_context_modules(self):
+        sources = {
+            "feature.py": "VALUE = 1\n",
+            "tests/test_feature.py": None,
+            "consumer.py": "from feature import VALUE\nRESULT = VALUE\n",
+        }
+        bad = (
+            "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n"
+            "-NOT_THE_SOURCE\n+VALUE = 2\n"
+        )
+        good = (
+            "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n"
+            "-VALUE = 1\n+VALUE = 2\n"
+            "--- /dev/null\n+++ b/tests/test_feature.py\n@@ -0,0 +1,2 @@\n"
+            "+import unittest\n+class FeatureTests(unittest.TestCase): pass\n"
+        )
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append(messages)
+            return [bad, good][attempt]
+
+        result = generate_validated_multi_file_unified_diff(
+            sources,
+            [{"role": "user", "content": "Измени модуль и добавь тест"}],
+            model_call,
+            max_attempts=3,
+        )
+        self.assertIn("--- a/feature.py", result)
+        self.assertIn("--- /dev/null", result)
+        self.assertNotIn("consumer.py", result)
+        self.assertIn("неизменённые файлы можно не включать", calls[1][-1]["content"])
+
     def test_context_only_dependency_files_may_be_omitted_from_diff(self):
         sources = {
             "feature.py": "VALUE = 1\n",
