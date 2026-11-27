@@ -230,7 +230,8 @@ def prepare_source_workspace() -> Path:
     """Expose editable project sources in a persistent folder for packaged builds."""
     if not getattr(sys, "frozen", False):
         source_root = Path(__file__).resolve().parent
-        os.environ["ISH_PROJECT_DIR"] = str(source_root)\n        os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
+        os.environ["ISH_PROJECT_DIR"] = str(source_root)
+        os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
         return source_root
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
@@ -3480,9 +3481,7 @@ class ISHApp:
                         for message in reversed(conversation):
                             if message.get("role") == "user":
                                 message["content"] = str(message.get("content", "")) + (
-                                    "
-
-Повторная попытка: сохрани требуемый JSON-формат, "
+                                    "\\n\\nПовторная попытка: сохрани требуемый JSON-формат, "
                                     "дай только самые важные и краткие предложения; не повторяй "
                                     "одинаковые слова, символы или фрагменты."
                                 )
