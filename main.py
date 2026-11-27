@@ -3338,11 +3338,11 @@ class MoyaIshkaApp:
         cpu_count = os.cpu_count() or 4
         logical_threads = 2 if pressure else max(3, min(6, cpu_count // 2))
         if self_improvement:
-            # Large source-code prompts need more context; reduce batch size for
-            # 8 GB GPUs and allow enough time for a local 3B model to answer.
-            context_window = 4096 if pressure else 8192
-            max_tokens = 1024 if pressure else 2048
-            num_batch = 128
+            # Keep the maintenance task within a modest memory envelope on
+            # Windows GPUs; retry on CPU if llama-server reports an access violation.
+            context_window = 4096
+            max_tokens = 1024 if pressure else 1536
+            num_batch = 64
             request_timeout = 900
         else:
             context_window = 4096 if pressure else 6144
@@ -3352,20 +3352,44 @@ class MoyaIshkaApp:
         conversation = [dict(message) for message in messages]
         parts: list[str] = []
         for attempt in range(3):
-            payload = {
-                "model": model,
-                "messages": conversation,
-                "stream": False,
-                "keep_alive": "2m",
-                "options": {
+            cpu_fallback = False
+            while True:
+                options = {
                     "temperature": float(settings.get("temperature", 0.7)),
                     "num_ctx": context_window,
-                    "num_thread": logical_threads,
-                    "num_batch": num_batch,
+                    "num_thread": min(logical_threads, 4) if cpu_fallback else logical_threads,
+                    "num_batch": 32 if cpu_fallback else num_batch,
                     "num_predict": max_tokens,
-                },
-            }
-            data = post_json(base + "/api/chat", payload, timeout=request_timeout)
+                }
+                if cpu_fallback:
+                    # Ollama's per-request num_gpu=0 disables GPU layer offload
+                    # without changing the user's global Ollama configuration.
+                    options["num_gpu"] = 0
+                payload = {
+                    "model": model,
+                    "messages": conversation,
+                    "stream": False,
+                    "keep_alive": "2m",
+                    "options": options,
+                }
+                try:
+                    data = post_json(base + "/api/chat", payload, timeout=request_timeout)
+                    break
+                except urllib.error.HTTPError as exc:
+                    try:
+                        error_body = exc.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        error_body = str(exc)
+                    access_violation = (
+                        self_improvement
+                        and not cpu_fallback
+                        and "llama-server" in error_body.casefold()
+                        and ("0xc0000005" in error_body.casefold() or "3221225477" in error_body)
+                    )
+                    if not access_violation:
+                        raise RuntimeError(f"Ollama вернула HTTP {exc.code}: {error_body[:700]}") from exc
+                    cpu_fallback = True
+                    continue
             try:
                 piece = str(data["message"]["content"]).strip()
             except (KeyError, TypeError) as exc:
