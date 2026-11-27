@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Provision and launch Windows Sandbox for untrusted self-improvement tests.
-
-Only a disposable source copy and a dedicated result directory are mapped into
-Windows Sandbox. The user's profile, installation, cloud folders and network are
-never shared with the guest.
-"""
+"""Provision and launch Windows Sandbox for untrusted self-improvement tests."""
 from __future__ import annotations
 
+import base64
 import ctypes
+import json
 import os
 import subprocess
 import tempfile
 import time
-import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -22,6 +19,7 @@ MINIMUM_BUILD = 18362
 SUPPORTED_EDITIONS = {"Professional", "ProfessionalN", "Enterprise", "Education", "EnterpriseS", "IoTEnterprise"}
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_MEMORY_MB = 4096
+MAX_INSTALL_RESULT_BYTES = 32 * 1024
 
 
 def _powershell_path() -> Path:
@@ -57,12 +55,59 @@ def _host_details() -> dict[str, Any]:
     return {"supported": True, "edition": edition, "build": build, "reason": ""}
 
 
+def _state_marker_path() -> Path:
+    base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    directory = base / "MoyaIshka"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "windows_sandbox_state.json"
+
+
+def record_windows_sandbox_install(result: dict[str, Any]) -> Path:
+    """Persist only the verified Windows feature result and boot time, not arbitrary fields."""
+    marker = {
+        "schema": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "success": bool(result.get("success")),
+        "state": str(result.get("state", "Unknown"))[:40],
+        "restart_required": bool(result.get("restart_required")),
+        "boot_time": str(result.get("boot_time", ""))[:64],
+        "error": str(result.get("error", ""))[:1000],
+    }
+    path = _state_marker_path()
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(marker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+    return path
+
+
+def _read_install_state() -> dict[str, Any] | None:
+    try:
+        path = _state_marker_path()
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_INSTALL_RESULT_BYTES:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("schema") == 1:
+            return payload
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _parse_boot_time(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 def get_windows_sandbox_status() -> dict[str, Any]:
-    """Return a fail-closed status; an unknown feature state is never considered ready."""
+    """Check readiness without elevation; the optional-feature cmdlets are admin-only."""
     details = _host_details()
     result: dict[str, Any] = {
         **details, "installed": False, "ready": False, "restart_required": False,
         "feature_state": "Unknown", "virtualization_ready": False,
+        "memory_mb": 0, "logical_processors": 0,
     }
     if not details.get("supported"):
         return result
@@ -70,84 +115,114 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     if not powershell.is_file():
         result["reason"] = "Не найден системный Windows PowerShell."
         return result
+
+    # CIM read-only queries are available to a standard user. Never call
+    # Get-WindowsOptionalFeature here: it requires an elevated PowerShell token.
     command = (
         "$ErrorActionPreference='Stop'; "
-        "$f=Get-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM'; "
         "$c=Get-CimInstance Win32_ComputerSystem; "
         "$p=Get-CimInstance Win32_Processor; "
-        "Write-Output ('MOYA_STATE=' + [string]$f.State); "
+        "$o=Get-CimInstance Win32_OperatingSystem; "
+        "$boot=$o.LastBootUpTime.ToUniversalTime().ToString('o'); "
+        "$virt=(($p | Where-Object {$_.VirtualizationFirmwareEnabled -ne $true}).Count -eq 0); "
+        "$cores=[int](($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum); "
         "Write-Output ('MOYA_HYPERVISOR=' + [string]$c.HypervisorPresent); "
-        "Write-Output ('MOYA_VIRT=' + [string](($p | Where-Object {$_.VirtualizationFirmwareEnabled -ne $true}).Count -eq 0)); "
+        "Write-Output ('MOYA_VIRT=' + [string]$virt); "
         "Write-Output ('MOYA_MEM_MB=' + [string][math]::Floor($c.TotalPhysicalMemory / 1MB)); "
-        "Write-Output ('MOYA_CORES=' + [string](($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum))"
+        "Write-Output ('MOYA_CORES=' + [string]$cores); "
+        "Write-Output ('MOYA_BOOT_TIME=' + $boot)"
     )
     try:
         completed = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25,
             creationflags=(
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
-        ),
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+            ),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        result["reason"] = f"Не удалось проверить компонент Windows Sandbox: {exc}"
+        result["reason"] = f"Не удалось проверить компоненты Windows: {exc}"
         return result
     if completed.returncode != 0:
         result["reason"] = (
-            "Windows не разрешила проверить состояние Windows Sandbox. "
-            "Проверь компонент через кнопку установки и системный запрос UAC. "
+            "Не удалось проверить виртуализацию и гипервизор Windows. "
             + (completed.stderr or completed.stdout).strip()[-500:]
         )
         return result
+
     values: dict[str, str] = {}
     for line in (completed.stdout or "").splitlines():
         if line.startswith("MOYA_") and "=" in line:
             key, value = line.split("=", 1)
             values[key] = value.strip()
-    state = values.get("MOYA_STATE", "Unknown")
-    result["feature_state"] = state
-    result["restart_required"] = state in {"EnablePending", "DisablePending"}
-    result["installed"] = state == "Enabled"
+    try:
+        result["memory_mb"] = int(values.get("MOYA_MEM_MB", "0") or 0)
+        result["logical_processors"] = int(values.get("MOYA_CORES", "0") or 0)
+    except ValueError:
+        result["reason"] = "Windows вернула некорректные данные о памяти или процессорах."
+        return result
+
     result["virtualization_ready"] = values.get("MOYA_VIRT", "").casefold() == "true"
-    result["memory_mb"] = int(values.get("MOYA_MEM_MB", "0") or 0)
-    result["logical_processors"] = int(values.get("MOYA_CORES", "0") or 0)
+    result["boot_time"] = values.get("MOYA_BOOT_TIME", "")
+    marker = _read_install_state()
     executable = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsSandbox.exe"
+    executable_exists = executable.is_file()
+    result["executable_path"] = str(executable)
+    result["installed"] = executable_exists
+
+    if marker:
+        result["feature_state"] = str(marker.get("state", "Unknown"))
+        result["restart_required"] = bool(marker.get("restart_required"))
+        if result["restart_required"]:
+            installed_boot = _parse_boot_time(str(marker.get("boot_time", "")))
+            current_boot = _parse_boot_time(result["boot_time"])
+            if installed_boot and current_boot and current_boot != installed_boot:
+                result["restart_required"] = False
+                result["feature_state"] = "EnabledAfterRestart"
+                marker["restart_required"] = False
+                marker["state"] = "EnabledAfterRestart"
+                marker["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                record_windows_sandbox_install(marker)
+    elif executable_exists:
+        # Component may have been enabled manually in Windows Features.
+        result["feature_state"] = "DetectedByExecutable"
+
+    hypervisor_ready = values.get("MOYA_HYPERVISOR", "").casefold() == "true"
     result["ready"] = (
-        result["installed"] and not result["restart_required"]
-        and result["virtualization_ready"] and result["memory_mb"] >= 4096
-        and result["logical_processors"] >= 2 and executable.is_file()
+        executable_exists and not result["restart_required"]
+        and result["virtualization_ready"] and hypervisor_ready
+        and result["memory_mb"] >= 4096 and result["logical_processors"] >= 2
     )
     if result["restart_required"]:
-        result["reason"] = "Windows Sandbox включена не полностью. Перезагрузи компьютер."
-    elif not result["installed"]:
-        result["reason"] = "Компонент Windows Sandbox ещё не установлен."
+        result["reason"] = "Компонент включён, но Windows ещё не перезагружалась после установки."
+    elif not executable_exists:
+        result["reason"] = "Windows Sandbox не установлена. Нажми «Установить Windows Sandbox»."
     elif not result["virtualization_ready"]:
         result["reason"] = "Включи Intel VT-x / AMD-V (виртуализацию) в BIOS/UEFI и перезагрузи ПК."
     elif result["memory_mb"] < 4096 or result["logical_processors"] < 2:
         result["reason"] = "Для Windows Sandbox нужно не менее 4 ГБ ОЗУ и двух логических процессоров."
-    elif not executable.is_file():
-        result["reason"] = "Компонент отмечен как включённый, но WindowsSandbox.exe не найден."
-    elif values.get("MOYA_HYPERVISOR", "").casefold() != "true":
+    elif not hypervisor_ready:
         result["reason"] = "Гипервизор Windows не запущен. Проверь виртуализацию и перезагрузи ПК."
-        result["ready"] = False
     else:
-        result["reason"] = "Windows Sandbox готова к изолированному тестированию."
+        result["reason"] = "Windows Sandbox прошла предварительные проверки. Фактический запуск проверяется при тестировании."
     return result
 
 
 def request_windows_sandbox_install() -> Path:
-    """Start the built-in optional-feature installation through a visible UAC prompt."""
+    """Enable the Windows optional feature through a visible, explicit UAC prompt."""
     details = _host_details()
     if not details.get("supported"):
         raise RuntimeError(str(details.get("reason") or "Этот компьютер не поддерживает Windows Sandbox."))
     powershell = _powershell_path()
     if not powershell.is_file():
         raise RuntimeError("Не найден Windows PowerShell.")
+
     work = Path(tempfile.mkdtemp(prefix="moya_sandbox_setup_"))
     result_path = work / "install_result.json"
-    script_path = work / "install_windows_sandbox.ps1"
     result_literal = str(result_path).replace("'", "''")
+    # Use an inline encoded command rather than elevating a script from the
+    # user-writable temporary folder (which would permit a script-swap race).
     script = f"""$ErrorActionPreference = 'Stop'
 $resultPath = '{result_literal}'
 try {{
@@ -159,17 +234,20 @@ try {{
     }}
     $current = Get-WindowsOptionalFeature -Online -FeatureName '{FEATURE_NAME}'
     if ([string]$current.State -eq 'EnablePending') {{ $restartNeeded = $true }}
-    $data = [ordered]@{{success=([string]$current.State -in @('Enabled','EnablePending')); state=[string]$current.State; restart_required=$restartNeeded; error=''}}
+    $osInfo = Get-CimInstance Win32_OperatingSystem
+    $bootTime = $osInfo.LastBootUpTime.ToUniversalTime().ToString('o')
+    $data = [ordered]@{{success=([string]$current.State -in @('Enabled','EnablePending')); state=[string]$current.State; restart_required=$restartNeeded; boot_time=$bootTime; error=''}}
 }} catch {{
-    $data = [ordered]@{{success=$false; state='Error'; restart_required=$false; error=$_.Exception.Message}}
+    $data = [ordered]@{{success=$false; state='Error'; restart_required=$false; boot_time=''; error=$_.Exception.Message}}
 }}
 $data | ConvertTo-Json -Compress | Set-Content -LiteralPath $resultPath -Encoding UTF8
 """
-    script_path.write_text(script, encoding="utf-8")
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    parameters = f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}'
     try:
         shell = ctypes.windll.shell32.ShellExecuteW
         shell.restype = ctypes.c_void_p
-        code = shell(None, "runas", str(powershell), f'-NoProfile -ExecutionPolicy Bypass -File "{script_path}"', str(work), 1)
+        code = shell(None, "runas", str(powershell), parameters, str(work), 1)
     except Exception as exc:
         raise RuntimeError(f"Не удалось запросить права администратора: {exc}") from exc
     if int(code or 0) <= 32:
@@ -181,14 +259,20 @@ def wait_for_install_result(result_path: str | Path, timeout_seconds: int = 900)
     path = Path(result_path)
     deadline = time.monotonic() + max(30, min(int(timeout_seconds), 1800))
     while time.monotonic() < deadline:
+        if path.is_symlink():
+            raise RuntimeError("Результат установки Windows Sandbox является недопустимой ссылкой.")
         if path.is_file():
             try:
-                import json
-                return json.loads(path.read_text(encoding="utf-8-sig"))
+                if path.stat().st_size > MAX_INSTALL_RESULT_BYTES:
+                    raise RuntimeError("Результат установки Windows Sandbox превышает безопасный размер.")
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
+                    raise RuntimeError("Windows вернула результат установки в неизвестном формате.")
+                return payload
             except (OSError, ValueError):
                 pass
         time.sleep(1)
-    raise TimeoutError("Не получен результат установки Windows Sandbox. Проверь окно PowerShell и повтори проверку.")
+    raise TimeoutError("Не получен результат установки Windows Sandbox. Проверь окно UAC/PowerShell и повтори проверку.")
 
 
 def create_sandbox_config(
@@ -262,7 +346,6 @@ def wait_for_sandbox_completion(
     max_result_bytes: int = 16 * 1024 * 1024,
 ) -> dict[str, Any]:
     """Wait for guest completion while bounding untrusted files written to the host share."""
-    import json
     directory = Path(result_dir).resolve()
     completion = directory / "complete.json"
     deadline = time.monotonic() + max(60, min(int(timeout_seconds) + 120, 900))
