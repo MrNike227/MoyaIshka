@@ -59,7 +59,7 @@ class PatchTests(unittest.TestCase):
 
     def test_editable_file_scan_uses_project_relative_paths(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "tests" / "MoyaIshka"
+            root = Path(temp) / "tests" / "ISH"
             (root / "pkg").mkdir(parents=True)
             (root / "tests").mkdir()
             (root / ".git" / "hooks").mkdir(parents=True)
