@@ -585,6 +585,36 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertNotIn('["-m", "unittest", "discover"', testing)
 
 
+    def test_self_improvement_generates_and_tests_matching_multi_file_changes(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
+        delivery = (ROOT / "improvement_delivery.py").read_text(encoding="utf-8")
+        testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
+        background = (ROOT / "background_developer.py").read_text(encoding="utf-8")
+        self.assertIn("generate_validated_multi_file_unified_diff", main)
+        self.assertIn("apply_multi_file_unified_diff", main)
+        self.assertIn("related_test_path", main)
+        self.assertIn("tests/test_*.py", main)
+        self.assertIn("split_multi_file_unified_diff", source)
+        self.assertIn("editable_test_files", source)
+        self.assertIn("save_multi_change_bundle", delivery)
+        self.assertIn("MAX_PROPOSAL_FILES", delivery)
+        self.assertIn('base_sha256 == "absent"', testing)
+        self.assertIn("apply_multi_file_unified_diff", testing)
+        self.assertIn("save_multi_change_bundle", background)
+        self.assertIn("tests/test_background_developer.py", main)
+
+    def test_multi_file_patch_is_never_applied_directly_or_sent_as_single_file_pr(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        apply_method = main[main.index("    def apply_improvement("):main.index("    # Updates are obtained", main.index("    def apply_improvement("))]
+        pr_method = main[main.index("    def create_improvement_pr("):main.index("    def open_updates_folder(", main.index("    def create_improvement_pr("))]
+        self.assertIn("split_multi_file_unified_diff", apply_method)
+        self.assertIn("нельзя применить пакет к исходникам напрямую", apply_method.lower())
+        self.assertIn("split_multi_file_unified_diff", pr_method)
+        self.assertIn("пока принимает один файл", pr_method)
+
+
+
 if __name__ == "__main__":
     unittest.main()
 
