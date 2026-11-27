@@ -72,6 +72,40 @@ def _record_result(updates_dir: Path, result: dict[str, Any]) -> Path:
     return history_path
 
 
+def _load_recent_development_lessons(updates_dir: Path, limit: int = 5) -> list[str]:
+    """Return short lessons from failed or rejected proposals; never load arbitrary file content."""
+    history_path = updates_dir / "Analysis" / "background_development_history.json"
+    if not history_path.is_file() or history_path.is_symlink():
+        return []
+    try:
+        if history_path.stat().st_size > 512 * 1024:
+            return []
+        payload = json.loads(history_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    lessons: list[str] = []
+    for item in reversed(items if isinstance(items, list) else []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("passed") is True and item.get("review_approved") is True:
+            continue
+        parts = [
+            str(item.get("title", ""))[:180],
+            str(item.get("error", ""))[:350],
+            str(item.get("review_summary", ""))[:250],
+        ]
+        findings = item.get("review_findings", [])
+        if isinstance(findings, list):
+            parts.extend(str(value)[:180] for value in findings[:3])
+        lesson = " — ".join(part for part in parts if part)
+        if lesson and lesson not in lessons:
+            lessons.append(lesson)
+        if len(lessons) >= max(1, min(int(limit), 10)):
+            break
+    return lessons
+
+
 def run_background_development(
     project_root: str | Path,
     relative_path: str,
@@ -117,8 +151,8 @@ def run_background_development(
         "а не косметическому рефакторингу. Учитывай карту импортов, прямых и косвенных потребителей и тестов; "
         "статический анализ не видит все динамические связи. Не выдумывай соседние API и файлы. Верни до трёх конкретных "
         "предложений только в JSON: "
-        '{"suggestions":[{"title":"...","problem":"...","current":"...","proposed":"...","benefit":"..."}]}. '
-        "Поля current/proposed должны кратко описывать реально существующее и желаемое поведение."
+        '{"suggestions":[{"title":"...","location":"file.py.Class.method","problem":"...","current":"точный участок","proposed":"конкретная замена","benefit":"..."}]}. '
+        "Поля current/proposed должны содержать конкретный код или проверяемое поведение. Не выдавай общие рекомендации без точного места в исходнике."
     )
     user_content = (
         f"Целевой файл: {relative}\n\nКАРТА СВЯЗЕЙ И ВОЗМОЖНОГО ВЛИЯНИЯ:\n"
@@ -126,6 +160,12 @@ def run_background_development(
         f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
         f"Код целевого модуля:\n{model_context}"
     )
+    lessons = _load_recent_development_lessons(updates)
+    if lessons:
+        user_content += (
+            "\n\nОПЫТ ПРЕДЫДУЩИХ ПОПЫТОК (учти причины отказов, не повторяй те же ошибки):\n"
+            + "\n".join(f"- {item}" for item in lessons)
+        )
     ideas = load_chat_improvement_ideas(updates)
     if ideas:
         user_content += (
