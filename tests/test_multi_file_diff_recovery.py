@@ -290,7 +290,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             split_multi_file_unified_diff(patch)
 
     def test_wrapped_added_line_is_recovered(self):
-        sources = {"plugin_manager.py": "class PluginManager:\\n    pass\\n"}
+        sources = {"plugin_manager.py": "class PluginManager:\n    pass\n"}
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
 @@ -1,2 +1,2 @@
