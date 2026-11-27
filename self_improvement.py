@@ -1119,7 +1119,7 @@ def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool
     compile(updated, str(target), "exec")  # Syntax check before writing.
 
     appdata = os.environ.get("APPDATA")
-    backup_root = (Path(appdata) / "MoyaIshka" if appdata else Path.home() / ".moya_ishka") / "self_improve_backups"
+    backup_root = (Path(appdata) / "ISH" if appdata else Path.home() / ".ish") / "self_improve_backups"
     backup_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup = backup_root / f"{stamp}_{relative.name}.bak"
