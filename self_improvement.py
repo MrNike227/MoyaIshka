@@ -673,7 +673,7 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
                 continue
             seen_hunks.add(item)
             header = item.split("\n", 1)[0]
-            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? +([0-9]+)(?:,([0-9]+))? @@", header)
+            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@", header)
             if not match:
                 raise ValueError(f"Файл {path}: повреждённый заголовок повторного блока @@.")
             old_start = int(match.group(1))
