@@ -162,5 +162,5 @@ jobs:
           gh auth setup-git
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force --annotate --message "MoyaIshka 4.2.7 — onedir Windows 10 package" v4.2.6 $env:GITHUB_SHA
+          git tag --force --annotate --message "MoyaIshka 4.2.7 — onedir Windows 10 package" v4.2.7 $env:GITHUB_SHA
           git push --force origin refs/tags/v4.2.7

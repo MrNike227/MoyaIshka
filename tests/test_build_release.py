@@ -555,6 +555,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.7' }}", workflow)
         self.assertIn("- name: Update v4.2.7 tag to validated root source", workflow)
         self.assertIn("git push --force origin refs/tags/v4.2.7", workflow)
+        self.assertIn('MoyaIshka 4.2.7 — onedir Windows 10 package" v4.2.7 $env:GITHUB_SHA', workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
