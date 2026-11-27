@@ -107,8 +107,8 @@ try {{
     $psi.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
-    $process.PriorityClass = 'BelowNormal'
     if (-not $process.Start()) {{ throw 'Не удалось запустить тестовый EXE в песочнице.' }}
+    try {{ $process.PriorityClass = 'BelowNormal' }} catch {{ }}
     if (-not $process.WaitForExit({timeout_ms})) {{
         try {{ $process.Kill() }} catch {{}}
         $exitCode = 124
