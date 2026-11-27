@@ -314,6 +314,8 @@ def test_change_bundle(
                 raise ProposalTestError(f"Исходник {relative_name} не является UTF-8.") from exc
 
         new = bundle_candidate.read_bytes()
+        if base_hash != "absent" and old == new:
+            raise ProposalTestError(f"Файл {relative_name} указан в пакете, но его содержимое не изменилось.")
         total += len(old) + len(new)
         if len(new) > 2 * 1024 * 1024 or total > 8 * 1024 * 1024:
             raise ProposalTestError("Размер файлов пакета превышает безопасный лимит.")
