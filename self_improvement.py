@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -483,55 +484,178 @@ def related_test_path(source_relative_path: str) -> str:
     return candidate
 
 
-def split_multi_file_unified_diff(patch_text: str) -> dict[str, str]:
-    """Split a combined unified diff into normalized, independently applicable file patches."""
-    if not isinstance(patch_text, str) or not patch_text.strip():
-        raise ValueError("Модель не вернула многофайловый diff.")
-    normalized = patch_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.splitlines(keepends=True)
-    header_indexes = [
-        index for index in range(len(lines) - 1)
-        if lines[index].startswith("--- ") and lines[index + 1].startswith("+++ ")
-    ]
-    if not header_indexes:
-        raise ValueError("В diff не найдены пары заголовков --- / +++.")
-    if len(header_indexes) > MAX_MULTI_FILE_PATCHES:
-        raise ValueError(f"В одном пакете разрешено не более {MAX_MULTI_FILE_PATCHES} Python-файлов.")
+def _multi_diff_candidates(response: str) -> list[str]:
+    """Extract unified-diff candidates from plain text, fenced blocks, or JSON."""
+    if not isinstance(response, str) or not response.strip():
+        raise ValueError("Модель не вернула текст с diff.")
+    text = response.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    candidates: list[str] = []
+
+    json_snippets = [text]
+    try:
+        json_snippets.extend(_iter_json_objects(text))
+    except Exception:
+        pass
+    fence = chr(96) * 3
+    fence_pattern = re.compile(r"(?s)" + re.escape(fence) + r"[^\n]*\n(.*?)" + re.escape(fence))
+    fenced_blocks = [textwrap.dedent(item).strip("\n") for item in fence_pattern.findall(text) if item.strip()]
+    tilde_pattern = re.compile(r"(?s)~~~[^\n]*\n(.*?)~~~")
+    fenced_blocks.extend(textwrap.dedent(item).strip("\n") for item in tilde_pattern.findall(text) if item.strip())
+    if fenced_blocks:
+        candidates.append("\n".join(fenced_blocks))
+        candidates.extend(fenced_blocks)
+        for block in fenced_blocks:
+            try:
+                json_snippets.extend(_iter_json_objects(block))
+            except Exception:
+                pass
+
+    for snippet in json_snippets:
+        try:
+            payload = json.loads(_repair_json_controls(snippet))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            for key in ("diff", "patch", "unified_diff", "changes", "content", "output"):
+                item = payload.get(key)
+                if isinstance(item, str) and item.strip():
+                    candidates.append(textwrap.dedent(item).strip("\n"))
+
+    candidates.append(textwrap.dedent(text).strip("\n"))
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = candidate.strip("\n")
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
+
+
+def _extract_multi_diff_hunks(lines: list[str]) -> str:
+    """Extract hunk lines and discard prose surrounding the unified diff."""
+    start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
+    if start is None:
+        return ""
+    body: list[str] = []
+    for line in lines[start:]:
+        value = line.rstrip("\r\n")
+        if value.lstrip().startswith("@@ "):
+            body.append(value + "\n")
+        elif value.lstrip().startswith("\\ No newline at end of file"):
+            body.append("\\ No newline at end of file\n")
+        elif value and value[0] in " +-":
+            body.append(value + "\n")
+        else:
+            break
+    return "".join(body)
+
+
+def _validated_multi_diff_path(old_header: str, new_header: str) -> str:
+    old_path = _normalize_diff_path(old_header)
+    new_path = _normalize_diff_path(new_header)
+    if new_path == "/dev/null":
+        raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
+    relative = PurePosixPath(new_path)
+    if (
+        not new_path
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+        or any(part.casefold() in {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"} for part in relative.parts)
+        or relative.suffix.casefold() != ".py"
+        or len(new_path) > 240
+    ):
+        raise ValueError(f"Недопустимый путь Python-файла в diff: {new_path!r}.")
+    if old_path != "/dev/null" and old_path != new_path:
+        raise ValueError("Переименование файлов в пакете пока не поддерживается.")
+    return new_path
+
+
+def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
+    """Parse file sections, tolerating wrappers and common Git metadata."""
+    normalized = textwrap.dedent(candidate).replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines()
+    pairs: list[tuple[int, int]] = []
+
+    for index, line in enumerate(lines):
+        old_line = line.lstrip(" \t")
+        if not old_line.startswith("--- "):
+            continue
+        old_header = old_line[4:].strip().split("\t", 1)[0].strip('"')
+        if old_header != "/dev/null" and not old_header.startswith("a/"):
+            continue
+        for next_index in range(index + 1, min(len(lines), index + 7)):
+            next_line = lines[next_index].lstrip(" \t")
+            if next_line.startswith("+++ "):
+                new_header = next_line[4:].strip().split("\t", 1)[0].strip('"')
+                if new_header.startswith("b/"):
+                    pairs.append((index, next_index))
+                break
+            if next_line.strip() and not next_line.strip().startswith(("index ", "Index: ", "diff --git ")):
+                break
 
     result: dict[str, str] = {}
-    for position, header_index in enumerate(header_indexes):
-        old_header = lines[header_index][4:].strip().split("\t", 1)[0].strip('"')
-        new_header = lines[header_index + 1][4:].strip().split("\t", 1)[0].strip('"')
-        old_path = _normalize_diff_path(old_header)
-        new_path = _normalize_diff_path(new_header)
-        if new_path == "/dev/null":
-            raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
-        relative = PurePosixPath(new_path)
-        if (
-            not new_path
-            or relative.is_absolute()
-            or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
-            or any(part.casefold() in {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"} for part in relative.parts)
-            or relative.suffix.casefold() != ".py"
-            or len(new_path) > 240
-        ):
-            raise ValueError(f"Недопустимый путь Python-файла в diff: {new_path!r}.")
-        if old_path != "/dev/null" and old_path != new_path:
-            raise ValueError("Переименование файлов в пакете пока не поддерживается.")
-        if new_path in result:
-            raise ValueError(f"Diff содержит повторное изменение файла: {new_path}.")
-        body_end = header_indexes[position + 1] if position + 1 < len(header_indexes) else len(lines)
-        body = lines[header_index + 2:body_end]
-        body = [
-            line for line in body
-            if not line.startswith(("diff --git ", "index ", "similarity index ", "rename from ", "rename to "))
-        ]
-        if not any(line.startswith("@@ ") for line in body):
-            raise ValueError(f"Для файла {new_path} отсутствует блок изменений @@.")
-        result[new_path] = (
-            f"--- a/{new_path}\n+++ b/{new_path}\n" + "".join(body)
+
+    def add_section(old_header: str, new_header: str, section_lines: list[str]) -> None:
+        path = _validated_multi_diff_path(old_header, new_header)
+        hunks = _extract_multi_diff_hunks(section_lines)
+        if not hunks:
+            raise ValueError(f"Для файла {path} не найден корректный блок изменений @@.")
+        if path in result:
+            raise ValueError(f"Diff содержит повторное изменение файла: {path}.")
+        result[path] = f"--- a/{path}\n+++ b/{path}\n" + hunks
+
+    if pairs:
+        for position, (old_index, new_index) in enumerate(pairs):
+            old_header = lines[old_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
+            new_header = lines[new_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
+            section_end = pairs[position + 1][0] if position + 1 < len(pairs) else len(lines)
+            add_section(old_header, new_header, lines[new_index + 1:section_end])
+    else:
+        # Some models emit Git sections and valid hunks but omit --- / +++ lines.
+        git_indexes = [i for i, line in enumerate(lines) if line.startswith("diff --git ")]
+        for position, start in enumerate(git_indexes):
+            match = re.fullmatch(r"diff --git a/(.+) b/(.+)", lines[start].strip())
+            if not match:
+                continue
+            old_git_path, new_git_path = match.groups()
+            end = git_indexes[position + 1] if position + 1 < len(git_indexes) else len(lines)
+            section = lines[start + 1:end]
+            if any(line.startswith("deleted file mode ") for line in section):
+                raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
+            is_new_file = any(line.startswith("new file mode ") for line in section)
+            old_header = "/dev/null" if is_new_file else "a/" + old_git_path
+            new_header = "b/" + new_git_path
+            add_section(old_header, new_header, section)
+
+    if not result:
+        if "UNABLE_TO_CREATE_PATCH" in normalized:
+            raise ValueError(
+                "Модель сообщила, что не смогла подготовить изменения. Уточни задачу или выбери более узкий модуль."
+            )
+        preview = " ".join(normalized.split())[:220]
+        suffix = f" Фрагмент ответа модели: {preview!r}." if preview else ""
+        raise ValueError(
+            "В ответе модели не найден unified diff: отсутствуют пары заголовков --- / +++. "
+            "Ожидаются строки --- a/файл.py и +++ b/файл.py перед блоком @@." + suffix
         )
     return result
+
+
+def split_multi_file_unified_diff(patch_text: str) -> dict[str, str]:
+    """Split a combined diff after extracting common model response wrappers."""
+    errors: list[str] = []
+    for candidate in _multi_diff_candidates(patch_text):
+        try:
+            result = _parse_multi_file_unified_diff(candidate)
+            if len(result) > MAX_MULTI_FILE_PATCHES:
+                raise ValueError(
+                    f"В одном пакете разрешено не более {MAX_MULTI_FILE_PATCHES} Python-файлов."
+                )
+            return result
+        except ValueError as exc:
+            errors.append(str(exc))
+    raise ValueError(errors[-1] if errors else "Не удалось извлечь unified diff из ответа модели.")
 
 
 def apply_multi_file_unified_diff(
@@ -566,33 +690,53 @@ def generate_validated_multi_file_unified_diff(
     attempts = max(1, min(int(max_attempts), 3))
     conversation = [dict(message) for message in messages]
     last_error: ValueError | None = None
+    last_response = ""
     for attempt in range(attempts):
         response = model_call(conversation, attempt)
+        last_response = str(response or "")
         try:
-            apply_multi_file_unified_diff(sources, response)
-            return response.strip() + "\n"
+            updated = apply_multi_file_unified_diff(sources, last_response)
+            sections = split_multi_file_unified_diff(last_response)
+            for path, original in sources.items():
+                if original is None:
+                    sections[path] = sections[path].replace(
+                        f"--- a/{path}\n", "--- /dev/null\n", 1
+                    )
+            return "\n".join(sections.values()).rstrip() + "\n"
         except ValueError as exc:
             last_error = exc
             if attempt + 1 >= attempts:
                 break
             paths = ", ".join(sources)
+            new_files = [path for path, original in sources.items() if original is None]
+            example_path = next(iter(sources))
+            example = (
+                f"--- a/{example_path}\n+++ b/{example_path}\n"
+                "@@ -1,1 +1,1 @@\n-СТАРАЯ_СТРОКА\n+НОВАЯ_СТРОКА"
+            )
+            retry_instruction = (
+                f"Предыдущий ответ не прошёл проверку: {exc}\n"
+                f"Создай ОДИН обычный unified diff для всех и только этих файлов: {paths}.\n"
+                "Для каждого файла обязательно выведи отдельную пару заголовков --- и +++ непосредственно "
+                "перед блоком @@. Не заменяй diff полным текстом файлов.\n"
+                "Для существующего файла используй --- a/путь.py и +++ b/путь.py. "
+                + (
+                    "Для нового теста используй --- /dev/null и +++ b/путь_теста.py. "
+                    if new_files else ""
+                )
+                + "Не используй apply_patch, JSON, Markdown-таблицы или обычный текст. "
+                "Не добавляй пояснений, только diff. Не переименовывай и не удаляй файлы.\n"
+                f"Точный пример пары заголовков и hunk:\n{example}"
+            )
             conversation.extend([
-                {"role": "assistant", "content": str(response or "")[:16_000]},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Предыдущий многофайловый diff не прошёл проверку: {exc}\n"
-                        f"Сгенерируй заново один объединённый unified diff только для файлов: {paths}. "
-                        "Для каждого существующего файла укажи точные пары --- a/path и +++ b/path. "
-                        "Для нового тестового файла используй --- /dev/null и +++ b/path. "
-                        "Каждый файл должен иметь свой блок @@; не добавляй переименований или удалений. "
-                        "Контекстные и удаляемые строки копируй точно. Выведи только diff."
-                    ),
-                },
+                {"role": "assistant", "content": last_response[:16_000]},
+                {"role": "user", "content": retry_instruction},
             ])
     detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
+    preview = " ".join(last_response.split())[:350]
+    suffix = f" Последний ответ модели: {preview!r}." if preview else ""
     raise ValueError(
-        f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}"
+        f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}{suffix}"
     )
 
 
