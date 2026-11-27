@@ -372,3 +372,99 @@ def build_dependency_context(
     if not rows:
         return "Связанные исходники для дополнительного контекста не найдены."
     return "\n".join(rows)
+
+
+def build_project_architecture_index(project_root: str | Path, *, max_modules: int = 1200) -> dict[str, Any]:
+    """Index Python modules, imports, classes, functions and call sites without executing code."""
+    root = Path(project_root).expanduser().resolve()
+    warnings: list[str] = []
+    files = _safe_python_files(root, warnings)[:max(1, min(int(max_modules), MAX_ANALYZED_FILES))]
+    modules: list[dict[str, Any]] = []
+    symbol_count = 0
+    for relative, full_path in files:
+        try:
+            source = full_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=relative)
+        except (OSError, UnicodeError, SyntaxError) as exc:
+            warnings.append(f"{relative}: индекс символов недоступен ({type(exc).__name__}).")
+            continue
+        imports: set[str] = set()
+        symbols: list[dict[str, Any]] = []
+        calls: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = "." * int(node.level) + str(node.module or "")
+                imports.add(prefix)
+            elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "class" if isinstance(node, ast.ClassDef) else (
+                    "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
+                )
+                signature = ast.get_source_segment(source, node) or ""
+                signature = signature.splitlines()[0].strip()[:240]
+                symbols.append({
+                    "name": node.name,
+                    "kind": kind,
+                    "line": int(getattr(node, "lineno", 0) or 0),
+                    "end_line": int(getattr(node, "end_lineno", 0) or 0),
+                    "signature": signature,
+                })
+            elif isinstance(node, ast.Call):
+                function = node.func
+                if isinstance(function, ast.Name):
+                    calls.add(function.id)
+                elif isinstance(function, ast.Attribute):
+                    calls.add(function.attr)
+        symbols.sort(key=lambda item: (item["line"], item["name"]))
+        symbol_count += len(symbols)
+        modules.append({
+            "path": relative,
+            "module": _module_name(relative),
+            "is_test": relative.startswith("tests/") and PurePosixPath(relative).name.startswith("test_"),
+            "imports": sorted(imports)[:80],
+            "symbols": symbols[:160],
+            "calls": sorted(calls)[:100],
+        })
+    return {
+        "schema": 1,
+        "analysis_kind": "static_python_ast_architecture_index",
+        "module_count": len(modules),
+        "symbol_count": symbol_count,
+        "modules": modules,
+        "warnings": sorted(set(warnings))[:40],
+    }
+
+
+def format_project_architecture_index(index: dict[str, Any], *, max_chars: int = 16000) -> str:
+    """Format the project-wide symbol index for the user or a bounded model context."""
+    limit = max(1000, int(max_chars))
+    lines = [
+        "КАРТА АРХИТЕКТУРЫ ПРОЕКТА (статический AST-анализ, код не исполнялся)",
+        f"Python-модулей: {int(index.get('module_count', 0) or 0)}; классов/функций: {int(index.get('symbol_count', 0) or 0)}",
+    ]
+    used = sum(len(line) + 1 for line in lines)
+    modules = index.get("modules", [])
+    for module in modules if isinstance(modules, list) else []:
+        if not isinstance(module, dict):
+            continue
+        symbols = module.get("symbols", [])
+        names = [
+            f"{item.get('kind')} {item.get('name')}() [стр. {item.get('line')}]"
+            for item in symbols if isinstance(item, dict)
+        ]
+        entry = (
+            f"\n{module.get('path')} — imports: {', '.join(module.get('imports', [])[:12]) or '—'}"
+            f"\n  API: {'; '.join(names[:24]) or 'верхнеуровневые определения не найдены'}"
+            f"\n  Вызовы: {', '.join(module.get('calls', [])[:24]) or '—'}"
+        )
+        if used + len(entry) > limit:
+            lines.append("\n… индекс сокращён по лимиту контекста.")
+            break
+        lines.append(entry)
+        used += len(entry)
+    warnings = index.get("warnings", [])
+    if warnings:
+        lines.append("\nОграничения: " + " | ".join(str(item) for item in warnings[:8]))
+    lines.append("\nВажно: AST показывает статические определения и вызовы, но не гарантирует обнаружение динамических импортов, reflection и runtime-связей.")
+    return "\n".join(lines)
