@@ -201,6 +201,22 @@ class SelfImprovementModelSelectionTests(unittest.TestCase):
 
         self.assertEqual(result, "online self-analysis result")
 
+    def test_diff_regeneration_increases_model_temperature_gradually(self):
+        app = self._app()
+        temperatures = []
+        app._call_ollama = lambda settings, _messages: (
+            temperatures.append(settings["temperature"]) or "ok"
+        )
+        for attempt in range(3):
+            self.assertEqual(
+                app._current_model_call(
+                    [{"role": "user", "content": "Подготовь diff"}],
+                    generation_attempt=attempt,
+                ),
+                "ok",
+            )
+        self.assertEqual(temperatures, [0.15, 0.25, 0.35])
+
 
 class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
     def test_self_improvement_retries_on_cpu_after_llama_server_access_violation(self):
