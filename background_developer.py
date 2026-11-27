@@ -106,6 +106,11 @@ def _load_recent_development_lessons(updates_dir: Path, limit: int = 5) -> list[
     return lessons
 
 
+def _has_explicit_reviewer_approval(review_data: Any) -> bool:
+    """Accept only a JSON boolean true; strings such as 'false' are not approval."""
+    return isinstance(review_data, dict) and review_data.get("approved") is True
+
+
 def run_background_development(
     project_root: str | Path,
     relative_path: str,
