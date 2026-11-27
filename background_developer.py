@@ -184,7 +184,7 @@ def run_background_development(
         test_original = None
     sources: dict[str, str | None] = {relative: original, test_relative: test_original}
     change_context = build_model_source_context(
-        original, change_task, max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.72),
+        original, change_task, max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.54),
     )
     if test_original is None:
         test_context = (
@@ -195,7 +195,7 @@ def run_background_development(
         test_context = build_model_source_context(
             test_original,
             f"Проверь и дополни unit-тесты для изменения {relative}",
-            max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.28),
+            max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.20),
         )
 
     change_system = (
