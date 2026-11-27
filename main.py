@@ -5923,6 +5923,8 @@ class MoyaIshkaApp:
         if test_path.is_symlink():
             raise ValueError("Файл тестов является символической ссылкой.")
         if test_path.exists():
+            if test_relative not in set(editable_test_files()):
+                raise ValueError("Связанный тест не входит в список разрешённых tests/test_*.py.")
             if not test_path.is_file() or root not in test_path.resolve().parents:
                 raise ValueError("Файл тестов находится вне проекта или не является обычным файлом.")
             test_text: str | None = test_path.read_text(encoding="utf-8")
