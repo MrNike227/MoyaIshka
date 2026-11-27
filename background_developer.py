@@ -15,6 +15,7 @@ from self_improvement import (
     MAX_SELF_IMPROVEMENT_CONTEXT_CHARS,
     apply_multi_file_unified_diff,
     build_model_source_context,
+    build_multi_file_repair_context,
     generate_validated_multi_file_unified_diff,
     related_test_path,
     parse_improvement_suggestions,
@@ -188,9 +189,47 @@ def run_background_development(
     else:
         test_original = None
     sources: dict[str, str | None] = {relative: original, test_relative: test_original}
+    # Include a bounded set of direct consumers and affected tests so the coder can
+    # update a real cross-module contract instead of seeing dependency names only.
+    related_source_paths: list[str] = []
+    for row in dependency_analysis.get("direct_dependents", [])[:3]:
+        candidate = str(row.get("path", "")) if isinstance(row, dict) else ""
+        if not candidate or candidate in sources:
+            continue
+        try:
+            related_file, candidate = _safe_target(root, candidate)
+            related_source_paths.append(candidate)
+            sources[candidate] = related_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError):
+            continue
+    related_test_paths: list[str] = []
+    for candidate in dependency_analysis.get("affected_tests", [])[:4]:
+        candidate = str(candidate).replace("\\", "/")
+        if candidate in sources or not candidate.startswith("tests/test_") or not candidate.endswith(".py"):
+            continue
+        test_candidate = root / Path(*Path(candidate).parts)
+        try:
+            if test_candidate.is_symlink() or not test_candidate.is_file() or root not in test_candidate.resolve().parents:
+                continue
+            related_test_paths.append(candidate)
+            sources[candidate] = test_candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
     change_context = build_model_source_context(
-        original, change_task, max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.54),
+        original, change_task, max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.40),
     )
+    related_context_parts = []
+    for candidate in related_source_paths + related_test_paths:
+        source_text = sources.get(candidate)
+        if isinstance(source_text, str):
+            related_context_parts.append(
+                build_model_source_context(
+                    source_text,
+                    f"Оцени влияние изменения {relative} на {candidate}",
+                    max_chars=1800,
+                )
+            )
+    related_context = "\n\n".join(related_context_parts)[:int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.22)]
     if test_original is None:
         test_context = (
             f"Файл {test_relative} ещё не существует. Создай его новым тестовым файлом "
@@ -205,8 +244,7 @@ def run_background_development(
 
     # Role 2: coder implements a minimal, reviewable change and matching tests.
     change_system = (
-        "РОЛЬ: ПРОГРАММИСТ. Ты senior Python-разработчик и тест-инженер. Верни один объединённый unified diff ровно "
-        "для двух файлов: целевого модуля и соответствующего tests/test_*.py. "
+        "РОЛЬ: ПРОГРАММИСТ. Ты senior Python-разработчик и тест-инженер. Верни один объединённый unified diff для выбранного модуля, связанных потребителей и затронутых тестов. "
         "Обязательно добавь или обнови unit-тесты, непосредственно проверяющие предложенное поведение; "
         "включи позитивный и подходящий граничный/ошибочный сценарий. "
         "Качество реализации обязательно: ясные имена, небольшие функции с одной ответственностью, "
@@ -231,9 +269,11 @@ def run_background_development(
                 f"КАРТА СВЯЗЕЙ И ВОЗМОЖНОГО ВЛИЯНИЯ:\n{dependency_report}\n\n"
                 f"КАРТА ВСЕГО ПРОЕКТА:\n{architecture_context}\n\n"
                 f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
+                f"КОНТЕКСТ ДОПОЛНИТЕЛЬНЫХ ПОТРЕБИТЕЛЕЙ И ТЕСТОВ:\n{related_context}\n\n"
+                f"ТОЧНЫЕ ИСХОДНИКИ ДОСТУПНЫХ ФАЙЛОВ:\n{build_multi_file_repair_context(sources, max_chars=6500, head_lines=18)}\n\n"
                 f"ИСХОДНИК ПРОГРАММЫ:\n{change_context}\n\n"
                 f"СВЯЗАННЫЙ ТЕСТ:\n{test_context}\n"
-                "Верни diff для обоих путей."
+                "Верни минимальный diff для всех файлов, которые действительно необходимо изменить. Обязательно обнови парный тест."
             ),
         },
     ]
