@@ -280,7 +280,8 @@ def wait_for_sandbox_completion(
                         raise RuntimeError("Sandbox превысила лимит 16 МБ для отчётов; процесс остановлен.")
         except OSError as exc:
             raise RuntimeError(f"Не удалось проверить результаты Windows Sandbox: {exc}") from exc
-        if completion.is_file() and not completion.is_symlink():
+        process_exited = sandbox_process is None or sandbox_process.poll() is not None
+        if process_exited and completion.is_file() and not completion.is_symlink():
             try:
                 if completion.stat().st_size <= 16 * 1024:
                     data = json.loads(completion.read_text(encoding="utf-8-sig"))
