@@ -288,6 +288,10 @@ $data | ConvertTo-Json -Compress | Set-Content -LiteralPath $resultPath -Encodin
     parameters = f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}'
     try:
         shell = ctypes.windll.shell32.ShellExecuteW
+        shell.argtypes = [
+            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
+            ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_int,
+        ]
         shell.restype = ctypes.c_void_p
         code = shell(None, "runas", str(powershell), parameters, str(work), 1)
     except Exception as exc:
