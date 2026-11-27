@@ -66,6 +66,11 @@ class BackgroundDeveloperTests(unittest.TestCase):
                     "-    def test_old_value(self): self.assertEqual(feature.VALUE, 1)\n"
                     "+    def test_new_value(self): self.assertEqual(feature.VALUE, 2)\n"
                 ),
+                json.dumps({
+                    "approved": True,
+                    "summary": "Изменение локальное, API сохранён, тест проверяет новое поведение.",
+                    "findings": [],
+                }, ensure_ascii=False),
             ]
             calls = []
 
@@ -83,6 +88,8 @@ class BackgroundDeveloperTests(unittest.TestCase):
             )
 
             self.assertTrue(result["passed"], result)
+            self.assertTrue(result["review_approved"], result)
+            self.assertIn("API сохранён", result["review_summary"])
             self.assertEqual(result["files"], ["feature.py", "tests/test_feature.py"])
             self.assertEqual(result["tests_run"], 1)
             self.assertIn("tests/test_feature.py", calls[1][-1]["content"])
