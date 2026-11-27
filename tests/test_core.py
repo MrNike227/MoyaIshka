@@ -154,5 +154,53 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
         self.assertTrue(DEFAULT_CONFIG["cloud_auto_sync"])
 
 
+
+class SelfImprovementModelSelectionTests(unittest.TestCase):
+    def _app(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app.config = {
+            "mode": "Только онлайн",
+            "online_url": "https://api.example.test/v1/chat/completions",
+            "online_model": "cloud-model",
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+        }
+        app.api_key = ""
+        pressure = type("Pressure", (), {"system_pressure": False})()
+        app.resource_governor = type(
+            "Governor", (), {"snapshot": lambda _self: pressure}
+        )()
+        return app
+
+    def test_self_analysis_uses_local_ollama_without_api_key_in_online_chat_mode(self):
+        app = self._app()
+        captured = {}
+
+        def local_call(settings, messages):
+            captured["settings"] = settings
+            captured["messages"] = messages
+            return "local self-analysis result"
+
+        app._call_online = lambda *_args: self.fail("Online API must not be called without a key")
+        app._call_ollama = local_call
+
+        result = app._current_model_call([{"role": "user", "content": "Проверь код"}])
+
+        self.assertEqual(result, "local self-analysis result")
+        self.assertEqual(captured["settings"]["task_profile"], "self_improvement")
+        self.assertEqual(captured["settings"]["api_key"], "")
+        self.assertEqual(captured["settings"]["ollama_model"], "local-model")
+
+    def test_self_analysis_keeps_online_model_when_api_key_is_configured(self):
+        app = self._app()
+        app.api_key = "test-api-key"
+        app._call_online = lambda _settings, _messages: "online self-analysis result"
+        app._call_ollama = lambda *_args: self.fail("Local model must not replace selected online model")
+
+        result = app._current_model_call([{"role": "user", "content": "Проверь код"}])
+
+        self.assertEqual(result, "online self-analysis result")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
