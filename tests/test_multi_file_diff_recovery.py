@@ -299,6 +299,8 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
 PluginManager:
      pass
 """
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -1,2 +1,3 @@", sections["plugin_manager.py"])
         updated = apply_multi_file_unified_diff(sources, patch)
         self.assertEqual(updated["plugin_manager.py"], "class\nPluginManager:\n    pass\n")
 
