@@ -52,7 +52,7 @@ from supabase_backup import (
 )
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, editable_test_files, related_test_path, build_model_source_context, build_multi_file_repair_context, apply_patch_with_backup, apply_unified_diff, apply_multi_file_unified_diff, split_multi_file_unified_diff, generate_validated_multi_file_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-from module_dependency_analyzer import analyze_module_dependencies, build_dependency_context, format_dependency_report
+from module_dependency_analyzer import (analyze_module_dependencies, build_dependency_context, format_dependency_report, build_project_architecture_index, format_project_architecture_index)
 from background_developer import run_background_development
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, save_multi_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
@@ -6081,6 +6081,9 @@ class MoyaIshkaApp:
         try:
             dependency_analysis = analyze_module_dependencies(project, relative)
             dependency_report = format_dependency_report(dependency_analysis)
+            architecture_context = format_project_architecture_index(
+                build_project_architecture_index(project), max_chars=6500,
+            )
             dependency_context = build_dependency_context(
                 project, dependency_analysis, prompt=review_prompt,
                 max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.22),
@@ -6121,6 +6124,7 @@ class MoyaIshkaApp:
         )
         user = (
             f"Файл: {relative}\n\nКАРТА СВЯЗЕЙ МОДУЛЯ:\n{dependency_report}\n\n"
+            f"КАРТА ВСЕГО ПРОЕКТА:\n{architecture_context}\n\n"
             f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
             f"ИСХОДНИК ВЫБРАННОГО МОДУЛЯ:\n{model_context}"
         )
@@ -6278,6 +6282,9 @@ class MoyaIshkaApp:
             sources = self._proposal_sources_for_target(project, relative)
             dependency_analysis = analyze_module_dependencies(project, relative)
             dependency_report = format_dependency_report(dependency_analysis)
+            architecture_context = format_project_architecture_index(
+                build_project_architecture_index(project), max_chars=6500,
+            )
             dependency_context = build_dependency_context(
                 project, dependency_analysis, prompt=prompt_text,
                 max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.20),
@@ -6335,6 +6342,7 @@ class MoyaIshkaApp:
             f"Файл связанных тестов: {test_relative}\n"
             f"Задача: {prompt_text}\n\n"
             f"КАРТА СВЯЗЕЙ И ВОЗМОЖНОГО ВЛИЯНИЯ:\n{dependency_report}\n\n"
+            f"КАРТА ВСЕГО ПРОЕКТА:\n{architecture_context}\n\n"
             f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
             f"ТОЧНОЕ НАЧАЛО КАЖДОГО ИСХОДНИКА (источник истины, строки пронумерованы):\n"
             f"{build_multi_file_repair_context(sources, max_chars=5_000, head_lines=24)}\n\n"
