@@ -278,7 +278,7 @@ class PatchTests(unittest.TestCase):
             return {"message": {"content": "diff"}}
 
         with patch.object(main, "post_json", side_effect=fake_post_json):
-            result = main.MoyaIshkaApp._call_ollama(
+            result = main.ISHApp._call_ollama(
                 {
                     "ollama_url": "http://localhost:11434",
                     "ollama_model": "qwen2.5:3b",
@@ -303,7 +303,7 @@ class PatchTests(unittest.TestCase):
             return {"message": {"content": "ok"}}
 
         with patch.object(main, "post_json", side_effect=fake_post_json):
-            main.MoyaIshkaApp._call_ollama(
+            main.ISHApp._call_ollama(
                 {
                     "ollama_url": "http://localhost:11434",
                     "ollama_model": "qwen2.5:3b",
@@ -483,7 +483,7 @@ class UtilityTests(unittest.TestCase):
         import main
         with tempfile.TemporaryDirectory() as temp:
             container = Path(temp) / "SelectedContainer"
-            app = object.__new__(main.MoyaIshkaApp)
+            app = object.__new__(main.ISHApp)
             app.config = {
                 "install_root_dir": str(container),
                 "install_dir": str(Path(temp) / "OldInstall"),
@@ -512,22 +512,22 @@ class UpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             staged_dir = Path(temp) / "update_staging"
             staged_dir.mkdir()
-            staged = staged_dir / "MoyaIshka_update.exe"
+            staged = staged_dir / "ISH_update.exe"
             staged.write_bytes(b"fake exe bytes")
-            install_dir = Path(temp) / "Programs" / "MoyaIshka"
+            install_dir = Path(temp) / "Programs" / "ISH"
             installed = install_from_source(staged, install_dir)
-            self.assertEqual(installed, install_dir / "MoyaIshka.exe")
+            self.assertEqual(installed, install_dir / "ISH.exe")
             self.assertEqual(installed.read_bytes(), b"fake exe bytes")
-            self.assertFalse((install_dir / "MoyaIshka.new.exe").exists())
+            self.assertFalse((install_dir / "ISH.new.exe").exists())
 
     def test_windows_updater_waits_then_replaces_and_restarts(self):
         script = _powershell_script()
         self.assertIn("AddSeconds(120)", script)
         self.assertIn("CloseMainWindow()", script)
         self.assertIn("Get-FileHash", script)
-        self.assertIn("MoyaIshka.installing.exe", script)
+        self.assertIn("ISH.installing.exe", script)
         self.assertIn("Start-Process -FilePath $TargetPath", script)
-        self.assertIn("MoyaIshka.previous.exe", script)
+        self.assertIn("ISH.previous.exe", script)
         self.assertIn("Выполняется откат", script)
         self.assertIn("ПОДТВЕРЖДЕНО", script)
         self.assertIn("$env:MOYA_UPDATE_RECEIPT", script)
@@ -641,7 +641,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("Новая версия не подтвердила запуск", script)
 
     def test_user_install_path_is_named_for_app(self):
-        self.assertEqual(user_install_dir().name, "MoyaIshka")
+        self.assertEqual(user_install_dir().name, "ISH")
 
     def test_explicit_install_folder_is_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
