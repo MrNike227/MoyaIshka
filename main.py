@@ -221,7 +221,7 @@ def prepare_source_workspace() -> Path:
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.6_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_github_pr.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_github_pr.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -2111,7 +2111,7 @@ class MoyaIshkaApp:
 
         self_dev = ttk.LabelFrame(content, text="Саморазвитие и изменение собственного кода", padding=12)
         self_dev.pack(fill="x", pady=(0, 10))
-        ttk.Label(self_dev, text="Опиши улучшение. Подключённая модель подготовит unified diff для выбранного Python-файла. Изменения не применяются автоматически: сначала проверь diff, затем подтверди применение. Перед записью создаётся резервная копия и выполняется проверка синтаксиса и тестов.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
+        ttk.Label(self_dev, text="Опиши улучшение. Модель подготовит единый diff для выбранного Python-модуля и соответствующего tests/test_*.py. Пакет сохраняется вместе с тестами и проверяется в Windows Sandbox; изменения не применяются автоматически.", style="MutedPanel.TLabel", wraplength=880).pack(anchor="w")
         self.improve_target_var = tk.StringVar(value="main.py")
         target_row = ttk.Frame(self_dev, style="Panel.TFrame")
         target_row.pack(fill="x", pady=(8, 4))
@@ -6176,6 +6176,16 @@ class MoyaIshkaApp:
         if not patch:
             messagebox.showwarning("GitHub Draft PR", "Сначала подготовь diff.")
             return
+        try:
+            if len(split_multi_file_unified_diff(patch)) > 1:
+                messagebox.showwarning(
+                    "GitHub Draft PR",
+                    "Этот экран создания PR пока принимает один файл. Сначала сохрани и проверь многофайловый пакет в Windows Sandbox; отправка нескольких файлов в Draft PR будет добавлена отдельно.",
+                )
+                return
+        except ValueError as exc:
+            messagebox.showerror("GitHub Draft PR", f"Diff не прошёл проверку: {exc}")
+            return
         token = unprotect_github_pr_token(self.config)
         if not token:
             messagebox.showwarning("GitHub Draft PR", "Сначала добавь GitHub Personal Access Token и сохрани настройки.")
@@ -6224,6 +6234,16 @@ class MoyaIshkaApp:
         relative = self.improve_target_var.get().strip()
         if not patch:
             messagebox.showwarning("Саморазвитие", "Сначала подготовь или загрузи diff.")
+            return
+        try:
+            if len(split_multi_file_unified_diff(patch)) > 1:
+                messagebox.showwarning(
+                    "Многофайловое изменение",
+                    "Нельзя применить пакет к исходникам напрямую. Сохрани его в Updates и проверь полный набор файлов в Windows Sandbox. После успешной проверки изменения можно перенести отдельным подтверждаемым PR.",
+                )
+                return
+        except ValueError as exc:
+            messagebox.showerror("Саморазвитие", f"Diff не прошёл проверку: {exc}")
             return
         if not messagebox.askyesno(
             "Подтвердить изменение кода",
