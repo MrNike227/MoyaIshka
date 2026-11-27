@@ -101,7 +101,7 @@ def create_draft_pull_request(
     file_path: str,
     patch_text: str,
     *,
-    title: str = "Предложение улучшения от Моя ИИшка",
+    title: str = "Предложение улучшения от ISH",
     body: str = "",
     request: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -180,14 +180,14 @@ def create_draft_pull_request(
         "sha": commit_sha,
     })
     pr_body = (
-        "Это Draft PR, автоматически подготовленный модулем саморазвития Моя ИИшка.\n\n"
+        "Это Draft PR, автоматически подготовленный модулем саморазвития ISH.\n\n"
         "Изменения рассчитаны относительно актуального файла базовой ветки. "
         "Проверь код и запусти CI перед слиянием.\n\n"
         + str(body).strip()[:4000]
     )
     try:
         pr = api(token, "POST", prefix + "/pulls", {
-            "title": str(title).strip()[:200] or "Предложение улучшения от Моя ИИшка",
+            "title": str(title).strip()[:200] or "Предложение улучшения от ISH",
             "head": branch,
             "base": base,
             "body": pr_body,
@@ -519,7 +519,7 @@ def create_draft_pull_request_from_bundle(
     file_list = "\n".join("- " + path for path in bundle["files"])
     test_count = int(bundle["report"].get("tests_run", 0) or 0)
     pr_body = (
-        "Это Draft PR, созданный из сохранённого предложения саморазвития Моя ИИшка.\n\n"
+        "Это Draft PR, созданный из сохранённого предложения саморазвития ISH.\n\n"
         "Пакет повторно проверен по SHA-256 и применён к актуальным файлам базовой ветки. "
         "Отчёт подтверждает успешное выполнение unit-тестов внутри Windows Sandbox.\n\n"
         f"Проверено тестов: {test_count}\n\nИзменённые файлы:\n{file_list}\n\n"
