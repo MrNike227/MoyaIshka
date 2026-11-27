@@ -658,11 +658,88 @@ def split_multi_file_unified_diff(patch_text: str) -> dict[str, str]:
     raise ValueError(errors[-1] if errors else "Не удалось извлечь unified diff из ответа модели.")
 
 
+def build_multi_file_repair_context(
+    sources: dict[str, str | None],
+    patch_text: str = "",
+    *,
+    max_chars: int = 12_000,
+    head_lines: int = 20,
+    context_radius: int = 8,
+) -> str:
+    """Build bounded, line-numbered source excerpts for a trustworthy diff retry."""
+    if not isinstance(sources, dict) or not sources:
+        return "Нет исходников для повторной генерации diff."
+    if max_chars < 1_000:
+        raise ValueError("Лимит контекста исправления слишком мал.")
+
+    patches: dict[str, str] = {}
+    if patch_text:
+        try:
+            patches = split_multi_file_unified_diff(patch_text)
+        except ValueError:
+            # Even a malformed patch must not prevent us from showing the real
+            # file heads during recovery.
+            patches = {}
+
+    sections: list[str] = [
+        "НИЖЕ — ТОЧНЫЕ ФРАГМЕНТЫ ТЕКУЩИХ ФАЙЛОВ, ИЗ КОТОРЫХ ВАЛИДАТОР ПРИМЕНЯЕТ DIFF.",
+        "Нумерация строк начинается с 1. Не переноси строки из одного файла в другой.",
+        "Используй только реально показанные строки; не добавляй шаблонный shebang или импорты, которых нет в конкретном файле.",
+    ]
+    per_file_limit = max(900, (max_chars - sum(len(part) for part in sections)) // len(sources))
+
+    for relative, original in sources.items():
+        label = f"\nФАЙЛ: {relative}\n"
+        if original is None:
+            block = label + "Файл ещё не существует. Для него можно только добавить новый тестовый код.\n"
+            sections.append(block[:per_file_limit])
+            continue
+
+        lines = original.splitlines()
+        if not lines:
+            sections.append(label + "Файл существует, но пуст.\n")
+            continue
+
+        windows: list[tuple[int, int]] = [(1, min(len(lines), max(1, head_lines)))]
+        file_patch = patches.get(relative, "")
+        for match in re.finditer(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@", file_patch, re.MULTILINE):
+            anchor = int(match.group(1))
+            windows.append((
+                max(1, anchor - context_radius),
+                min(len(lines), anchor + context_radius),
+            ))
+
+        merged: list[list[int]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        body: list[str] = []
+        for start, end in merged:
+            body.extend(
+                f"{number:>5} | {lines[number - 1]}"
+                for number in range(start, end + 1)
+            )
+            if end < len(lines):
+                body.append("      | …")
+        block = label + "\n".join(body) + "\n"
+        if len(block) > per_file_limit:
+            block = block[: max(0, per_file_limit - 32)] + "\n… фрагмент сокращён\n"
+        sections.append(block)
+
+    result = "\n".join(sections)
+    if len(result) > max_chars:
+        result = result[: max_chars - 32] + "\n… контекст сокращён"
+    return result
+
+
 def apply_multi_file_unified_diff(
     sources: dict[str, str | None],
     patch_text: str,
 ) -> dict[str, str]:
-    """Apply a multi-file diff to in-memory originals; None denotes a new file."""
+    """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
     patches = split_multi_file_unified_diff(patch_text)
     if set(patches) != set(sources):
         missing = sorted(set(sources) - set(patches))
@@ -674,8 +751,20 @@ def apply_multi_file_unified_diff(
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
-        updated[relative] = apply_unified_diff(original or "", file_patch, relative)
+        try:
+            result = apply_unified_diff(original or "", file_patch, relative)
+        except ValueError as exc:
+            raise ValueError(f"Файл {relative}: {exc}") from exc
+        if original is not None and result == original:
+            raise ValueError(
+                f"Файл {relative}: diff не изменяет содержимое файла. "
+                "Вместо фиктивного или шаблонного блока создай реальное изменение, "
+                "используя точные строки именно этого файла."
+            )
+        updated[relative] = result
     return updated
+
+
 
 
 def generate_validated_multi_file_unified_diff(
@@ -714,11 +803,24 @@ def generate_validated_multi_file_unified_diff(
                 f"--- a/{example_path}\n+++ b/{example_path}\n"
                 "@@ -1,1 +1,1 @@\n-СТАРАЯ_СТРОКА\n+НОВАЯ_СТРОКА"
             )
+            repair_context = build_multi_file_repair_context(
+                sources,
+                last_response,
+                max_chars=12_000,
+                head_lines=24,
+                context_radius=10,
+            )
             retry_instruction = (
                 f"Предыдущий ответ не прошёл проверку: {exc}\n"
                 f"Создай ОДИН обычный unified diff для всех и только этих файлов: {paths}.\n"
                 "Для каждого файла обязательно выведи отдельную пару заголовков --- и +++ непосредственно "
                 "перед блоком @@. Не заменяй diff полным текстом файлов.\n"
+                "КРИТИЧЕСКИ ВАЖНО: используй нижеприведённые актуальные фрагменты как единственный источник "
+                "исходных строк. У каждого файла своё содержимое. Не копируй shebang, импорты или другие строки "
+                "из main.py в tests/test_*.py. Не повторяй фиктивные hunks вида -строка/+та же строка: "
+                "каждый файл должен действительно измениться.\n"
+                "Если предыдущий hunk не совпал, выбери реальный участок из соответствующего файла ниже и "
+                "перестрой diff целиком. Не пытайся исправить только номер строки, сохраняя выдуманный текст.\n"
                 "Для существующего файла используй --- a/путь.py и +++ b/путь.py. "
                 + (
                     "Для нового теста используй --- /dev/null и +++ b/путь_теста.py. "
@@ -726,15 +828,16 @@ def generate_validated_multi_file_unified_diff(
                 )
                 + "Не используй apply_patch, JSON, Markdown-таблицы или обычный текст. "
                 "Не добавляй пояснений, только diff. Не переименовывай и не удаляй файлы.\n"
-                f"Точный пример пары заголовков и hunk:\n{example}"
+                f"Точный пример пары заголовков и hunk:\n{example}\n\n"
+                f"{repair_context}"
             )
             conversation.extend([
                 {"role": "assistant", "content": last_response[:16_000]},
                 {"role": "user", "content": retry_instruction},
             ])
     detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
-    preview = " ".join(last_response.split())[:350]
-    suffix = f" Последний ответ модели: {preview!r}." if preview else ""
+    preview = last_response.strip()[:700]
+    suffix = f"\nПоследний ответ модели (фрагмент, переносы строк сохранены): {preview!r}." if preview else ""
     raise ValueError(
         f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}{suffix}"
     )
