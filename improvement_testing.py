@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from improvement_delivery import _safe_relative_path, _write_text_atomic
 from self_improvement import apply_unified_diff
+from windows_sandbox import _is_reparse_point
 
 
 class ProposalTestError(RuntimeError):
@@ -47,7 +48,7 @@ def _ignore_sandbox_copy(directory: str, names: list[str]) -> set[str]:
     for name in names:
         candidate = base / name
         lowered = name.casefold()
-        if candidate.is_symlink():
+        if _is_reparse_point(candidate):
             result.add(name)
         elif candidate.is_dir() and lowered in ignored_dirs:
             result.add(name)
@@ -187,7 +188,7 @@ def _run_windows_sandbox(
             f"{exc} Временный пакет оставлен для диагностики: {readonly_root.parent}"
         ) from exc
     report_path = writable_root / "host_report.json"
-    if report_path.is_symlink() or not report_path.is_file() or report_path.stat().st_size > 1024 * 1024:
+    if _is_reparse_point(report_path) or not report_path.is_file() or report_path.stat().st_size > 1024 * 1024:
         raise ProposalTestError("Итоговый отчёт отсутствует, слишком велик или является ссылкой.")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
