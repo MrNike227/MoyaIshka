@@ -125,6 +125,9 @@ def check_latest_release(repository: str, current_version: str) -> dict[str, Any
     assets = data.get("assets", [])
     package = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
     checksum = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
+    # Accept legacy release assets during the transition to the ISH package name.
+    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
+    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
     return {
         "version": tag.lstrip("v"),
         "url": data.get("html_url", ""),
@@ -242,7 +245,7 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
                 mode = (item.external_attr >> 16) & 0xFFFF
                 if (mode & 0o170000) not in (0, 0o040000, 0o100000):
                     raise RuntimeError("Архив содержит неподдерживаемый тип файла.")
-                target = extracting.joinpath(*parts)
+                normalized_parts = ("ISH", *parts[1:])\n                target = extracting.joinpath(*normalized_parts)
                 if item.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
