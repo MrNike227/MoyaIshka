@@ -303,5 +303,17 @@ PluginManager:
         self.assertEqual(updated["plugin_manager.py"], "class\\nPluginManager:\\n    pass\\n")
 
 
+    def test_rejects_test_framework_import_leaking_into_application_module(self):
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\\nclass PluginManager: pass\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-# -*- coding: utf-8 -*-
++from unittest.mock import MagicMock
+"""
+        with self.assertRaisesRegex(ValueError, "в исходный модуль попал импорт тестового фреймворка"):
+            apply_multi_file_unified_diff(sources, patch)
+
+
 if __name__ == "__main__":
     unittest.main()
