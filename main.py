@@ -252,7 +252,8 @@ def prepare_source_workspace() -> Path:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 import shutil
                 shutil.copy2(src, dest)
-    os.environ["ISH_PROJECT_DIR"] = str(source_root)\n        os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
+    os.environ["ISH_PROJECT_DIR"] = str(source_root)
+    os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
     return source_root
 
 
