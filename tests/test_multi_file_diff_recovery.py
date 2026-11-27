@@ -241,7 +241,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
 
 
     def test_repeated_file_sections_merge_non_overlapping_hunks(self):
-        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\\nVALUE = 1\\nOTHER = 2\\n"}
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\nVALUE = 1\nOTHER = 2\n"}
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
 @@ -2 +2 @@
@@ -256,7 +256,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
         updated = apply_multi_file_unified_diff(sources, patch)
         self.assertEqual(
             updated["plugin_manager.py"],
-            "# -*- coding: utf-8 -*-\\nVALUE = 10\\nOTHER = 20\\n",
+            "# -*- coding: utf-8 -*-\nVALUE = 10\nOTHER = 20\n",
         )
 
     def test_exact_duplicate_hunk_is_deduplicated(self):
@@ -300,11 +300,11 @@ PluginManager:
      pass
 """
         updated = apply_multi_file_unified_diff(sources, patch)
-        self.assertEqual(updated["plugin_manager.py"], "class\\nPluginManager:\\n    pass\\n")
+        self.assertEqual(updated["plugin_manager.py"], "class\nPluginManager:\n    pass\n")
 
 
     def test_rejects_test_framework_import_leaking_into_application_module(self):
-        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\\nclass PluginManager: pass\\n"}
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\nclass PluginManager: pass\n"}
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
 @@ -1 +1 @@
