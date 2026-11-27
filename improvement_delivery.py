@@ -157,10 +157,7 @@ def save_multi_change_bundle(
             raise ValueError("Добавлять новые файлы разрешено только как tests/test_*.py.")
         if path.startswith("tests/") and not Path(path).name.startswith("test_"):
             raise ValueError("В папке tests разрешено изменять только файлы test_*.py.")
-        try:
-            compile(updated_text, path, "exec")
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"Файл {path} содержит некорректный Python: {exc}") from exc
+        compile(updated_text, path, "exec")
 
         original_total += len(original_bytes)
         updated_total += len(updated_bytes)
