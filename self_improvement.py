@@ -661,8 +661,12 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
         combined.sort(key=lambda item: item[0])
         for previous, current in zip(combined, combined[1:]):
             prev_start, _, prev_count = previous
-            curr_start, _, _ = current
-            if prev_count and curr_start < prev_start + prev_count:
+            curr_start, _, curr_count = current
+            overlaps = curr_start < prev_start + prev_count
+            same_insertion_anchor = (
+                curr_start == prev_start and (prev_count == 0 or curr_count == 0)
+            )
+            if overlaps or same_insertion_anchor:
                 raise ValueError(
                     f"Diff содержит повторные или пересекающиеся изменения файла {path}; "
                     "оставь один согласованный блок для этого участка."
