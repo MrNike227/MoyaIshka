@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as main_module
-from main import DEFAULT_CONFIG, MoyaIshkaApp, Store, extract_openai_content, read_attachment
+from main import DEFAULT_CONFIG, ISHApp, Store, extract_openai_content, read_attachment
 
 
 class StoreTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class ParsingTests(unittest.TestCase):
 
 class KeyboardAndPrivacyTests(unittest.TestCase):
     def test_enter_sends_message(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         calls = []
         app.send_message = lambda: calls.append("sent")
         result = app._input_return(type("Event", (), {"state": 0})())
@@ -105,7 +105,7 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
         self.assertEqual(calls, ["sent"])
 
     def test_shift_enter_keeps_text_widget_newline(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         calls = []
         app.send_message = lambda: calls.append("sent")
         result = app._input_return(type("Event", (), {"state": 1})())
@@ -113,7 +113,7 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_web_chat_returns_sources_without_api_key_or_ollama(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         app.config = {"research_results_limit": 3, "research_fetch_pages": 1}
         app.events = queue.Queue()
         app._call_ollama = lambda *_args: (_ for _ in ()).throw(ConnectionError("Ollama недоступна"))
@@ -157,7 +157,7 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
 
 class SelfImprovementModelSelectionTests(unittest.TestCase):
     def _app(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         app.config = {
             "mode": "Только онлайн",
             "online_url": "https://api.example.test/v1/chat/completions",
@@ -237,7 +237,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "task_profile": "self_improvement",
         }
         with patch.object(main_module, "post_json", side_effect=fake_post):
-            result = MoyaIshkaApp._call_ollama(
+            result = ISHApp._call_ollama(
                 settings, [{"role": "user", "content": "Проверь код"}]
             )
 
@@ -269,7 +269,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
         }
         messages = [{"role": "user", "content": "Проведи аудит кода"}]
         with patch.object(main_module, "post_json", side_effect=fake_post):
-            result = MoyaIshkaApp._call_ollama(settings, messages)
+            result = ISHApp._call_ollama(settings, messages)
 
         self.assertEqual(result, '{"suggestions":[]}')
         self.assertEqual(len(calls), 2)
@@ -295,7 +295,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
         }
         with patch.object(main_module, "post_json", side_effect=failure) as post:
             with self.assertRaisesRegex(RuntimeError, "зациклилась на повторяющихся токенах"):
-                MoyaIshkaApp._call_ollama(
+                ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Проведи аудит"}]
                 )
         self.assertEqual(post.call_count, 2)
@@ -312,7 +312,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
         }
         with patch.object(main_module, "post_json", side_effect=failure) as post:
             with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
-                MoyaIshkaApp._call_ollama(
+                ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Привет"}]
                 )
         self.assertEqual(post.call_count, 1)
@@ -329,7 +329,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
         }
         with patch.object(main_module, "post_json", side_effect=failure):
             with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
-                MoyaIshkaApp._call_ollama(
+                ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Привет"}]
                 )
 
@@ -377,7 +377,7 @@ class SelfImprovementInteractionTests(unittest.TestCase):
             self.last = self.first + height
 
     def test_copy_selected_model_proposal_copies_only_proposed_text(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         app.root = self.Clipboard()
         app.improvement_listbox = type("List", (), {"curselection": lambda _self: (0,)})()
         app.improvement_suggestions = [{
@@ -395,7 +395,7 @@ class SelfImprovementInteractionTests(unittest.TestCase):
         self.assertIn("скопирован", app.improve_status_var.value)
 
     def test_copy_improvement_task_copies_complete_task_text(self):
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         app.root = self.Clipboard()
         app.improve_prompt_box = type(
             "Prompt", (), {"get": lambda _self, _start, _end: "  Создай резервное копирование  "}
@@ -421,7 +421,7 @@ class SelfImprovementInteractionTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app = ISHApp.__new__(ISHApp)
         app.root = self.Clipboard("Вставленный текст")
         app.improve_prompt_box = Prompt()
         app.improve_status_var = self.Status()
@@ -439,21 +439,21 @@ class SelfImprovementInteractionTests(unittest.TestCase):
         scroll_up = type("Event", (), {"delta": 120, "num": 0})()
 
         self.assertEqual(
-            MoyaIshkaApp._scroll_nested_text(scroll_down, inner, page), "break"
+            ISHApp._scroll_nested_text(scroll_down, inner, page), "break"
         )
         self.assertEqual(inner.calls, [1])
         self.assertEqual(page.calls, [])
 
         inner.first, inner.last = 0.5, 1.0
-        MoyaIshkaApp._scroll_nested_text(scroll_down, inner, page)
+        ISHApp._scroll_nested_text(scroll_down, inner, page)
         self.assertEqual(page.calls, [1])
 
         inner.first, inner.last = 0.5, 1.0
-        MoyaIshkaApp._scroll_nested_text(scroll_up, inner, page)
+        ISHApp._scroll_nested_text(scroll_up, inner, page)
         self.assertEqual(inner.calls, [1, -1])
 
         inner.first, inner.last = 0.0, 0.5
-        MoyaIshkaApp._scroll_nested_text(scroll_up, inner, page)
+        ISHApp._scroll_nested_text(scroll_up, inner, page)
         self.assertEqual(inner.calls, [1, -1])
         self.assertEqual(page.calls, [1, -1])
 
@@ -462,7 +462,7 @@ class SelfImprovementInteractionTests(unittest.TestCase):
         page = self.ScrollView()
         event = type("Event", (), {"delta": 0, "num": 4})()
 
-        MoyaIshkaApp._scroll_nested_text(event, inner, page)
+        ISHApp._scroll_nested_text(event, inner, page)
 
         self.assertEqual(inner.calls, [-1])
         self.assertEqual(page.calls, [])
