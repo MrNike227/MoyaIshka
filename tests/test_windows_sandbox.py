@@ -4,11 +4,12 @@ import tempfile
 import unittest
 import inspect
 from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 from xml.etree import ElementTree
 
 from windows_sandbox import (
-    create_sandbox_config, get_windows_sandbox_status,
+    _is_reparse_point, create_sandbox_config, get_windows_sandbox_status,
     record_windows_sandbox_install, request_windows_sandbox_install,
 )
 
@@ -83,6 +84,16 @@ class WindowsSandboxTests(unittest.TestCase):
                 self.assertTrue(data["restart_required"])
                 self.assertIn("2026-11-27", data["boot_time"])
                 self.assertNotIn("unexpected", data)
+
+
+
+    def test_windows_reparse_points_are_rejected(self):
+        with patch("windows_sandbox.Path.lstat", return_value=SimpleNamespace(st_file_attributes=0x400)):
+            self.assertTrue(_is_reparse_point(Path("not-followed")))
+        with tempfile.TemporaryDirectory() as temp:
+            normal_file = Path(temp) / "report.json"
+            normal_file.write_text("{}", encoding="utf-8")
+            self.assertFalse(_is_reparse_point(normal_file))
 
 
 
