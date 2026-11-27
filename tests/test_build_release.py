@@ -577,7 +577,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("if sandbox_executor is None:", testing)
         self.assertIn("_run_windows_sandbox", testing)
         self.assertIn("_is_windows_sandbox_guest", testing)
-        self.assertIn("wdagutilityaccount", testing)
+        self.assertIn("WDAGUtilityAccount", testing)
         self.assertIn("MOYA_WINDOWS_SANDBOX", testing)
         self.assertIn("return 3", testing)
         self.assertIn("allowed_names = {", sandbox)
