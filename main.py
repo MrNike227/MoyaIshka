@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Моя ИИшка — настраиваемый настольный ИИ-помощник для Windows 10/11.
+"""ISH — настраиваемый настольный ИИ-помощник для Windows 10/11.
 
 Базовая версия использует только стандартную библиотеку Python и Tkinter.
 Для чтения PDF и DOCX поддерживаются необязательные пакеты pypdf и python-docx.
@@ -85,7 +85,7 @@ from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient, backup_f
 from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
-APP_NAME = "Моя ИИшка"
+APP_NAME = "ISH"
 APP_VERSION = "4.2.9"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
@@ -108,7 +108,7 @@ def migrate_update_repository(config: dict[str, Any]) -> bool:
 
 def user_data_dir() -> Path:
     base = os.environ.get("APPDATA")
-    directory = Path(base) / "MoyaIshka" if base else Path.home() / ".moya_ishka"
+    directory = Path(base) / "ISH" if base else Path.home() / ".ish
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -116,7 +116,7 @@ def user_data_dir() -> Path:
 def default_backup_directory() -> Path:
     """Place backups beside, never inside, the replaceable application folder."""
     app_folder = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    return app_folder.parent / "MoyaIshka_Backups"
+    return app_folder.parent / "ISH_Backups"
 
 
 DATA_DIR = user_data_dir()
@@ -132,7 +132,7 @@ else:
     LEGACY_DATA_DIR = Path.home() / ".custom_ai"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "assistant_name": "Ишка",
+    "assistant_name": "ISH",
     "role": "Универсальный персональный ИИ-помощник",
     "personality": "Дружелюбный, внимательный, любознательный и спокойный. Действуй инициативно, но не навязывайся.",
     "style": "Отвечай по-русски, понятно и по делу. Используй структуру, когда она помогает. Не повторяй вопрос пользователя.",
@@ -215,7 +215,7 @@ def prepare_source_workspace() -> Path:
     """Expose editable project sources in a persistent folder for packaged builds."""
     if not getattr(sys, "frozen", False):
         source_root = Path(__file__).resolve().parent
-        os.environ["MOYA_PROJECT_DIR"] = str(source_root)
+        os.environ["ISH_PROJECT_DIR"] = str(source_root)\n        os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
         return source_root
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
@@ -236,7 +236,7 @@ def prepare_source_workspace() -> Path:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 import shutil
                 shutil.copy2(src, dest)
-    os.environ["MOYA_PROJECT_DIR"] = str(source_root)
+    os.environ["ISH_PROJECT_DIR"] = str(source_root)\n        os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
     return source_root
 
 
@@ -284,7 +284,7 @@ def dpapi_transform(data: bytes, protect: bool) -> bytes:
     destination = DATA_BLOB()
     flags = 0x1  # CRYPTPROTECT_UI_FORBIDDEN
     if protect:
-        ok = crypt32.CryptProtectData(ctypes.byref(source), ctypes.c_wchar_p("MoyaIshka API key"), None, None, None, flags, ctypes.byref(destination))
+        ok = crypt32.CryptProtectData(ctypes.byref(source), ctypes.c_wchar_p("ISH API key"), None, None, None, flags, ctypes.byref(destination))
     else:
         ok = crypt32.CryptUnprotectData(ctypes.byref(source), None, None, None, None, flags, ctypes.byref(destination))
     if not ok:
@@ -457,7 +457,7 @@ def normalize_url(url: str) -> str:
 
 def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None, timeout: int = 180) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request_headers = {"Content-Type": "application/json", "User-Agent": f"MoyaIshka/{APP_VERSION}"}
+    request_headers = {"Content-Type": "application/json", "User-Agent": f"ISH/{APP_VERSION}"}
     if headers:
         request_headers.update(headers)
     request = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
@@ -589,7 +589,7 @@ class PurpleCheckbox(tk.Frame):
         self._draw()
 
 
-class MoyaIshkaApp:
+class ISHApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"{APP_NAME} · Персональный помощник")
@@ -878,7 +878,7 @@ class MoyaIshkaApp:
         self.topbar_logo = tk.Label(self.topbar, text="✦", bg="#171326", fg="#BDA8EF",
                                     font=("Segoe UI Symbol", 20, "bold"))
         self.topbar_logo.grid(row=0, column=0, padx=(18, 9), pady=4)
-        self.topbar_name = tk.Label(self.topbar, text="МОЯ ИИШКА", bg="#171326", fg="#F4F0FF",
+        self.topbar_name = tk.Label(self.topbar, text="ISH", bg="#171326", fg="#F4F0FF",
                                     font=(self.font_family, 11, "bold"))
         self.topbar_name.grid(row=0, column=1, sticky="w", pady=4)
         self.topbar_subtitle = tk.Label(self.topbar, text="ПЕРСОНАЛЬНЫЙ ИИ-ПОМОЩНИК",
@@ -921,7 +921,7 @@ class MoyaIshkaApp:
         mark.pack(side="left", padx=(0, 11))
         brand_text = ttk.Frame(brand, style="Sidebar.TFrame")
         brand_text.pack(side="left", fill="y")
-        ttk.Label(brand_text, text="МОЯ ИИШКА", style="Brand.TLabel").pack(anchor="w", pady=(1, 2))
+        ttk.Label(brand_text, text="ISH", style="Brand.TLabel").pack(anchor="w", pady=(1, 2))
         ttk.Label(brand_text, text="ПЕРСОНАЛЬНЫЙ ИИ", style="BrandSub.TLabel").pack(anchor="w")
 
         self.nav_buttons: dict[str, ttk.Button] = {}
@@ -1132,7 +1132,7 @@ class MoyaIshkaApp:
         drive.pack(fill="x", pady=(0, 10))
         ttk.Label(
             drive,
-            text="Google Drive — основное хранилище ИИшки. Данные шифруются на компьютере до отправки и сохраняются в отдельной видимой папке «Моя ИИшка Cloud». Приложение запрашивает только доступ drive.file к собственным файлам, а не ко всему диску. Укажи OAuth Desktop Client ID/Secret из Google Cloud Console и отдельную парольную фразу E2E.",
+            text="Google Drive — основное хранилище ИИшки. Данные шифруются на компьютере до отправки и сохраняются в отдельной видимой папке «ISH Cloud». Приложение запрашивает только доступ drive.file к собственным файлам, а не ко всему диску. Укажи OAuth Desktop Client ID/Secret из Google Cloud Console и отдельную парольную фразу E2E.",
             style="MutedPanel.TLabel", wraplength=900, justify="left",
         ).pack(anchor="w", pady=(0, 6))
         self.google_drive_client_id_var = tk.StringVar(value=str(self.config.get("google_drive_client_id", "")))
@@ -2213,7 +2213,7 @@ class MoyaIshkaApp:
         sandbox_frame.pack(fill="x", pady=(8, 6))
         ttk.Label(
             sandbox_frame,
-            text="Перед запуском кода, созданного ИИ, Моя ИИшка проверяет Windows Sandbox. При необходимости приложение установит системный компонент через запрос администратора Windows. Может потребоваться перезагрузка; сама программа компьютер не перезагружает. Без готовой песочницы тестовый код не запускается.",
+            text="Перед запуском кода, созданного ИИ, ISH проверяет Windows Sandbox. При необходимости приложение установит системный компонент через запрос администратора Windows. Может потребоваться перезагрузка; сама программа компьютер не перезагружает. Без готовой песочницы тестовый код не запускается.",
             style="MutedPanel.TLabel", wraplength=880, justify="left",
         ).pack(anchor="w", pady=(0, 6))
         self.windows_sandbox_status_var = tk.StringVar(value="Состояние Windows Sandbox ещё не проверено.")
@@ -2275,7 +2275,7 @@ class MoyaIshkaApp:
         ttk.Button(install_row, text="Открыть App", command=self.open_install_folder).pack(side="left", padx=(6, 0))
         current_run_path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve()
         current_run_label = str(current_run_path if getattr(sys, "frozen", False) else current_run_path.parent)
-        target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "App" / "MoyaIshka.exe")
+        target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "App" / "ISH.exe")
         updates_path_label = str(Path(initial_install_dir).expanduser().resolve() / "Updates")
         self.actual_run_path_var = tk.StringVar(
             value=f"Фактически запущена: {current_run_label}\nНовая папка App: {target_exe_label}\nПредложения: {updates_path_label}"
@@ -3615,7 +3615,7 @@ class MoyaIshkaApp:
                         self._finish_database_restore(replay_events=False)
                         messagebox.showerror(
                             "Восстановление данных",
-                            "Не удалось перечитать восстановленные данные. Закрой и снова запусти Мою ИИшку.\n\n" + str(exc),
+                            "Не удалось перечитать восстановленные данные. Закрой и снова запусти ISH.\n\n" + str(exc),
                         )
                     else:
                         self._finish_database_restore(replay_events=True)
@@ -3933,7 +3933,7 @@ class MoyaIshkaApp:
                     except Exception as exc:
                         messagebox.showerror("Папка контейнера", str(exc))
                         continue
-                    target = destination_dir / "MoyaIshka.exe"
+                    target = destination_dir / "ISH.exe"
                     if getattr(sys, "frozen", False):
                         current_exe = Path(sys.executable).resolve()
                         if target.resolve() != current_exe:
@@ -4017,7 +4017,7 @@ class MoyaIshkaApp:
                     self._remember_cloud_package(session_package)
                     self.google_drive_client_secret_var.set("")
                     self.google_drive_e2e_password_var.set("")
-                    self.google_drive_status_var.set("Google Drive подключён как основное облако. Папка «Моя ИИшка Cloud» готова.")
+                    self.google_drive_status_var.set("Google Drive подключён как основное облако. Папка «ISH Cloud» готова.")
                     if remote_payload is not None:
                         try:
                             counts = self._merge_cloud_snapshot(remote_payload)
@@ -4326,7 +4326,7 @@ class MoyaIshkaApp:
             copied, skipped = copy_verified_backups(DATA_DIR / "backups", destination)
             # Migrate verified historical archives to the cloud queue too; no archive is
             # pruned locally until its cloud upload has been confirmed.
-            for candidate in sorted(destination.glob("MoyaIshka_backup_*.zip"), key=lambda item: item.name):
+            for candidate in sorted(destination.glob("ISH_backup_*.zip"), key=lambda item: item.name):
                 if candidate.is_file() and not candidate.is_symlink():
                     try:
                         inspect_backup(candidate)
@@ -4403,7 +4403,7 @@ class MoyaIshkaApp:
             if not isinstance(item, str):
                 continue
             path = Path(item).expanduser()
-            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("ISH_backup_"):
                 continue
             try:
                 value = str(path.resolve())
@@ -4419,7 +4419,7 @@ class MoyaIshkaApp:
             if not isinstance(item, str):
                 continue
             path = Path(item).expanduser()
-            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("ISH_backup_"):
                 continue
             value = str(path.resolve())
             if value not in safe:
@@ -4446,7 +4446,7 @@ class MoyaIshkaApp:
             if not isinstance(item, str):
                 continue
             path = Path(item).expanduser()
-            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("ISH_backup_"):
                 continue
             try:
                 value = str(path.resolve())
@@ -4462,7 +4462,7 @@ class MoyaIshkaApp:
             if not isinstance(item, str):
                 continue
             path = Path(item).expanduser()
-            if path.suffix.casefold() != ".zip" or not path.name.startswith("MoyaIshka_backup_"):
+            if path.suffix.casefold() != ".zip" or not path.name.startswith("ISH_backup_"):
                 continue
             try:
                 value = str(path.resolve())
@@ -4640,12 +4640,12 @@ class MoyaIshkaApp:
             usage = client.get_app_folder_usage() + client.get_backup_folder_usage()
             if usage + encrypted_size > limit_gb * 1024 * 1024 * 1024:
                 raise GoogleDriveError(
-                    f"В папке Моя ИИшка Cloud превышен мягкий лимит {limit_gb} ГБ. "
+                    f"В папке ISH Cloud превышен мягкий лимит {limit_gb} ГБ. "
                     "Удалите старые архивы в Google Drive или увеличьте лимит в настройках."
                 )
 
         parts = archive_path.stem.split("_")
-        backup_kind = parts[2] if len(parts) > 2 and parts[0] == "MoyaIshka" else "manual"
+        backup_kind = parts[2] if len(parts) > 2 and parts[0] in {"ISH", "MoyaIshka"} else "manual"
         client.upload_backup_file(
             encrypted_path,
             remote_name=encrypted_path.name,
@@ -4971,7 +4971,7 @@ class MoyaIshkaApp:
         selected = filedialog.askopenfilename(
             title="Выбери резервную копию Моей ИИшки",
             initialdir=str(folder if folder.exists() else folder.parent),
-            filetypes=[("Резервные копии Моя ИИшка", "*.zip")],
+            filetypes=[("Резервные копии ISH", "*.zip")],
         )
         if not selected:
             return
@@ -5390,7 +5390,7 @@ class MoyaIshkaApp:
         self._set_status("Проверяю Ollama…")
         def worker() -> None:
             try:
-                request = urllib.request.Request(base + "/api/tags", headers={"User-Agent": f"MoyaIshka/{APP_VERSION}"})
+                request = urllib.request.Request(base + "/api/tags", headers={"User-Agent": f"ISH/{APP_VERSION}"})
                 with urllib.request.urlopen(request, timeout=8) as response:
                     data = json.loads(response.read().decode("utf-8", errors="replace"))
                 models = [str(model.get("name", "")) for model in data.get("models", []) if isinstance(model, dict)]
@@ -6440,7 +6440,7 @@ class MoyaIshkaApp:
             return
         if not messagebox.askyesno(
             "Установка Windows Sandbox",
-            "Моя ИИшка включит встроенный компонент Windows Sandbox через системный запрос UAC. "
+            "ISH включит встроенный компонент Windows Sandbox через системный запрос UAC. "
             "Потребуются права администратора. Windows может запросить перезагрузку; приложение "
             "не будет перезагружать компьютер самостоятельно. Продолжить?",
         ):
@@ -6727,7 +6727,7 @@ class MoyaIshkaApp:
         if hasattr(self, "actual_run_path_var"):
             current_run = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
             self.actual_run_path_var.set(
-                f"Фактически запущена: {current_run}\nНовая папка App: {layout['app'] / 'MoyaIshka.exe'}\nПредложения: {layout['updates']}"
+                f"Фактически запущена: {current_run}\nНовая папка App: {layout['app'] / 'ISH.exe'}\nПредложения: {layout['updates']}"
             )
         atomic_json_save(CONFIG_PATH, self.config)
         self.update_status_var.set(
@@ -6799,7 +6799,7 @@ class MoyaIshkaApp:
             import shutil
             staging_root = DATA_DIR / "update_staging"
             staging_root.mkdir(parents=True, exist_ok=True)
-            staged_dir = staging_root / f"MoyaIshka_install_{uuid.uuid4().hex}"
+            staged_dir = staging_root / f"ISH_install_{uuid.uuid4().hex}"
             shutil.copytree(current_dir, staged_dir)
             validate_app_directory(staged_dir, APP_VERSION)
 
@@ -7311,7 +7311,7 @@ def migrate_staged_exe_on_first_launch() -> bool:
         layout = ensure_install_layout(container_root)
         target_dir = ensure_install_dir_writable(layout["app"])
         ensure_install_dir_writable(layout["updates"])
-        target_exe = target_dir / "MoyaIshka.exe"
+        target_exe = target_dir / "ISH.exe"
         saved_config["install_root_dir"] = str(layout["root"])
         saved_config["updates_dir"] = str(layout["updates"])
         saved_config["install_dir"] = str(target_dir)
@@ -7404,7 +7404,7 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
             if ok:
                 messagebox.showinfo(
                     "Обновление подтверждено",
-                    f"Моя ИИшка версии {version} успешно установлена и запущена.\n\nФактический путь:\n{detail}",
+                    f"ISH версии {version} успешно установлена и запущена.\n\nФактический путь:\n{detail}",
                     parent=root,
                 )
             else:
@@ -7454,14 +7454,14 @@ def _packaged_import_self_test() -> int:
         import cffi as _cffi  # noqa: F401
         import _cffi_backend  # noqa: F401
 
-        salt = b"MoyaIshka-test-salt"
+        salt = b"ISH-test-salt"
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
         smoke_aad = f"{APP_VERSION}-smoke".encode("ascii")
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", smoke_aad)
+        ciphertext = cipher.encrypt(nonce, b"ISH cryptography bundle OK", smoke_aad)
         plaintext = cipher.decrypt(nonce, ciphertext, smoke_aad)
-        if plaintext != b"MoyaIshka cryptography bundle OK":
+        if plaintext != b"ISH cryptography bundle OK":
             return 71
         return 0
     except Exception:
@@ -7473,14 +7473,14 @@ def main() -> None:
         try:
             # A stable AppUserModelID helps Windows associate the high-resolution
             # executable/window icon with the same taskbar application across updates.
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MrNike227.MoyaIshka.Desktop")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MrNike227.ISH.Desktop")
         except Exception:
             pass
     if migrate_staged_exe_on_first_launch():
         return
     prepare_source_workspace()
     root = tk.Tk()
-    MoyaIshkaApp(root)
+    ISHApp(root)
     _handle_update_confirmation_args(root)
     root.mainloop()
 
