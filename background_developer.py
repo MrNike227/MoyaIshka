@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from improvement_delivery import load_chat_improvement_ideas, save_multi_change_bundle
 from improvement_testing import test_change_bundle
-from module_dependency_analyzer import analyze_module_dependencies, build_dependency_context, format_dependency_report
+from module_dependency_analyzer import (analyze_module_dependencies, build_dependency_context, format_dependency_report, build_project_architecture_index, format_project_architecture_index)
 from self_improvement import (
     MAX_SELF_IMPROVEMENT_CONTEXT_CHARS,
     apply_multi_file_unified_diff,
@@ -58,7 +58,7 @@ def _record_result(updates_dir: Path, result: dict[str, Any]) -> Path:
         key: result.get(key)
         for key in (
             "status", "tested_at", "target", "files", "title", "bundle_path",
-            "report_path", "passed", "tests_run", "failures", "errors", "error", "dependency_report",
+            "report_path", "passed", "tests_run", "failures", "errors", "error", "dependency_report", "architecture_module_count", "architecture_symbol_count",
             "review_approved", "review_summary", "review_findings",
         )
         if result.get(key) is not None
@@ -97,6 +97,8 @@ def run_background_development(
     )
     dependency_analysis = analyze_module_dependencies(root, relative)
     dependency_report = format_dependency_report(dependency_analysis)
+    architecture_index = build_project_architecture_index(root)
+    architecture_context = format_project_architecture_index(architecture_index, max_chars=9000)
     dependency_context = build_dependency_context(
         root, dependency_analysis, prompt=review_task,
         max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.22),
@@ -119,7 +121,8 @@ def run_background_development(
     )
     user_content = (
         f"Целевой файл: {relative}\n\nКАРТА СВЯЗЕЙ И ВОЗМОЖНОГО ВЛИЯНИЯ:\n"
-        f"{dependency_report}\n\nКОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
+        f"{dependency_report}\n\nКАРТА ВСЕГО ПРОЕКТА:\n{architecture_context}\n\n"
+        f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
         f"Код целевого модуля:\n{model_context}"
     )
     ideas = load_chat_improvement_ideas(updates)
@@ -226,6 +229,7 @@ def run_background_development(
                 f"Файл программы: {relative}\n"
                 f"Файл тестов: {test_relative}\nЗадача: {change_task}\n\n"
                 f"КАРТА СВЯЗЕЙ И ВОЗМОЖНОГО ВЛИЯНИЯ:\n{dependency_report}\n\n"
+                f"КАРТА ВСЕГО ПРОЕКТА:\n{architecture_context}\n\n"
                 f"КОНТЕКСТ СВЯЗАННЫХ МОДУЛЕЙ:\n{dependency_context}\n\n"
                 f"ИСХОДНИК ПРОГРАММЫ:\n{change_context}\n\n"
                 f"СВЯЗАННЫЙ ТЕСТ:\n{test_context}\n"
@@ -306,6 +310,8 @@ def run_background_development(
         "problem": suggestion["problem"],
         "benefit": suggestion["benefit"],
         "dependency_report": dependency_report,
+        "architecture_module_count": int(architecture_index.get("module_count", 0) or 0),
+        "architecture_symbol_count": int(architecture_index.get("symbol_count", 0) or 0),
         "bundle_path": str(bundle),
         "report_path": str(report.get("report_path") or (bundle / "test_report.json")),
         "passed": bool(report.get("passed")) and review_approved,
