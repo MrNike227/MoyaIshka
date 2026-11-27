@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: moyaishka-onedir-${{ github.ref }}
+  group: ish-onedir-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -55,7 +55,7 @@ jobs:
       - name: Verify app-local VC runtime DLLs are present
         shell: pwsh
         run: |
-          $runtime = 'dist/MoyaIshka/_internal'
+          $runtime = 'dist/ISH/_internal'
           foreach ($dll in @('python311.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')) {
             if (-not (Test-Path (Join-Path $runtime $dll))) {
               throw "Required app-local runtime DLL is missing: $dll"
@@ -78,7 +78,7 @@ jobs:
       - name: Ensure Windows UCRT is not bundled
         shell: pwsh
         run: |
-          $runtime = 'dist/MoyaIshka/_internal'
+          $runtime = 'dist/ISH/_internal'
           if (Test-Path (Join-Path $runtime 'ucrtbase.dll')) {
             throw 'ucrtbase.dll must be resolved from Windows, not the application folder.'
           }
@@ -89,16 +89,16 @@ jobs:
 
       - name: Audit python311.dll PE dependency tree on Windows
         shell: pwsh
-        run: python verify_pe_dependencies.py dist/MoyaIshka
+        run: python verify_pe_dependencies.py dist/ISH
 
       - name: Verify package manifest and all file hashes
         shell: pwsh
-        run: python -c "from updater_helper import validate_app_directory; print('Validated package:', validate_app_directory('dist/MoyaIshka', '4.2.9')['version'])"
+        run: python -c "from updater_helper import validate_app_directory; print('Validated package:', validate_app_directory('dist/ISH', '4.2.9')['version'])"
 
       - name: Verify onedir EXE starts without Python on PATH
         shell: pwsh
         run: |
-          $exePath = (Resolve-Path 'dist/MoyaIshka/MoyaIshka.exe').Path
+          $exePath = (Resolve-Path 'dist/ISH/ISH.exe').Path
           $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
           $startInfo.FileName = $exePath
           $startInfo.Arguments = '--self-test-imports'
@@ -120,19 +120,19 @@ jobs:
       - name: Verify onedir package contains all runtime files
         shell: pwsh
         run: |
-          if (-not (Test-Path 'dist/MoyaIshka.zip')) { throw 'Onedir ZIP package was not created.' }
-          if (-not (Test-Path 'dist/MoyaIshka.zip.sha256')) { throw 'ZIP SHA-256 sidecar was not created.' }
-          $manifest = Get-Content 'dist/MoyaIshka/build_manifest.json' -Raw | ConvertFrom-Json
+          if (-not (Test-Path 'dist/ISH.zip')) { throw 'Onedir ZIP package was not created.' }
+          if (-not (Test-Path 'dist/ISH.zip.sha256')) { throw 'ZIP SHA-256 sidecar was not created.' }
+          $manifest = Get-Content 'dist/ISH/build_manifest.json' -Raw | ConvertFrom-Json
           if ($manifest.version -ne '4.2.9') { throw "Unexpected package version: $($manifest.version)" }
           if (@($manifest.files).Count -lt 100) { throw 'Onedir manifest unexpectedly contains too few runtime files.' }
 
       - name: Upload onedir package artifact
         uses: actions/upload-artifact@v6
         with:
-          name: MoyaIshka-4.2.9-onedir
+          name: ISH-4.2.9-onedir
           path: |
-            dist/MoyaIshka.zip
-            dist/MoyaIshka.zip.sha256
+            dist/ISH.zip
+            dist/ISH.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -146,11 +146,11 @@ jobs:
           $tag = $env:RELEASE_TAG
           gh release view "$tag" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "$tag" 'dist/MoyaIshka.zip' 'dist/MoyaIshka.zip.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
+            gh release upload "$tag" 'dist/ISH.zip' 'dist/ISH.zip.sha256' --clobber --repo "$env:GITHUB_REPOSITORY"
           } elseif ($env:GITHUB_REF -eq 'refs/heads/main') {
             throw "Existing release $tag was not found. Refusing to create a new release from main."
           } else {
-            gh release create "$tag" 'dist/MoyaIshka.zip' 'dist/MoyaIshka.zip.sha256' --title "Моя ИИшка $tag" --generate-notes --repo "$env:GITHUB_REPOSITORY"
+            gh release create "$tag" 'dist/ISH.zip' 'dist/ISH.zip.sha256' --title "ISH $tag" --generate-notes --repo "$env:GITHUB_REPOSITORY"
           }
 
       - name: Update v4.2.9 tag to validated root source
@@ -162,5 +162,5 @@ jobs:
           gh auth setup-git
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force --annotate --message "MoyaIshka 4.2.9 — onedir Windows 10 package" v4.2.9 $env:GITHUB_SHA
+          git tag --force --annotate --message "ISH 4.2.9 — onedir Windows 10 package" v4.2.9 $env:GITHUB_SHA
           git push --force origin refs/tags/v4.2.9
