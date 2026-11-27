@@ -738,14 +738,17 @@ def build_multi_file_repair_context(
 def apply_multi_file_unified_diff(
     sources: dict[str, str | None],
     patch_text: str,
+    *,
+    allow_subset: bool = False,
 ) -> dict[str, str]:
     """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
     patches = split_multi_file_unified_diff(patch_text)
+    missing = sorted(set(sources) - set(patches))
     extra = sorted(set(patches) - set(sources))
-    if extra:
+    if extra or (missing and not allow_subset):
         raise ValueError(
-            "Diff содержит файлы, для которых не был подготовлен исходный контекст: "
-            f"{extra}."
+            "Список файлов в diff не совпадает с подготовленным пакетом. "
+            f"Нет в diff: {missing}; лишние: {extra}."
         )
     if not patches:
         raise ValueError("Diff не содержит ни одного файла для изменения.")
@@ -775,8 +778,10 @@ def generate_validated_multi_file_unified_diff(
     messages: list[dict[str, str]],
     model_call: Callable[[list[dict[str, str]], int], str],
     max_attempts: int = 3,
+    *,
+    allow_subset: bool = False,
 ) -> str:
-    """Retry a combined diff until every requested source/test file applies exactly."""
+    """Retry a combined diff; optionally allow unchanged context-only files to be omitted."""
     if not isinstance(sources, dict) or not 1 <= len(sources) <= MAX_MULTI_FILE_PATCHES:
         raise ValueError(f"Пакет должен содержать от 1 до {MAX_MULTI_FILE_PATCHES} файлов.")
     attempts = max(1, min(int(max_attempts), 3))
@@ -833,7 +838,7 @@ def generate_validated_multi_file_unified_diff(
             continue
 
         try:
-            updated = apply_multi_file_unified_diff(sources, last_response)
+            updated = apply_multi_file_unified_diff(sources, last_response, allow_subset=allow_subset)
             sections = split_multi_file_unified_diff(last_response)
             for path, original in sources.items():
                 if original is None and path in sections:
@@ -859,9 +864,14 @@ def generate_validated_multi_file_unified_diff(
                 head_lines=24,
                 context_radius=10,
             )
+            scope_instruction = (
+                f"Разрешённые файлы и контекст: {paths}. Выведи diff только для файлов, которые действительно нужно изменить; неизменённые файлы можно не включать."
+                if allow_subset else
+                f"Создай diff для всех и только этих файлов: {paths}."
+            )
             retry_instruction = (
                 f"Предыдущий ответ не прошёл проверку: {exc}\n"
-                f"Разрешённые файлы и контекст: {paths}. Выведи diff только для файлов, которые действительно нужно изменить; неизменённые файлы можно не включать.\n"
+                f"{scope_instruction}\n"
                 "Для каждого файла обязательно выведи отдельную пару заголовков --- и +++ непосредственно "
                 "перед блоком @@. Не заменяй diff полным текстом файлов.\n"
                 "КРИТИЧЕСКИ ВАЖНО: используй нижеприведённые актуальные фрагменты как единственный источник "
