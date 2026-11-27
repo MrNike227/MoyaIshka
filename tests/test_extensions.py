@@ -407,7 +407,7 @@ class UtilityTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.5")
+        self.assertEqual(APP_VERSION, "4.2.6")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main
