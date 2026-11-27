@@ -89,7 +89,10 @@ def _is_reparse_point(path: Path) -> bool:
     except OSError:
         return True
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    if attributes & reparse_flag:
+        return True
+    return path.is_symlink()
 
 
 def _state_marker_path() -> Path:
