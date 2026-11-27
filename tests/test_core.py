@@ -202,5 +202,63 @@ class SelfImprovementModelSelectionTests(unittest.TestCase):
         self.assertEqual(result, "online self-analysis result")
 
 
+class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
+    def test_self_improvement_retries_on_cpu_after_llama_server_access_violation(self):
+        from unittest.mock import patch
+        import urllib.error
+        import io
+
+        calls = []
+
+        def fake_post(_url, payload, timeout=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                body = b'{"error":"llama-server process has terminated: exit status 0xc0000005"}'
+                raise urllib.error.HTTPError(
+                    "http://127.0.0.1:11434/api/chat", 500, "Internal Server Error",
+                    {}, io.BytesIO(body),
+                )
+            return {"message": {"content": "Проверка завершена"}, "done_reason": "stop"}
+
+        settings = {
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+            "task_profile": "self_improvement",
+        }
+        with patch.object(main_module, "post_json", side_effect=fake_post):
+            result = MoyaIshkaApp._call_ollama(
+                settings, [{"role": "user", "content": "Проверь код"}]
+            )
+
+        self.assertEqual(result, "Проверка завершена")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["options"]["num_ctx"], 4096)
+        self.assertEqual(calls[0]["options"]["num_batch"], 64)
+        self.assertNotIn("num_gpu", calls[0]["options"])
+        self.assertEqual(calls[1]["options"]["num_gpu"], 0)
+        self.assertEqual(calls[1]["options"]["num_batch"], 32)
+
+    def test_ordinary_chat_does_not_silently_switch_to_cpu_after_access_violation(self):
+        from unittest.mock import patch
+        import urllib.error
+        import io
+
+        body = b'{"error":"llama-server process has terminated: exit status 0xc0000005"}'
+        failure = urllib.error.HTTPError(
+            "http://127.0.0.1:11434/api/chat", 500, "Internal Server Error",
+            {}, io.BytesIO(body),
+        )
+        settings = {
+            "ollama_url": "http://127.0.0.1:11434",
+            "ollama_model": "local-model",
+            "task_profile": "chat",
+        }
+        with patch.object(main_module, "post_json", side_effect=failure):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
+                MoyaIshkaApp._call_ollama(
+                    settings, [{"role": "user", "content": "Привет"}]
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
