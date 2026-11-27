@@ -5585,8 +5585,6 @@ class MoyaIshkaApp:
                 if mode == "Только онлайн":
                     raise
                 errors.append(f"Онлайн: {exc}")
-        if mode == "Только онлайн" and settings["api_key"]:
-            raise RuntimeError("Для самоанализа в режиме «Только онлайн» требуется API-ключ. Для локального самоанализа переключи обычный режим на «Только локально» или удали API-ключ из настроек.")
         # Self-analysis is an independent maintenance task: when no cloud API
         # key is configured, allow it to use the configured local Ollama model,
         # even if ordinary chat is currently set to "Только онлайн".
