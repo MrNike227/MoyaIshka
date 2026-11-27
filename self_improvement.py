@@ -806,7 +806,7 @@ def apply_multi_file_unified_diff(
                 line[1:].strip()
                 for line in file_patch.splitlines()
                 if line.startswith("+") and not line.startswith("+++")
-                and re.match(r"(?:from\\s+unittest(?:\\.mock)?\\s+import|import\\s+(?:unittest|pytest)(?:\\s|$))", line[1:].strip())
+                and re.match(r"(?:from\s+unittest(?:\.mock)?\s+import|import\s+(?:unittest|pytest)(?:\s|$))", line[1:].strip())
             ]
             if added_test_imports:
                 raise ValueError(
