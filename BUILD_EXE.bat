@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building Moya Ishka 4.2.9 onedir Windows application...
+echo Building ISH 4.2.9 onedir Windows application...
 
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
@@ -36,12 +36,12 @@ if errorlevel 1 goto crypto_failed
 %PY% prepare_python_runtime.py
 if errorlevel 1 goto runtime_failed
 
-if exist "dist\MoyaIshka" rmdir /s /q "dist\MoyaIshka"
-if exist "build\MoyaIshka" rmdir /s /q "build\MoyaIshka"
-if exist "dist\MoyaIshka.zip" del /q "dist\MoyaIshka.zip"
-if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
+if exist "dist\ISH" rmdir /s /q "dist\ISH"
+if exist "build\ISH" rmdir /s /q "build\ISH"
+if exist "dist\ISH.zip" del /q "dist\ISH.zip"
+if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
 
-%PY% -m PyInstaller --noconfirm --clean --onedir --contents-directory _internal --windowed --noupx --name "MoyaIshka" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
+%PY% -m PyInstaller --noconfirm --clean --onedir --contents-directory _internal --windowed --noupx --name "ISH" --icon app_icon.ico --version-file version_info.txt --additional-hooks-dir hooks ^
   --add-data "app_icon.ico;." ^
   --add-data "version_info.txt;source_project" ^
   --add-data "app_icon_256.png;." ^
@@ -118,23 +118,23 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --hidden-import=win32com.client --hidden-import=pyttsx3.drivers.sapi5 ^
   --hidden-import=piper --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state main.py
 if errorlevel 1 goto failed
-if not exist "dist\MoyaIshka\MoyaIshka.exe" goto failed
-%PY% -c "from pathlib import Path; root=Path('dist/MoyaIshka/_internal'); removed=[p for p in root.rglob('*.dll') if p.name.casefold() == 'ucrtbase.dll' or p.name.casefold().startswith('api-ms-win-crt-')]; [p.unlink() for p in removed]; print('Removed build-host UCRT/API-set DLLs:', len(removed))"
+if not exist "dist\ISH\ISH.exe" goto failed
+%PY% -c "from pathlib import Path; root=Path('dist/ISH/_internal'); removed=[p for p in root.rglob('*.dll') if p.name.casefold() == 'ucrtbase.dll' or p.name.casefold().startswith('api-ms-win-crt-')]; [p.unlink() for p in removed]; print('Removed build-host UCRT/API-set DLLs:', len(removed))"
 if errorlevel 1 goto failed
 
-%PY% verify_pe_dependencies.py "dist\MoyaIshka"
+%PY% verify_pe_dependencies.py "dist\ISH"
 if errorlevel 1 goto dependency_failed
-"dist\MoyaIshka\MoyaIshka.exe" --self-test-imports
+"dist\ISH\ISH.exe" --self-test-imports
 if errorlevel 1 goto crypto_bundle_failed
-%PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/MoyaIshka/TEST_WINDOWS10.ps1')"
+%PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/ISH/TEST_WINDOWS10.ps1')"
 if errorlevel 1 goto failed
-%PY% package_onedir.py --dist-dir "dist\MoyaIshka" --output "dist\MoyaIshka.zip" --version 4.2.9
+%PY% package_onedir.py --dist-dir "dist\ISH" --output "dist\ISH.zip" --version 4.2.9
 if errorlevel 1 goto failed
-%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/MoyaIshka', '4.2.9')"
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/ISH', '4.2.9')"
 if errorlevel 1 goto failed
 
 echo.
-echo BUILD COMPLETE: dist\MoyaIshka\MoyaIshka.exe + dist\MoyaIshka.zip
+echo BUILD COMPLETE: dist\ISH\ISH.exe + dist\ISH.zip
 echo Python 3.11, VC runtime and application dependencies are bundled in _internal.
 echo Run TEST_WINDOWS10.ps1 on Windows 10 Pro 22H2 to validate the target PC.
 if not defined GITHUB_ACTIONS pause
