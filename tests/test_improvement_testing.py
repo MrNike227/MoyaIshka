@@ -2,9 +2,35 @@ import hashlib
 import json
 import tempfile
 import unittest
+import subprocess
+import sys
+import re
+from unittest.mock import patch
 from pathlib import Path
 from improvement_delivery import save_change_bundle
 from improvement_testing import ProposalTestError, test_change_bundle
+
+def run_local_test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> dict:
+    """Test-only stand-in; production never uses a host-side test runner."""
+    process = subprocess.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
+        cwd=project_dir, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=timeout_seconds,
+    )
+    combined = process.stdout + "\\n" + process.stderr
+    match = re.search(r"Ran\\s+(\\d+)\\s+tests?", combined)
+    tests_run = int(match.group(1)) if match else 0
+    return {
+        "passed": process.returncode == 0 and tests_run > 0,
+        "tests_exit_code": process.returncode,
+        "tests_run": tests_run,
+        "failures": 0 if process.returncode == 0 else 1,
+        "errors": 0,
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+        "sandboxed": False,
+    }
+
 
 class ImprovementTestingTests(unittest.TestCase):
     def make_project(self, root):
@@ -25,7 +51,7 @@ class ImprovementTestingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
             bundle = self.make_bundle(temp, 2)
-            result = test_change_bundle(bundle, root)
+            result = test_change_bundle(bundle, root, sandbox_executor=run_local_test_executor)
             self.assertTrue(result["passed"], result)
             self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
             self.assertTrue((bundle / "test_report.json").is_file())
@@ -99,6 +125,27 @@ class ImprovementTestingTests(unittest.TestCase):
             (bundle / "files" / "sample.py").write_text("VALUE = 100\n", encoding="utf-8")
             with self.assertRaisesRegex(ProposalTestError, "SHA-256"):
                 test_change_bundle(bundle, root)
+
+    def test_production_path_fails_closed_when_sandbox_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+            with patch("improvement_testing._run_windows_sandbox", side_effect=ProposalTestError("Windows Sandbox недоступна")):
+                result = test_change_bundle(bundle, root)
+            self.assertFalse(result["passed"])
+            self.assertFalse(result["sandboxed"])
+            self.assertIn("Windows Sandbox недоступна", result["error"])
+
+    def test_sandbox_payload_omits_local_secrets_and_databases(self):
+        from improvement_testing import _ignore_sandbox_copy
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "main.py").write_text("value = 1", encoding="utf-8")
+            (root / ".env").write_text("TOKEN=secret", encoding="utf-8")
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            (root / "private.db").write_bytes(b"database")
+            ignored = _ignore_sandbox_copy(str(root), [p.name for p in root.iterdir()])
+            self.assertEqual(ignored, {".env", "config.json", "private.db"})
 
 if __name__ == "__main__":
     unittest.main()
