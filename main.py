@@ -6860,7 +6860,7 @@ class ISHApp:
             )
 
     def search_old_versions(self) -> None:
-        """Scan common user folders for obsolete/staged MoyaIshka executables."""
+        """Scan common user folders for obsolete/staged ISH executables."""
         self.update_status_var.set("Ищу старые копии в папках установки, Загрузки и Рабочего стола…")
 
         def worker() -> None:
