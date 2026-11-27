@@ -149,6 +149,8 @@ def save_multi_change_bundle(
             raise TypeError(f"Новое содержимое {path} должно быть текстом.")
         original_bytes = original_text.encode("utf-8") if original_text is not None else b""
         updated_bytes = updated_text.encode("utf-8")
+        if original_text is not None and original_text == updated_text:
+            raise ValueError(f"Файл {path} указан в пакете, но его содержимое не изменилось.")
         if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES:
             raise ValueError(f"Файл {path} превышает безопасный лимит 2 МБ.")
         if original_text is None and not path.startswith("tests/test_"):
