@@ -364,14 +364,109 @@ def test_change_bundle(
 
 
 
-def _is_windows_sandbox_guest() -> bool:
-    """Require both the Windows Sandbox guest account and its launcher marker."""
+def _current_windows_user_sid() -> bytes | None:
+    """Read the actual current process token SID; environment variables are not identity."""
     if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        token = wintypes.HANDLE()
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+        advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.GetTokenInformation.restype = wintypes.BOOL
+        advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+        advapi32.GetLengthSid.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return None
+        try:
+            required = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
+            if required.value <= 0 or required.value > 64 * 1024:
+                return None
+            buffer = ctypes.create_string_buffer(required.value)
+            if not advapi32.GetTokenInformation(
+                token, 1, ctypes.cast(buffer, ctypes.c_void_p),
+                required.value, ctypes.byref(required),
+            ):
+                return None
+
+            class _SidAndAttributes(ctypes.Structure):
+                _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+            class _TokenUser(ctypes.Structure):
+                _fields_ = [("User", _SidAndAttributes)]
+
+            user = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents
+            sid_length = int(advapi32.GetLengthSid(user.User.Sid) or 0)
+            if sid_length <= 0 or sid_length > 1024:
+                return None
+            return ctypes.string_at(user.User.Sid, sid_length)
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:
+        return None
+
+
+def _lookup_local_windows_account_sid(account_name: str) -> bytes | None:
+    """Resolve a local Windows account SID using the system account database."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi32.LookupAccountNameW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.LookupAccountNameW.restype = wintypes.BOOL
+        for qualified_name in (".\\" + account_name, account_name):
+            sid_size = wintypes.DWORD(0)
+            domain_size = wintypes.DWORD(0)
+            use = wintypes.DWORD(0)
+            advapi32.LookupAccountNameW(
+                None, qualified_name, None, ctypes.byref(sid_size),
+                None, ctypes.byref(domain_size), ctypes.byref(use),
+            )
+            if sid_size.value <= 0 or sid_size.value > 1024:
+                continue
+            sid_buffer = ctypes.create_string_buffer(sid_size.value)
+            domain_buffer = ctypes.create_unicode_buffer(max(1, domain_size.value))
+            if not advapi32.LookupAccountNameW(
+                None, qualified_name, ctypes.cast(sid_buffer, ctypes.c_void_p),
+                ctypes.byref(sid_size), domain_buffer, ctypes.byref(domain_size),
+                ctypes.byref(use),
+            ):
+                continue
+            return ctypes.string_at(sid_buffer, sid_size.value)
+    except Exception:
+        return None
+    return None
+
+
+def _is_windows_sandbox_guest() -> bool:
+    """Require the actual WDAG guest account SID and a marker set by the WSB logon script."""
+    if os.name != "nt" or os.environ.get("MOYA_WINDOWS_SANDBOX", "") != "1":
         return False
-    return (
-        os.environ.get("USERNAME", "").casefold() == "wdagutilityaccount"
-        and os.environ.get("MOYA_WINDOWS_SANDBOX", "") == "1"
-    )
+    current_sid = _current_windows_user_sid()
+    guest_sid = _lookup_local_windows_account_sid("WDAGUtilityAccount")
+    return bool(current_sid and guest_sid and current_sid == guest_sid)
 
 
 def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) -> int:
