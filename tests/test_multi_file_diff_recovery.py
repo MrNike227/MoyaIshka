@@ -124,6 +124,45 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
         self.assertEqual(updated["main.py"], "#!/usr/bin/env python3\nVALUE = 2\n")
         self.assertEqual(updated["tests/test_core.py"], "import json\nVALUE = 2\n")
 
+    def test_unable_response_triggers_scoped_minimal_change_retry(self):
+        responses = ["UNABLE_TO_CREATE_PATCH", self.valid_patch]
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append([dict(message) for message in messages])
+            return responses[attempt]
+
+        result = generate_validated_multi_file_unified_diff(
+            self.sources,
+            [{"role": "user", "content": "Добавь улучшение и связанные тесты"}],
+            model_call,
+            max_attempts=3,
+        )
+
+        self.assertIn("--- a/feature.py", result)
+        self.assertEqual(len(calls), 2)
+        retry = calls[1][-1]["content"]
+        self.assertIn("уменьши объём задачи", retry)
+        self.assertIn("минимальное полезное изменение", retry)
+        self.assertIn("ФАЙЛ: feature.py", retry)
+        self.assertIn("Файл ещё не существует", retry)
+
+    def test_repeated_unable_response_returns_actionable_message(self):
+        calls = []
+
+        def model_call(messages, attempt):
+            calls.append(attempt)
+            return "UNABLE_TO_CREATE_PATCH: не найден нужный обработчик"
+
+        with self.assertRaisesRegex(ValueError, "Модель не смогла подготовить безопасное изменение"):
+            generate_validated_multi_file_unified_diff(
+                self.sources,
+                [{"role": "user", "content": "Перепиши всю программу"}],
+                model_call,
+                max_attempts=3,
+            )
+        self.assertEqual(calls, [0, 1, 2])
+
     def test_diff_mismatch_diagnostic_includes_the_file_path(self):
         sources = {"tests/test_core.py": "import json\n"}
         patch = (
