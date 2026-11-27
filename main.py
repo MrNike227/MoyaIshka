@@ -3745,6 +3745,7 @@ class MoyaIshkaApp:
                     self.windows_sandbox_status_var.set(f"Установка не завершена: {payload}")
                     if hasattr(self, "sandbox_install_button"):
                         self.sandbox_install_button.configure(state="normal")
+                    messagebox.showerror("Установка Windows Sandbox", str(payload))
                 elif event == "improvement_test_completed":
                     sandboxed = bool(payload.get("sandboxed"))
                     if sandboxed:
