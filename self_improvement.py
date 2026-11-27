@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 EDITABLE_SUFFIXES = {".py"}
