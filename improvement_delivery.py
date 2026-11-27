@@ -110,29 +110,81 @@ def _write_text_atomic(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def save_change_bundle(
+def save_multi_change_bundle(
     updates_dir: str | Path,
-    relative_path: str | Path,
-    original_text: str,
-    updated_text: str,
+    file_changes: list[dict[str, Any]],
     patch_text: str,
     *,
     title: str = "Предложение саморазвития",
     version: str = "",
 ) -> Path:
-    """Persist a review-only proposal with the full changed file, patch and checksums."""
-    relative = _safe_relative_path(relative_path)
-    if not isinstance(original_text, str) or not isinstance(updated_text, str) or not isinstance(patch_text, str):
-        raise TypeError("Содержимое предложения должно быть текстом.")
-    original_bytes = original_text.encode("utf-8")
-    updated_bytes = updated_text.encode("utf-8")
-    normalized_patch_text = patch_text.rstrip("\r\n") + "\n"
+    """Persist a bounded multi-file review proposal, including source and matching test changes."""
+    if not isinstance(file_changes, list) or not 1 <= len(file_changes) <= MAX_PROPOSAL_FILES:
+        raise ValueError(f"Пакет должен содержать от 1 до {MAX_PROPOSAL_FILES} Python-файлов.")
+    if not isinstance(patch_text, str) or not patch_text.strip():
+        raise ValueError("Diff пакета пуст.")
+    normalized_patch_text = patch_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
     patch_bytes = normalized_patch_text.encode("utf-8")
-    if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES or len(patch_bytes) > MAX_PROPOSAL_FILE_BYTES:
-        raise ValueError("Файл предложения слишком большой (максимум 2 МБ).")
-    if len(original_bytes) + len(updated_bytes) + len(patch_bytes) > MAX_PROPOSAL_TOTAL_BYTES:
-        raise ValueError("Пакет предложения превышает 8 МБ.")
-    compile(updated_text, relative.as_posix(), "exec")
+    if len(patch_bytes) > MAX_PROPOSAL_FILE_BYTES:
+        raise ValueError("Размер diff превышает безопасный лимит 2 МБ.")
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    original_total = 0
+    updated_total = 0
+    for change in file_changes:
+        if not isinstance(change, dict):
+            raise TypeError("Элемент пакета должен быть словарём с путём и содержимым файла.")
+        relative = _safe_relative_path(change.get("path", ""))
+        path = relative.as_posix()
+        if path in seen:
+            raise ValueError(f"Файл повторяется в пакете: {path}.")
+        seen.add(path)
+
+        original_text = change.get("original_text")
+        updated_text = change.get("updated_text")
+        if original_text is not None and not isinstance(original_text, str):
+            raise TypeError(f"Исходное содержимое {path} должно быть текстом или None для нового файла.")
+        if not isinstance(updated_text, str):
+            raise TypeError(f"Новое содержимое {path} должно быть текстом.")
+        original_bytes = original_text.encode("utf-8") if original_text is not None else b""
+        updated_bytes = updated_text.encode("utf-8")
+        if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES:
+            raise ValueError(f"Файл {path} превышает безопасный лимит 2 МБ.")
+        if original_text is None and not path.startswith("tests/test_"):
+            raise ValueError("Добавлять новые файлы разрешено только как tests/test_*.py.")
+        if path.startswith("tests/") and not Path(path).name.startswith("test_"):
+            raise ValueError("В папке tests разрешено изменять только файлы test_*.py.")
+        try:
+            compile(updated_text, path, "exec")
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"Файл {path} содержит некорректный Python: {exc}") from exc
+
+        original_total += len(original_bytes)
+        updated_total += len(updated_bytes)
+        normalized.append({
+            "path": path,
+            "relative": relative,
+            "original_text": original_text,
+            "updated_text": updated_text,
+            "original_bytes": original_bytes,
+            "updated_bytes": updated_bytes,
+        })
+
+    if len(normalized) > 1:
+        has_source = any(not item["path"].startswith("tests/") for item in normalized)
+        has_test = any(
+            item["path"].startswith("tests/")
+            and Path(item["path"]).name.startswith("test_")
+            for item in normalized
+        )
+        if not has_source or not has_test:
+            raise ValueError(
+                "Многофайловое изменение должно включать хотя бы один файл программы "
+                "и соответствующий тест tests/test_*.py."
+            )
+    if original_total + updated_total + len(patch_bytes) > MAX_PROPOSAL_TOTAL_BYTES:
+        raise ValueError("Пакет предложения превышает общий лимит 8 МБ.")
 
     root = Path(updates_dir).expanduser().resolve() / "Proposals"
     root.mkdir(parents=True, exist_ok=True)
@@ -141,8 +193,21 @@ def save_change_bundle(
     staging = root / f".{bundle.name}.staging"
     staging.mkdir(parents=False, exist_ok=False)
     try:
-        file_path = staging / "files" / Path(*relative.parts)
-        _write_text_atomic(file_path, updated_text)
+        manifest_files: list[dict[str, Any]] = []
+        for item in normalized:
+            file_path = staging / "files" / Path(*item["relative"].parts)
+            _write_text_atomic(file_path, item["updated_text"])
+            original_bytes = item["original_bytes"]
+            updated_bytes = item["updated_bytes"]
+            manifest_files.append({
+                "path": item["path"],
+                "size": len(updated_bytes),
+                "sha256": hashlib.sha256(updated_bytes).hexdigest(),
+                "base_sha256": (
+                    hashlib.sha256(original_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")).hexdigest()
+                    if item["original_text"] is not None else "absent"
+                ),
+            })
         _write_text_atomic(staging / "changes.patch", normalized_patch_text)
         manifest: dict[str, Any] = {
             "schema": 1,
@@ -150,12 +215,7 @@ def save_change_bundle(
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "version": str(version)[:40],
             "title": str(title).strip()[:200] or "Предложение саморазвития",
-            "files": [{
-                "path": relative.as_posix(),
-                "size": len(updated_bytes),
-                "sha256": hashlib.sha256(updated_bytes).hexdigest(),
-                "base_sha256": hashlib.sha256(original_bytes).hexdigest(),
-            }],
+            "files": manifest_files,
             "patch": {
                 "path": "changes.patch",
                 "size": len(patch_bytes),
@@ -171,6 +231,30 @@ def save_change_bundle(
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def save_change_bundle(
+    updates_dir: str | Path,
+    relative_path: str | Path,
+    original_text: str,
+    updated_text: str,
+    patch_text: str,
+    *,
+    title: str = "Предложение саморазвития",
+    version: str = "",
+) -> Path:
+    """Backward-compatible single-file wrapper around the multi-file bundle format."""
+    return save_multi_change_bundle(
+        updates_dir,
+        [{
+            "path": str(relative_path),
+            "original_text": original_text,
+            "updated_text": updated_text,
+        }],
+        patch_text,
+        title=title,
+        version=version,
+    )
 
 
 MAX_IMPROVEMENT_CHAT_CONTEXT_CHARS = 7_000
