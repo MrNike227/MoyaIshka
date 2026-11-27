@@ -17,6 +17,7 @@ class WindowsSandboxTests(unittest.TestCase):
             config = create_sandbox_config(readonly, results, root / "test.wsb")
             tree = ElementTree.parse(config)
             values = {child.tag: (child.text or "").strip() for child in tree.getroot()}
+            self.assertEqual(values["MemoryInMB"], "4096")
             self.assertEqual(values["Networking"], "Disable")
             self.assertEqual(values["VGpu"], "Disable")
             self.assertEqual(values["ClipboardRedirection"], "Disable")
