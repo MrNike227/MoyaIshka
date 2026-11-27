@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import subprocess
+import stat
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -80,6 +81,17 @@ def _host_details() -> dict[str, Any]:
     }
 
 
+
+def _is_reparse_point(path: Path) -> bool:
+    """Detect symlinks and Windows junction/reparse points without following them."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
 def _state_marker_path() -> Path:
     base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
     directory = base / "MoyaIshka"
@@ -108,7 +120,7 @@ def record_windows_sandbox_install(result: dict[str, Any]) -> Path:
 def _read_install_state() -> dict[str, Any] | None:
     try:
         path = _state_marker_path()
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_INSTALL_RESULT_BYTES:
+        if _is_reparse_point(path) or not path.is_file() or path.stat().st_size > MAX_INSTALL_RESULT_BYTES:
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(payload, dict) and payload.get("schema") == 1:
@@ -286,8 +298,8 @@ def wait_for_install_result(result_path: str | Path, timeout_seconds: int = 900)
     path = Path(result_path)
     deadline = time.monotonic() + max(30, min(int(timeout_seconds), 1800))
     while time.monotonic() < deadline:
-        if path.is_symlink():
-            raise RuntimeError("Результат установки Windows Sandbox является недопустимой ссылкой.")
+        if _is_reparse_point(path):
+            raise RuntimeError("Результат установки Windows Sandbox является ссылкой или reparse point.")
         if path.is_file():
             try:
                 if path.stat().st_size > MAX_INSTALL_RESULT_BYTES:
@@ -379,13 +391,23 @@ def wait_for_sandbox_completion(
     deadline = time.monotonic() + max(60, min(int(timeout_seconds) + 120, 900))
     while time.monotonic() < deadline:
         total_bytes = 0
+        entry_count = 0
         try:
-            for item in directory.rglob("*"):
-                if item.is_symlink():
-                    if sandbox_process is not None and sandbox_process.poll() is None:
-                        sandbox_process.kill()
-                    raise RuntimeError("Sandbox создала ссылку в папке результатов; отчёт отклонён.")
-                if item.is_file():
+            for current, directories, filenames in os.walk(directory, topdown=True, followlinks=False):
+                for name in list(directories):
+                    item = Path(current) / name
+                    entry_count += 1
+                    if entry_count > 512 or _is_reparse_point(item):
+                        if sandbox_process is not None and sandbox_process.poll() is None:
+                            sandbox_process.kill()
+                        raise RuntimeError("Sandbox создала слишком много объектов или reparse point в папке результатов.")
+                for name in filenames:
+                    item = Path(current) / name
+                    entry_count += 1
+                    if entry_count > 512 or _is_reparse_point(item):
+                        if sandbox_process is not None and sandbox_process.poll() is None:
+                            sandbox_process.kill()
+                        raise RuntimeError("Sandbox создала слишком много объектов или reparse point в папке результатов.")
                     total_bytes += item.stat().st_size
                     if total_bytes > max_result_bytes:
                         if sandbox_process is not None and sandbox_process.poll() is None:
@@ -396,7 +418,7 @@ def wait_for_sandbox_completion(
                 sandbox_process.kill()
             raise RuntimeError(f"Не удалось проверить результаты Windows Sandbox: {exc}") from exc
         process_exited = sandbox_process is None or sandbox_process.poll() is not None
-        if process_exited and completion.is_file() and not completion.is_symlink():
+        if process_exited and completion.is_file() and not _is_reparse_point(completion):
             try:
                 if completion.stat().st_size <= 16 * 1024:
                     data = json.loads(completion.read_text(encoding="utf-8-sig"))
