@@ -34,6 +34,7 @@ class BackgroundDeveloperTests(unittest.TestCase):
     def make_project(self, root: Path) -> None:
         (root / "tests").mkdir(parents=True)
         (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (root / "consumer.py").write_text("from feature import VALUE\nRESULT = VALUE\n", encoding="utf-8")
         (root / "tests" / "test_feature.py").write_text(
             "import unittest\nimport feature\n\n"
             "class FeatureTests(unittest.TestCase):\n"
@@ -85,6 +86,9 @@ class BackgroundDeveloperTests(unittest.TestCase):
             self.assertEqual(result["files"], ["feature.py", "tests/test_feature.py"])
             self.assertEqual(result["tests_run"], 1)
             self.assertIn("tests/test_feature.py", calls[1][-1]["content"])
+            self.assertIn("consumer.py", calls[0][-1]["content"])
+            self.assertIn("consumer.py", calls[1][-1]["content"])
+            self.assertIn("consumer.py", result["dependency_report"])
             self.assertEqual((root / "feature.py").read_text(encoding="utf-8"), "VALUE = 1\n")
             self.assertIn(
                 "test_old_value",

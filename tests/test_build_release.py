@@ -18,11 +18,18 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "intelligent_memory.py;source_project"', build)
         self.assertIn('--add-data "improvement_delivery.py;source_project"', build)
         self.assertIn('--add-data "improvement_testing.py;source_project"', build)
+        self.assertIn('--add-data "module_dependency_analyzer.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.6_RU.md;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)
+
+    def test_module_dependency_analyzer_is_in_packaged_source_workspace(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("from module_dependency_analyzer import analyze_module_dependencies", source)
+        self.assertIn('"module_dependency_analyzer.py"', source)
+        self.assertIn('"tests/test_module_dependency_analyzer.py"', source)
 
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
