@@ -533,31 +533,56 @@ def _multi_diff_candidates(response: str) -> list[str]:
 
 
 def _extract_multi_diff_hunks(lines: list[str]) -> str:
-    """Extract hunks and repair common model line-wrap damage without guessing file paths."""
+    """Extract hunks and repair wrapped lines without leaving stale @@ counts."""
     start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
     if start is None:
         return ""
+
     body: list[str] = []
+    hunk_header: str | None = None
+    hunk_lines: list[str] = []
+    hunk_was_wrapped = False
     active_marker: str | None = None
+
+    def flush_hunk() -> None:
+        nonlocal hunk_header, hunk_lines, hunk_was_wrapped
+        if hunk_header is None:
+            return
+        if hunk_was_wrapped:
+            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
+            if match:
+                old_count = sum(1 for item in hunk_lines if item and item[0] in " -")
+                new_count = sum(1 for item in hunk_lines if item and item[0] in " +")
+                hunk_header = f"@@ -{match.group(1)},{old_count} +{match.group(3)},{new_count} @@"
+        body.append(hunk_header + "\n")
+        body.extend(item + "\n" for item in hunk_lines)
+        hunk_header = None
+        hunk_lines = []
+        hunk_was_wrapped = False
+
     for line in lines[start:]:
         value = line.rstrip("\r\n")
         stripped = value.lstrip()
         if stripped.startswith("@@ "):
-            body.append(stripped + "\n")
+            flush_hunk()
+            hunk_header = stripped
             active_marker = None
         elif stripped.startswith("\\ No newline at end of file"):
-            body.append("\\ No newline at end of file\n")
+            hunk_lines.append("\\ No newline at end of file")
             active_marker = None
         elif value and value[0] in " +-":
-            body.append(value + "\n")
+            hunk_lines.append(value)
             active_marker = value[0]
         elif active_marker in {"+", "-", " "} and value and not stripped.startswith(
             ("--- ", "+++ ", "diff --git ", "index ", "new file mode ", "deleted file mode ")
         ):
-            # Repair model output that wraps a logical diff line and drops its marker.
-            body.append(active_marker + value + "\n")
+            # The model split one logical line across physical lines and dropped
+            # its diff marker. Restore the marker and update this hunk's counts.
+            hunk_lines.append(active_marker + value)
+            hunk_was_wrapped = True
         else:
             break
+    flush_hunk()
     return "".join(body)
 
 
