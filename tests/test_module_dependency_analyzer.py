@@ -101,6 +101,20 @@ class ModuleDependencyAnalyzerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 analyze_module_dependencies(root, "../target.py")
 
+    def test_project_architecture_index_lists_modules_symbols_and_calls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_project(root)
+            index = build_project_architecture_index(root)
+            report = format_project_architecture_index(index, max_chars=5000)
+            self.assertGreaterEqual(index["module_count"], 5)
+            self.assertGreaterEqual(index["symbol_count"], 3)
+            service = next(item for item in index["modules"] if item["path"] == "pkg/service.py")
+            self.assertIn("run", [item["name"] for item in service["symbols"]])
+            self.assertIn("calculate", service["calls"])
+            self.assertIn("pkg/core.py", report)
+            self.assertIn("static AST", report)
+
     def test_reports_parse_errors_without_crashing_the_scan(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
