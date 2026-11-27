@@ -2,8 +2,8 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-if exist "%~dp0MoyaIshka.exe" (
-  start "" "%~dp0MoyaIshka.exe"
+if exist "%~dp0ISH.exe" (
+  start "" "%~dp0ISH.exe"
   exit /b 0
 )
 where py >nul 2>nul
@@ -37,6 +37,6 @@ echo Manual command: %PY% -m pip install "cryptography>=42.0" "cffi>=2.0.0"
 pause
 endlocal & exit /b 1
 :no_python
-echo Python was not found. Use the standalone MoyaIshka.exe or install Python for source mode.
+echo Python was not found. Use the standalone ISH.exe or install Python for source mode.
 pause
 endlocal & exit /b 1
