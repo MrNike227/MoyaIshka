@@ -116,8 +116,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         result["reason"] = "Не найден системный Windows PowerShell."
         return result
 
-    # CIM read-only queries are available to a standard user. Never call
-    # Administrative optional-feature queries are deliberately excluded from this status path.
+    # CIM read-only queries are available to standard users. Administrative
+    # optional-feature queries are deliberately excluded from this status path.
     command = (
         "$ErrorActionPreference='Stop'; "
         "$c=Get-CimInstance Win32_ComputerSystem; "
@@ -182,6 +182,7 @@ def get_windows_sandbox_status() -> dict[str, Any]:
                 result["feature_state"] = "EnabledAfterRestart"
                 marker["restart_required"] = False
                 marker["state"] = "EnabledAfterRestart"
+                marker["boot_time"] = result["boot_time"]
                 marker["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 record_windows_sandbox_install(marker)
     elif executable_exists:
