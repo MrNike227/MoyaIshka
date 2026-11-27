@@ -17,8 +17,8 @@ def run_local_test_executor(project_dir: Path, result_dir: Path, timeout_seconds
         cwd=project_dir, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=timeout_seconds,
     )
-    combined = process.stdout + "\\n" + process.stderr
-    match = re.search(r"Ran\\s+(\\d+)\\s+tests?", combined)
+    combined = process.stdout + "\n" + process.stderr
+    match = re.search(r"Ran\s+(\d+)\s+tests?", combined)
     tests_run = int(match.group(1)) if match else 0
     return {
         "passed": process.returncode == 0 and tests_run > 0,
