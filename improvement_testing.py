@@ -92,6 +92,7 @@ $exitCode = 1
 $testData = $null
 $errorText = ''
 try {{
+    New-Item -ItemType Directory -Force -Path 'C:\MoyaTemp' | Out-Null
     New-Item -ItemType Directory -Force -Path 'C:\MoyaTemp\AppData','C:\MoyaTemp\LocalAppData' | Out-Null
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $runner
