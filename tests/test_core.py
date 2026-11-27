@@ -334,5 +334,109 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
                 )
 
 
+
+class SelfImprovementInteractionTests(unittest.TestCase):
+    class Clipboard:
+        def __init__(self, value=""):
+            self.value = value
+
+        def clipboard_clear(self):
+            self.value = ""
+
+        def clipboard_append(self, value):
+            self.value += str(value)
+
+        def clipboard_get(self):
+            if not self.value:
+                raise main_module.tk.TclError("clipboard is empty")
+            return self.value
+
+        def update_idletasks(self):
+            pass
+
+    class Status:
+        def __init__(self):
+            self.value = ""
+
+        def set(self, value):
+            self.value = value
+
+    class ScrollView:
+        def __init__(self, first=0.0, last=1.0):
+            self.first = first
+            self.last = last
+            self.calls = []
+
+        def yview(self):
+            return self.first, self.last
+
+        def yview_scroll(self, steps, _units):
+            self.calls.append(steps)
+            height = self.last - self.first
+            self.first = max(0.0, min(1.0 - height, self.first + steps * 0.25))
+            self.last = self.first + height
+
+    def test_copy_selected_model_proposal_copies_only_proposed_text(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app.root = self.Clipboard()
+        app.improvement_listbox = type("List", (), {"curselection": lambda _self: (0,)})()
+        app.improvement_suggestions = [{
+            "title": "Улучшение",
+            "problem": "Неудобно",
+            "current": "Текущий вариант",
+            "proposed": "Только предлагаемый текст",
+            "benefit": "Удобнее",
+        }]
+        app.improve_status_var = self.Status()
+
+        app.copy_selected_improvement()
+
+        self.assertEqual(app.root.value, "Только предлагаемый текст")
+        self.assertIn("скопирован", app.improve_status_var.value)
+
+    def test_copy_improvement_task_copies_complete_task_text(self):
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app.root = self.Clipboard()
+        app.improve_prompt_box = type(
+            "Prompt", (), {"get": lambda _self, _start, _end: "  Создай резервное копирование  "}
+        )()
+        app.improve_status_var = self.Status()
+
+        app.copy_improvement_task()
+
+        self.assertEqual(app.root.value, "Создай резервное копирование")
+
+    def test_nested_text_scroll_hands_off_to_page_at_bottom_and_top(self):
+        inner = self.ScrollView(first=0.0, last=0.5)
+        page = self.ScrollView(first=0.0, last=0.4)
+        scroll_down = type("Event", (), {"delta": -120, "num": 0})()
+        scroll_up = type("Event", (), {"delta": 120, "num": 0})()
+
+        self.assertEqual(
+            MoyaIshkaApp._scroll_nested_text(scroll_down, inner, page), "break"
+        )
+        self.assertEqual(inner.calls, [1])
+        self.assertEqual(page.calls, [])
+
+        inner.first, inner.last = 0.5, 1.0
+        MoyaIshkaApp._scroll_nested_text(scroll_down, inner, page)
+        self.assertEqual(page.calls, [1])
+
+        inner.first, inner.last = 0.0, 0.5
+        MoyaIshkaApp._scroll_nested_text(scroll_up, inner, page)
+        self.assertEqual(inner.calls, [1, -1])
+        self.assertEqual(page.calls, [1, -1])
+
+    def test_nested_text_scroll_supports_linux_wheel_buttons(self):
+        inner = self.ScrollView(first=0.5, last=1.0)
+        page = self.ScrollView()
+        event = type("Event", (), {"delta": 0, "num": 4})()
+
+        MoyaIshkaApp._scroll_nested_text(event, inner, page)
+
+        self.assertEqual(inner.calls, [-1])
+        self.assertEqual(page.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
