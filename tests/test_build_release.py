@@ -599,7 +599,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("editable_test_files", source)
         self.assertIn("save_multi_change_bundle", delivery)
         self.assertIn("MAX_PROPOSAL_FILES", delivery)
-        self.assertIn('base_sha256 == "absent"', testing)
+        self.assertIn('if base_hash == "absent":', testing)
         self.assertIn("apply_multi_file_unified_diff", testing)
         self.assertIn("save_multi_change_bundle", background)
         self.assertIn("tests/test_background_developer.py", main)
