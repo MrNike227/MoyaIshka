@@ -11,7 +11,7 @@ class ReleaseBuildTests(unittest.TestCase):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         self.assertIn("--onedir --contents-directory _internal", build)
         self.assertNotIn("--onefile", build)
-        self.assertIn("dist\\MoyaIshka\\MoyaIshka.exe", build)
+        self.assertIn("dist\\ISH\\ISH.exe", build)
         self.assertIn("package_onedir.py", build)
         self.assertIn('--add-data "backup_manager.py;source_project"', build)
         self.assertIn('--add-data "backup_cloud.py;source_project"', build)
@@ -24,7 +24,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "PLAN_4.2.7_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.8_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.9_RU.md;source_project"', build)
-        self.assertIn("dist\\MoyaIshka.zip", build)
+        self.assertIn("dist\\ISH.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)
 
@@ -45,8 +45,8 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_default_backup_folder_is_outside_application_directory(self):
         from main import default_backup_directory
         backup_dir = default_backup_directory()
-        self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
-        self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
+        self.assertEqual(backup_dir.name, "ISH_Backups")
+        self.assertNotEqual(backup_dir.parent.name, "ISH_Backups")
 
     def test_application_version_is_429(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -242,7 +242,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("actions/setup-python@v7.1.0", workflow)
         self.assertNotIn("softprops/action-gh-release@v2", workflow)
         self.assertIn("Verify app-local VC runtime DLLs are present", workflow)
-        self.assertIn("dist/MoyaIshka/_internal", workflow)
+        self.assertIn("dist/ISH/_internal", workflow)
         self.assertIn("Verify onedir EXE starts without Python on PATH", workflow)
         self.assertIn("[System.Diagnostics.Process]::Start($startInfo)", workflow)
         self.assertIn("$process.ExitCode", workflow)
@@ -275,7 +275,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("LOAD_WITH_ALTERED_SEARCH_PATH", audit)
         self.assertIn("%PY% verify_pe_dependencies.py", build)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
-        self.assertIn("python verify_pe_dependencies.py dist/MoyaIshka", workflow)
+        self.assertIn("python verify_pe_dependencies.py dist/ISH", workflow)
 
     def test_context_engine_is_bundled_and_used(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -328,7 +328,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('self.config["updates_dir"] = str(layout["updates"])', handler)
         self.assertIn("destination_dir = ensure_install_dir_writable(layout[\"app\"])", handler)
         self.assertIn("self._apply_staged_update(destination_dir)", handler)
-        self.assertIn('target = destination_dir / "MoyaIshka.exe"', handler)
+        self.assertIn('target = destination_dir / "ISH.exe"', handler)
 
     def test_container_update_target_uses_app_and_keeps_updates_sibling(self):
         from improvement_delivery import resolve_install_layout
@@ -356,7 +356,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_inno_setup_does_not_reuse_legacy_install_path_and_creates_siblings(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
-        self.assertIn(r"DefaultDirName={localappdata}\Programs\MoyaIshka_Container\App", installer)
+        self.assertIn(r"DefaultDirName={localappdata}\Programs\ISH_Container\App", installer)
         self.assertIn("UsePreviousAppDir=no", installer)
         self.assertIn(r'Name: "{app}\..\Updates"', installer)
         self.assertIn(r'UninstallFilesDir={app}\..\Uninstall', installer)
@@ -417,11 +417,11 @@ class ReleaseBuildTests(unittest.TestCase):
         from updater_helper import validate_app_directory
 
         with tempfile.TemporaryDirectory() as temp:
-            app = Path(temp) / "MoyaIshka"
+            app = Path(temp) / "ISH"
             internal = app / "_internal"
             internal.mkdir(parents=True)
             payloads = {
-                "MoyaIshka.exe": b"fake exe",
+                "ISH.exe": b"fake exe",
                 "_internal/python311.dll": b"python",
                 "_internal/vcruntime140.dll": b"runtime",
                 "_internal/vcruntime140_1.dll": b"runtime",
@@ -440,8 +440,8 @@ class ReleaseBuildTests(unittest.TestCase):
             manifest = {
                 "schema": 1,
                 "version": "4.2.9",
-                "entrypoint": "MoyaIshka.exe",
-                "exe_sha256": hashlib.sha256(payloads["MoyaIshka.exe"]).hexdigest(),
+                "entrypoint": "ISH.exe",
+                "exe_sha256": hashlib.sha256(payloads["ISH.exe"]).hexdigest(),
                 "files": entries,
             }
             (app / "build_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -469,7 +469,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("build_manifest.json", source)
         self.assertIn("sha256", source)
         self.assertIn('stream.reconfigure(encoding="utf-8"', source)
-        self.assertIn("MoyaIshka.zip", (ROOT / "updater.py").read_text(encoding="utf-8"))
+        self.assertIn("ISH.zip", (ROOT / "updater.py").read_text(encoding="utf-8"))
 
     def test_runtime_crypto_self_test_passes_in_build_environment(self):
         from main import _packaged_import_self_test
@@ -526,7 +526,7 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertLess(workflow.index("Verify app-local VC runtime DLLs are present"), workflow.index("Verify onedir EXE starts without Python on PATH"))
         self.assertLess(workflow.index("Verify onedir EXE starts without Python on PATH"), workflow.index("Create release or replace assets"))
-        self.assertIn("MoyaIshka.zip.sha256", workflow)
+        self.assertIn("ISH.zip.sha256", workflow)
 
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -561,7 +561,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.9' }}", workflow)
         self.assertIn("- name: Update v4.2.9 tag to validated root source", workflow)
         self.assertIn("git push --force origin refs/tags/v4.2.9", workflow)
-        self.assertIn('MoyaIshka 4.2.9 — onedir Windows 10 package" v4.2.9 $env:GITHUB_SHA', workflow)
+        self.assertIn('ISH 4.2.9 — onedir Windows 10 package" v4.2.9 $env:GITHUB_SHA', workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
