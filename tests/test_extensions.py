@@ -155,6 +155,15 @@ class PatchTests(unittest.TestCase):
         self.assertIn("Обработка ошибок", items[0]["title"])
         self.assertIn("log", items[0]["proposed"])
 
+    def test_parse_improvement_suggestion_location(self):
+        response = (
+            '{"suggestions":[{"title":"Проверка URL","location":"main.py.ApiClient.fetch",'
+            '"problem":"Нет проверки схемы","current":"urlopen(url)",'
+            '"proposed":"validate_url(url)","benefit":"Исключает небезопасные схемы"}]}'
+        )
+        items = parse_improvement_suggestions(response)
+        self.assertEqual(items[0]["location"], "main.py.ApiClient.fetch")
+
     def test_parse_empty_improvement_suggestions(self):
         self.assertEqual(parse_improvement_suggestions('{"suggestions":[]}'), [])
 
