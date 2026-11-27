@@ -406,6 +406,32 @@ class SelfImprovementInteractionTests(unittest.TestCase):
 
         self.assertEqual(app.root.value, "Создай резервное копирование")
 
+    def test_paste_improvement_task_inserts_clipboard_text(self):
+        class Prompt:
+            def __init__(self):
+                self.inserted = ""
+                self.focused = False
+
+            def delete(self, _start, _end):
+                raise main_module.tk.TclError("no selection")
+
+            def insert(self, _index, value):
+                self.inserted += value
+
+            def focus_set(self):
+                self.focused = True
+
+        app = MoyaIshkaApp.__new__(MoyaIshkaApp)
+        app.root = self.Clipboard("Вставленный текст")
+        app.improve_prompt_box = Prompt()
+        app.improve_status_var = self.Status()
+
+        app.paste_improvement_task()
+
+        self.assertEqual(app.improve_prompt_box.inserted, "Вставленный текст")
+        self.assertTrue(app.improve_prompt_box.focused)
+        self.assertIn("вставлен", app.improve_status_var.value)
+
     def test_nested_text_scroll_hands_off_to_page_at_bottom_and_top(self):
         inner = self.ScrollView(first=0.0, last=0.5)
         page = self.ScrollView(first=0.0, last=0.4)
