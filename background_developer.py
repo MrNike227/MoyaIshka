@@ -75,7 +75,7 @@ def run_background_development(
     model_call: ModelCall,
     *,
     version: str = "",
-    timeout_seconds: int = 240,
+    timeout_seconds: int = 600,
 ) -> dict[str, Any]:
     """Generate one useful change, save it for review, test it in a temporary project copy.
 
