@@ -53,7 +53,7 @@ def _host_details() -> dict[str, Any]:
             "supported": False, "edition": edition, "build": build,
             "reason": "Нужна Windows 10 версии 1903 или новее.",
         }
-    allowed_architectures = {"amd64", "x86_64"} if build < 22000 else {"amd64", "x86_64", "arm64"}
+    allowed_architectures = {"amd64", "x86_64"} if build < 22621 else {"amd64", "x86_64", "arm64"}
     if machine not in allowed_architectures:
         return {
             "supported": False, "edition": edition, "build": build, "architecture": machine,
