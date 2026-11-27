@@ -528,7 +528,8 @@ def _looks_like_ish_executable(filename: str) -> bool:
     """Recognize only this application's executable names."""
     name = filename.casefold()
     return (
-        name in {"moyaishka.exe", "моя иишка.exe", "moyaishka_update.exe", "моя иишка_update.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
+        name in {"ish.exe", "moyaishka.exe", "моя иишка.exe", "ish_update.exe", "moyaishka_update.exe", "моя иишка_update.exe", "ish.previous.exe", "ish.installing.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
+        or (name.startswith("ish_") and name.endswith(".exe"))
         or (name.startswith("moyaishka_") and name.endswith(".exe"))
         or (name.startswith("моя иишка_") and name.endswith(".exe"))
     )
@@ -927,8 +928,9 @@ def _directory_updater_script() -> str:
                 if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
                     [void](CopyDirectoryContents $BackupDir $TargetDir 'Восстановление резервной копии')
                     $restoredExe = Join-Path $TargetDir 'ISH.exe'
+                    if (-not (Test-Path -LiteralPath $restoredExe -PathType Leaf)) { $restoredExe = Join-Path $TargetDir 'MoyaIshka.exe' }
                     if (-not (Test-Path -LiteralPath $restoredExe -PathType Leaf)) {
-                        throw 'После отката не найден прежний ISH.exe.'
+                        throw 'После отката не найден прежний ISH.exe или MoyaIshka.exe.'
                     }
                     $restoredHash = (Get-FileHash -LiteralPath $restoredExe -Algorithm SHA256).Hash.ToLowerInvariant()
                     if ($PreviousExeHash -and $restoredHash -ne $PreviousExeHash) {
@@ -960,7 +962,7 @@ def _directory_updater_script() -> str:
         if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { throw 'Программа не закрылась за 120 секунд.' }
 
         $running = Get-CimInstance Win32_Process -Filter "Name='ISH.exe' OR Name='MoyaIshka.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'ISH.exe')) }
+            Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'ISH.exe') -or [IO.Path]::GetFullPath($_.ExecutablePath) -ieq (Join-Path $TargetDir 'MoyaIshka.exe')) }
         foreach ($entry in @($running)) {
             if (-not $entry) { continue }
             $proc = Get-Process -Id ([int]$entry.ProcessId) -ErrorAction SilentlyContinue
@@ -982,6 +984,7 @@ def _directory_updater_script() -> str:
             $HadPrevious = ($oldItems.Count -gt 0)
             if ($HadPrevious -and -not (
                 (Test-Path -LiteralPath (Join-Path $TargetDir 'ISH.exe') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $TargetDir 'MoyaIshka.exe') -PathType Leaf) -or
                 (Test-Path -LiteralPath (Join-Path $TargetDir 'build_manifest.json') -PathType Leaf)
             )) {
                 throw 'Целевая папка уже содержит другие файлы и не распознана как установка ISH. Выбери отдельную папку.'
@@ -992,8 +995,9 @@ def _directory_updater_script() -> str:
         # The target directory itself is never moved or renamed.
         if ($HadPrevious) {
             $previousExe = Join-Path $TargetDir 'ISH.exe'
+            if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) { $previousExe = Join-Path $TargetDir 'MoyaIshka.exe' }
             if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
-                throw 'В прежней установке отсутствует ISH.exe; замена отменена.'
+                throw 'В прежней установке отсутствует ISH.exe или MoyaIshka.exe; замена отменена.'
             }
             $PreviousExeHash = (Get-FileHash -LiteralPath $previousExe -Algorithm SHA256).Hash.ToLowerInvariant()
             [void](CopyDirectoryContents $TargetDir $BackupDir 'Создание резервной копии')
