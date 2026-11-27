@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Private per-user Supabase Storage mirror for encrypted MoyaIshka backups."""
+"""Private per-user Supabase Storage mirror for encrypted ISH backups."""
 from __future__ import annotations
 import base64, hashlib, json, os, re, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
@@ -51,7 +51,7 @@ class SupabaseBackupClient:
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": "Bearer " + self.access_token, "apikey": self.publishable_key,
-                "User-Agent": "MoyaIshka/4.1.9 (Supabase encrypted backup)", "Accept": "application/json"}
+                "User-Agent": "ISH/4.2.9 (Supabase encrypted backup)", "Accept": "application/json"}
 
     @staticmethod
     def _error_text(raw: bytes) -> str:
