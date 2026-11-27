@@ -571,6 +571,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("record_windows_sandbox_install", source)
         self.assertIn("record_windows_sandbox_install(result)", source)
         self.assertIn("get_windows_sandbox_status", source)
+        self.assertIn("<ProtectedClient>Enable</ProtectedClient>", sandbox)
         self.assertIn("<Networking>Disable</Networking>", sandbox)
         self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
         self.assertIn("if sandbox_executor is None:", testing)
