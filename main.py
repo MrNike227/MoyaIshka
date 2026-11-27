@@ -2081,6 +2081,7 @@ class MoyaIshkaApp:
         canvas.configure(yscrollcommand=scroll.set)
         canvas.grid(row=1, column=0, sticky="nsew")
         scroll.grid(row=1, column=1, sticky="ns")
+        self.workshop_page_canvas = canvas
         content = ttk.Frame(canvas, padding=(2, 2, 12, 18))
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -2120,28 +2121,52 @@ class MoyaIshkaApp:
         ttk.Combobox(target_row, textvariable=self.improve_target_var, state="readonly", values=editable_project_files(), width=38).pack(side="left")
         self.improve_dependency_var = tk.StringVar(value="Связи модулей: будут проверены перед анализом.")
         ttk.Label(self_dev, textvariable=self.improve_dependency_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(2, 6))
-        self.improve_prompt_box = tk.Text(self_dev, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9))
-        self.improve_prompt_box.pack(fill="x", pady=(4, 8))
+        prompt_frame = ttk.Frame(self_dev, style="Panel.TFrame")
+        prompt_frame.pack(fill="x", pady=(4, 2))
+        self.improve_prompt_box = tk.Text(prompt_frame, height=4, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9))
+        prompt_scroll = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.improve_prompt_box.yview)
+        self.improve_prompt_box.configure(yscrollcommand=prompt_scroll.set)
+        self.improve_prompt_box.pack(side="left", fill="both", expand=True)
+        prompt_scroll.pack(side="right", fill="y")
         self.improve_prompt_box.insert("1.0", "Например: добавь кнопку, которая экспортирует память в JSON.")
+        self._install_text_clipboard_menu(self.improve_prompt_box)
+        self._bind_nested_text_scrolling(self.improve_prompt_box, canvas)
+        self._bind_nested_text_scrolling(prompt_scroll, canvas, text_widget=self.improve_prompt_box)
+        prompt_actions = ttk.Frame(self_dev, style="Panel.TFrame")
+        prompt_actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(prompt_actions, text="Копировать задание", command=self.copy_improvement_task).pack(side="left")
+        ttk.Button(prompt_actions, text="Вставить из буфера", command=self.paste_improvement_task).pack(side="left", padx=8)
         self.improve_auto_var = tk.BooleanVar(value=bool(self.config.get("self_improve_auto_enabled", False)))
         self._make_checkbox(self_dev, "Автоанализ выбранного файла раз в сутки (без автоматического изменения кода)", self.improve_auto_var, self._toggle_auto_improvement, background_key="panel").pack(anchor="w", pady=(0, 6))
         analysis_actions = ttk.Frame(self_dev, style="Panel.TFrame")
         analysis_actions.pack(fill="x", pady=(0, 6))
         ttk.Button(analysis_actions, text="Автоанализ выбранного файла", command=self.analyze_improvements).pack(side="left")
+        ttk.Button(analysis_actions, text="Копировать текст улучшения", command=self.copy_selected_improvement).pack(side="left", padx=8)
         ttk.Button(analysis_actions, text="Подготовить diff выбранного предложения", style="Accent.TButton", command=self.prepare_selected_improvement).pack(side="left", padx=8)
         improvement_panel = ttk.Frame(self_dev, style="Panel.TFrame")
         improvement_panel.pack(fill="both", expand=True, pady=(0, 6))
         improvement_panel.columnconfigure(0, weight=1)
         improvement_panel.columnconfigure(1, weight=2)
+        improvement_panel.rowconfigure(1, weight=1)
         ttk.Label(improvement_panel, text="Предложения", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Label(improvement_panel, text="Как сейчас → как будет", style="Panel.TLabel").grid(row=0, column=1, sticky="w")
         self.improvement_listbox = tk.Listbox(improvement_panel, height=4, exportselection=False, activestyle="dotbox", bg=self.colors["input"], fg=self.colors["text"], selectbackground=self.colors["select"], selectforeground=self.colors["text"], relief="flat", highlightthickness=0, font=(self.font_family, 9))
         self.improvement_listbox.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         self.improvement_listbox.bind("<<ListboxSelect>>", self._show_selected_improvement)
-        self.improvement_preview = tk.Text(improvement_panel, height=7, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9), bg=self.colors["input"], fg=self.colors["text"])
-        self.improvement_preview.grid(row=1, column=1, sticky="nsew")
+        preview_frame = ttk.Frame(improvement_panel, style="Panel.TFrame")
+        preview_frame.grid(row=1, column=1, sticky="nsew")
+        preview_frame.rowconfigure(0, weight=1)
+        preview_frame.columnconfigure(0, weight=1)
+        self.improvement_preview = tk.Text(preview_frame, height=7, wrap="word", relief="flat", borderwidth=0, highlightthickness=0, padx=9, pady=8, font=(self.font_family, 9), bg=self.colors["input"], fg=self.colors["text"])
+        preview_scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.improvement_preview.yview)
+        self.improvement_preview.configure(yscrollcommand=preview_scroll.set)
+        self.improvement_preview.grid(row=0, column=0, sticky="nsew")
+        preview_scroll.grid(row=0, column=1, sticky="ns")
         self.improvement_preview.insert("1.0", "Включи автоанализ или запусти его вручную.")
         self.improvement_preview.configure(state="disabled")
+        self._install_text_clipboard_menu(self.improvement_preview, readonly=True)
+        self._bind_nested_text_scrolling(self.improvement_preview, canvas)
+        self._bind_nested_text_scrolling(preview_scroll, canvas, text_widget=self.improvement_preview)
         ttk.Button(self_dev, text="Подготовить diff по моему описанию", style="Accent.TButton", command=self.generate_improvement_patch).pack(anchor="w")
         patch_frame = ttk.Frame(self_dev, style="Panel.TFrame")
         patch_frame.pack(fill="both", expand=True, pady=(8, 6))
@@ -2154,6 +2179,8 @@ class MoyaIshkaApp:
         self.patch_preview.grid(row=0, column=0, sticky="nsew")
         patch_y.grid(row=0, column=1, sticky="ns")
         patch_x.grid(row=1, column=0, sticky="ew")
+        self._bind_nested_text_scrolling(self.patch_preview, canvas)
+        self._bind_nested_text_scrolling(patch_y, canvas, text_widget=self.patch_preview)
         patch_actions = ttk.Frame(self_dev, style="Panel.TFrame")
         patch_actions.pack(fill="x")
         ttk.Button(patch_actions, text="Сохранить diff", command=self.save_patch_file).pack(side="left")
@@ -5772,6 +5799,183 @@ class MoyaIshkaApp:
         self._auto_improvement_after_id = self.root.after(
             24 * 60 * 60 * 1000, self._run_scheduled_improvement_analysis,
         )
+
+    def _install_text_clipboard_menu(self, widget: tk.Text, readonly: bool = False) -> None:
+        """Attach familiar copy/paste shortcuts and a right-click menu to a Text field."""
+        menu = tk.Menu(widget, tearoff=False)
+        if not readonly:
+            menu.add_command(label="Вырезать", command=lambda field=widget: self._cut_text_widget_selection(field))
+        menu.add_command(label="Копировать", command=lambda field=widget: self._copy_text_widget_selection(field))
+        if not readonly:
+            menu.add_command(label="Вставить", command=lambda field=widget: self._paste_text_widget_clipboard(field))
+        menu.add_separator()
+        menu.add_command(label="Выделить всё", command=lambda field=widget: field.tag_add("sel", "1.0", "end-1c"))
+        widget.bind(
+            "<Button-3>",
+            lambda event, popup=menu: self._show_text_widget_clipboard_menu(event, popup),
+            add="+",
+        )
+        widget.bind("<Control-c>", lambda _event, field=widget: self._copy_text_widget_selection(field), add="+")
+        widget.bind("<Control-C>", lambda _event, field=widget: self._copy_text_widget_selection(field), add="+")
+        widget.bind("<Control-a>", lambda _event, field=widget: self._select_all_text_widget(field), add="+")
+        widget.bind("<Control-A>", lambda _event, field=widget: self._select_all_text_widget(field), add="+")
+        if not readonly:
+            widget.bind("<Control-x>", lambda _event, field=widget: self._cut_text_widget_selection(field), add="+")
+            widget.bind("<Control-X>", lambda _event, field=widget: self._cut_text_widget_selection(field), add="+")
+            widget.bind("<Control-v>", lambda _event, field=widget: self._paste_text_widget_clipboard(field), add="+")
+            widget.bind("<Control-V>", lambda _event, field=widget: self._paste_text_widget_clipboard(field), add="+")
+            widget.bind("<Shift-Insert>", lambda _event, field=widget: self._paste_text_widget_clipboard(field), add="+")
+        widget._moya_clipboard_menu = menu
+
+    @staticmethod
+    def _show_text_widget_clipboard_menu(event: tk.Event, menu: tk.Menu) -> str:
+        event.widget.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    @staticmethod
+    def _select_all_text_widget(widget: tk.Text) -> str:
+        widget.tag_add("sel", "1.0", "end-1c")
+        return "break"
+
+    def _copy_text_widget_selection(self, widget: tk.Text) -> str:
+        try:
+            selected = widget.get("sel.first", "sel.last")
+        except tk.TclError:
+            selected = ""
+        if selected:
+            try:
+                widget.clipboard_clear()
+                widget.clipboard_append(selected)
+                widget.update_idletasks()
+                if hasattr(self, "improve_status_var"):
+                    self.improve_status_var.set("Выделенный текст скопирован")
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _cut_text_widget_selection(self, widget: tk.Text) -> str:
+        if str(widget.cget("state")) == "disabled":
+            return "break"
+        self._copy_text_widget_selection(widget)
+        try:
+            widget.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        return "break"
+
+    @staticmethod
+    def _paste_text_widget_clipboard(widget: tk.Text) -> str:
+        if str(widget.cget("state")) == "disabled":
+            return "break"
+        try:
+            value = widget.clipboard_get()
+        except tk.TclError:
+            return "break"
+        if not value:
+            return "break"
+        try:
+            widget.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        try:
+            widget.insert("insert", value)
+        except tk.TclError:
+            pass
+        return "break"
+
+    @staticmethod
+    def _scroll_nested_text(event: tk.Event, text_widget: tk.Text, page_canvas: tk.Canvas) -> str:
+        """Scroll text while it can move; hand the wheel to its page at either edge."""
+        button = int(getattr(event, "num", 0) or 0)
+        if button == 4:
+            steps = -1
+        elif button == 5:
+            steps = 1
+        else:
+            delta = int(getattr(event, "delta", 0))
+            if not delta:
+                return "break"
+            steps = int(-delta / 120)
+            if steps == 0:
+                steps = -1 if delta > 0 else 1
+
+        try:
+            first, last = (float(value) for value in text_widget.yview())
+            inner_can_scroll = (steps < 0 and first > 0.001) or (steps > 0 and last < 0.999)
+            target = text_widget if inner_can_scroll else page_canvas
+            target.yview_scroll(steps, "units")
+        except (tk.TclError, TypeError, ValueError):
+            try:
+                page_canvas.yview_scroll(steps, "units")
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _bind_nested_text_scrolling(
+        self, widget: tk.Widget, page_canvas: tk.Canvas, text_widget: tk.Text | None = None,
+    ) -> None:
+        target = text_widget or widget
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(
+                sequence,
+                lambda event, field=target, outer=page_canvas: self._scroll_nested_text(event, field, outer),
+                add="+",
+            )
+
+    def copy_selected_improvement(self) -> None:
+        """Copy the model's proposed improvement text, not the whole review report."""
+        selected = self.improvement_listbox.curselection() if hasattr(self, "improvement_listbox") else ()
+        if not selected or selected[0] >= len(self.improvement_suggestions):
+            self.improve_status_var.set("Сначала выбери предложение из списка.")
+            return
+        proposed = str(self.improvement_suggestions[selected[0]].get("proposed", ""))
+        if not proposed.strip():
+            self.improve_status_var.set("В выбранном предложении нет текста улучшения для копирования.")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(proposed)
+            self.root.update_idletasks()
+        except tk.TclError as exc:
+            self.improve_status_var.set(f"Не удалось скопировать текст улучшения: {exc}")
+            return
+        self.improve_status_var.set("Предложенный текст улучшения скопирован")
+
+    def copy_improvement_task(self) -> None:
+        """Copy the complete task currently entered for diff generation."""
+        value = self.improve_prompt_box.get("1.0", "end-1c").strip()
+        if not value:
+            self.improve_status_var.set("Поле задания пустое.")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(value)
+            self.root.update_idletasks()
+        except tk.TclError as exc:
+            self.improve_status_var.set(f"Не удалось скопировать задание: {exc}")
+            return
+        self.improve_status_var.set("Задание скопировано в буфер обмена")
+
+    def paste_improvement_task(self) -> None:
+        """Paste clipboard text at the caret, replacing selected task text."""
+        if not self.improve_prompt_box:
+            return
+        try:
+            value = self.root.clipboard_get()
+        except tk.TclError:
+            self.improve_status_var.set("Буфер обмена пуст или недоступен.")
+            return
+        try:
+            self.improve_prompt_box.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        self.improve_prompt_box.insert("insert", value)
+        self.improve_prompt_box.focus_set()
+        self.improve_status_var.set("Текст вставлен в задание")
 
     def _show_selected_improvement(self, _event: tk.Event | None = None) -> None:
         selected = self.improvement_listbox.curselection() if hasattr(self, "improvement_listbox") else ()
