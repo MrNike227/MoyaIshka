@@ -637,7 +637,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
 
 
-    def test_inno_setup_installer_version_is_428(self):
+    def test_inno_setup_installer_version_is_429(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
         self.assertIn("AppVersion=4.2.9", installer)
 
