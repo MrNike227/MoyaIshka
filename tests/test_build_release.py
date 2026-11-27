@@ -579,6 +579,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_is_windows_sandbox_guest", testing)
         self.assertIn("wdagutilityaccount", testing)
         self.assertIn("MOYA_WINDOWS_SANDBOX", testing)
+        self.assertIn("return 3", testing)
+        self.assertIn("allowed_names = {", sandbox)
+        self.assertIn("_is_reparse_point", sandbox)
         self.assertNotIn('["-m", "unittest", "discover"', testing)
 
 
