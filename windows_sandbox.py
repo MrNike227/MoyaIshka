@@ -132,7 +132,7 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     result: dict[str, Any] = {
         **details, "installed": False, "ready": False, "restart_required": False,
         "feature_state": "Unknown", "virtualization_ready": False,
-        "memory_mb": 0, "logical_processors": 0,
+        "memory_mb": 0, "cpu_cores": 0,
     }
     if not details.get("supported"):
         return result
