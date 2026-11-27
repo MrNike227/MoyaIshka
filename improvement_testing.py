@@ -71,7 +71,7 @@ def _prepare_guest_runner(readonly_root: Path) -> Path:
         )
     executable = Path(sys.executable).resolve()
     internal = executable.parent / "_internal"
-    if executable.name.casefold() != "moyaishka.exe" or not executable.is_file() or not internal.is_dir():
+    if executable.name.casefold() != "ish.exe" or not executable.is_file() or not internal.is_dir():
         raise ProposalTestError("Для тестирования требуется полная сборка ISH.exe с каталогом _internal.")
     runner = readonly_root / "Runner"
     runner.mkdir(parents=True, exist_ok=True)
