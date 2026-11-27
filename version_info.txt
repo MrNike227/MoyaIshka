@@ -15,12 +15,12 @@ VSVersionInfo(
       StringTable(
         '040904B0',
         [
-          StringStruct('CompanyName', 'Moya Ishka'),
-          StringStruct('FileDescription', 'Moya Ishka Desktop Assistant'),
+          StringStruct('CompanyName', 'ISH'),
+          StringStruct('FileDescription', 'ISH Desktop Assistant'),
           StringStruct('FileVersion', '4.2.9'),
           StringStruct('InternalName', 'ISH'),
           StringStruct('OriginalFilename', 'ISH.exe'),
-          StringStruct('ProductName', 'Moya Ishka'),
+          StringStruct('ProductName', 'ISH'),
           StringStruct('ProductVersion', '4.2.9')
         ]
       )
