@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 import subprocess
@@ -8,7 +9,7 @@ import re
 from unittest.mock import patch
 from pathlib import Path
 from improvement_delivery import save_change_bundle
-from improvement_testing import ProposalTestError, test_change_bundle
+from improvement_testing import ProposalTestError, _is_windows_sandbox_guest, run_proposal_tests_cli, test_change_bundle
 
 def run_local_test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> dict:
     """Test-only stand-in; production never uses a host-side test runner."""
@@ -147,6 +148,29 @@ class ImprovementTestingTests(unittest.TestCase):
             (root / "private.db").write_bytes(b"database")
             ignored = _ignore_sandbox_copy(str(root), [p.name for p in root.iterdir()])
             self.assertEqual(ignored, {".env", "config.json", "private.db"})
+
+
+    def test_guest_runner_rejects_host_user_even_with_launcher_marker(self):
+        with patch("improvement_testing.os.name", "nt"), patch.dict(
+            os.environ, {"USERNAME": "regular-user", "MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+        ):
+            self.assertFalse(_is_windows_sandbox_guest())
+
+    def test_guest_runner_requires_windows_sandbox_identity_and_marker(self):
+        with patch("improvement_testing.os.name", "nt"), patch.dict(
+            os.environ, {"USERNAME": "WDAGUtilityAccount", "MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+        ):
+            self.assertTrue(_is_windows_sandbox_guest())
+        with patch("improvement_testing.os.name", "nt"), patch.dict(
+            os.environ, {"USERNAME": "WDAGUtilityAccount"}, clear=False,
+        ):
+            os.environ.pop("MOYA_WINDOWS_SANDBOX", None)
+            self.assertFalse(_is_windows_sandbox_guest())
+
+    def test_cli_refuses_host_side_execution_without_sandbox(self):
+        with patch("improvement_testing._is_windows_sandbox_guest", return_value=False):
+            self.assertEqual(run_proposal_tests_cli("unused-project", "unused-result.json"), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
