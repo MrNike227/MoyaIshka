@@ -420,7 +420,7 @@ class MultiFileDiffTests(unittest.TestCase):
             self.patch
             + "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 3\n"
         )
-        with self.assertRaisesRegex(ValueError, "повторное изменение"):
+        with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
             split_multi_file_unified_diff(duplicate)
 
     def test_multi_file_diff_rejects_unexpected_or_missing_file(self):
@@ -473,11 +473,11 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_429(self):
+    def test_application_release_version_is_430(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.9")
+        self.assertEqual(APP_VERSION, "4.3.0")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main
