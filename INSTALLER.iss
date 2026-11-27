@@ -45,4 +45,4 @@ Name: "{group}\ISH"; Filename: "{app}\ISH.exe"
 Name: "{autodesktop}\ISH"; Filename: "{app}\ISH.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\ISH.exe"; Description: "Запустить Мою ИИшку"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\ISH.exe"; Description: "Запустить ISH"; Flags: postinstall nowait skipifsilent
