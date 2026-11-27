@@ -240,5 +240,68 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             split_multi_file_unified_diff("Я не могу подготовить изменения.")
 
 
+    def test_repeated_file_sections_merge_non_overlapping_hunks(self):
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\\nVALUE = 1\\nOTHER = 2\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -2 +2 @@
+-VALUE = 1
++VALUE = 10
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -3 +3 @@
+-OTHER = 2
++OTHER = 20
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(
+            updated["plugin_manager.py"],
+            "# -*- coding: utf-8 -*-\\nVALUE = 10\\nOTHER = 20\\n",
+        )
+
+    def test_exact_duplicate_hunk_is_deduplicated(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertEqual(sections["plugin_manager.py"].count("@@ "), 1)
+
+    def test_overlapping_duplicate_hunks_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 3
+"""
+        with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
+            split_multi_file_unified_diff(patch)
+
+    def test_wrapped_added_line_is_recovered(self):
+        sources = {"plugin_manager.py": "class PluginManager:\\n    pass\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,2 +1,2 @@
+-class PluginManager:
++class
+PluginManager:
+     pass
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "class\\nPluginManager:\\n    pass\\n")
+
+
 if __name__ == "__main__":
     unittest.main()
