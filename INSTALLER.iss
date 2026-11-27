@@ -3,18 +3,18 @@
 
 [Setup]
 AppId={{C6DBA092-A00B-4E45-9C02-67B8D543A2A1}
-AppName=Моя ИИшка
+AppName=ISH
 AppVersion=4.2.9
-AppPublisher=Моя ИИшка
+AppPublisher=ISH
 DisableProgramGroupPage=yes
-DefaultDirName={localappdata}\Programs\MoyaIshka_Container\App
+DefaultDirName={localappdata}\Programs\ISH_Container\App
 UsePreviousAppDir=no
 UninstallFilesDir={app}\..\Uninstall
-DefaultGroupName=Моя ИИшка
+DefaultGroupName=ISH
 OutputDir=installer_output
-OutputBaseFilename=MoyaIshka_Setup
+OutputBaseFilename=ISH_Setup
 SetupIconFile=app_icon.ico
-UninstallDisplayIcon={app}\MoyaIshka.exe
+UninstallDisplayIcon={app}\ISH.exe
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64
 Compression=lzma
@@ -34,15 +34,15 @@ Name: "{app}\..\Updates"; Flags: uninsneveruninstall
 Name: "{app}\..\Uninstall"; Flags: uninsneveruninstall
 
 [Files]
-Source: "dist\MoyaIshka\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\ISH\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "licenses\GPL-3.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 Source: "TEST_WINDOWS10.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Моя ИИшка"; Filename: "{app}\MoyaIshka.exe"
-Name: "{autodesktop}\Моя ИИшка"; Filename: "{app}\MoyaIshka.exe"; Tasks: desktopicon
+Name: "{group}\ISH"; Filename: "{app}\ISH.exe"
+Name: "{autodesktop}\ISH"; Filename: "{app}\ISH.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\MoyaIshka.exe"; Description: "Запустить Мою ИИшку"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\ISH.exe"; Description: "Запустить Мою ИИшку"; Flags: postinstall nowait skipifsilent
