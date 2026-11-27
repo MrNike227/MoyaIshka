@@ -258,19 +258,37 @@ def wait_for_sandbox_completion(
     result_dir: str | Path,
     *,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    sandbox_process: subprocess.Popen | None = None,
+    max_result_bytes: int = 16 * 1024 * 1024,
 ) -> dict[str, Any]:
-    """Wait for the guest runner's completion record, without accepting a host-run fallback."""
+    """Wait for guest completion while bounding untrusted files written to the host share."""
     import json
-    directory = Path(result_dir)
+    directory = Path(result_dir).resolve()
     completion = directory / "complete.json"
     deadline = time.monotonic() + max(60, min(int(timeout_seconds) + 120, 900))
     while time.monotonic() < deadline:
-        if completion.is_file():
+        total_bytes = 0
+        try:
+            for item in directory.rglob("*"):
+                if item.is_symlink():
+                    raise RuntimeError("Sandbox создала ссылку в папке результатов; отчёт отклонён.")
+                if item.is_file():
+                    total_bytes += item.stat().st_size
+                    if total_bytes > max_result_bytes:
+                        if sandbox_process is not None and sandbox_process.poll() is None:
+                            sandbox_process.kill()
+                        raise RuntimeError("Sandbox превысила лимит 16 МБ для отчётов; процесс остановлен.")
+        except OSError as exc:
+            raise RuntimeError(f"Не удалось проверить результаты Windows Sandbox: {exc}") from exc
+        if completion.is_file() and not completion.is_symlink():
             try:
-                data = json.loads(completion.read_text(encoding="utf-8-sig"))
-                if isinstance(data, dict) and data.get("schema") == 1 and data.get("completed") is True:
-                    return data
+                if completion.stat().st_size <= 16 * 1024:
+                    data = json.loads(completion.read_text(encoding="utf-8-sig"))
+                    if isinstance(data, dict) and data.get("schema") == 1 and data.get("completed") is True:
+                        return data
             except (OSError, ValueError):
                 pass
         time.sleep(1)
+    if sandbox_process is not None and sandbox_process.poll() is None:
+        sandbox_process.kill()
     raise TimeoutError("Windows Sandbox не вернула результат за отведённое время. Изменения не применены.")
