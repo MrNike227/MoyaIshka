@@ -26,6 +26,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+# Keep the remote table and AAD stable: existing encrypted ISH/MoyaIshka vault rows must remain decryptable.
 APP_UA = "ISH/4.2.9-cloud"
 VAULT_TABLE = "moyaishka_vault"
 VAULT_SCHEMA_VERSION = 1
