@@ -56,7 +56,7 @@ def _record_result(updates_dir: Path, result: dict[str, Any]) -> Path:
     summary = {
         key: result.get(key)
         for key in (
-            "status", "tested_at", "target", "title", "bundle_path",
+            "status", "tested_at", "target", "files", "title", "bundle_path",
             "report_path", "passed", "tests_run", "failures", "errors", "error",
         )
         if result.get(key) is not None
@@ -77,11 +77,12 @@ def run_background_development(
     *,
     version: str = "",
     timeout_seconds: int = 600,
+    sandbox_executor: Callable[[Path, Path, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Generate one useful change, save it for review, test it in a temporary project copy.
+    """Generate a code change and its matching test, save both, and test the bundle.
 
-    Tests execute with the current Windows user's permissions. The temporary copy
-    protects the working project from being overwritten, but is not an OS sandbox.
+    Production calls use the real Windows Sandbox. sandbox_executor is only a
+    deterministic test seam; generated code is never executed on the host by default.
     """
     root = Path(project_root).expanduser().resolve()
     updates = Path(updates_dir).expanduser().resolve()
@@ -236,7 +237,9 @@ def run_background_development(
         updates, file_changes, patch,
         title=suggestion["title"], version=version,
     )
-    report = test_change_bundle(bundle, root, timeout_seconds=timeout_seconds)
+    report = test_change_bundle(
+        bundle, root, timeout_seconds=timeout_seconds, sandbox_executor=sandbox_executor,
+    )
     tested_at = str(report.get("tested_at") or "")
     result = {
         "status": "passed" if report.get("passed") else "failed",
