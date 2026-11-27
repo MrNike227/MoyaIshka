@@ -150,19 +150,25 @@ class ImprovementTestingTests(unittest.TestCase):
             self.assertEqual(ignored, {".env", "config.json", "private.db"})
 
 
-    def test_guest_runner_rejects_host_user_even_with_launcher_marker(self):
+    def test_guest_runner_rejects_non_sandbox_account_even_with_marker(self):
         with patch("improvement_testing.os.name", "nt"), patch.dict(
-            os.environ, {"USERNAME": "regular-user", "MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+            os.environ, {"MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+        ), patch("improvement_testing._current_windows_user_sid", return_value=b"host-user"), patch(
+            "improvement_testing._lookup_local_windows_account_sid", return_value=b"wdag-user",
         ):
             self.assertFalse(_is_windows_sandbox_guest())
 
-    def test_guest_runner_requires_windows_sandbox_identity_and_marker(self):
+    def test_guest_runner_requires_matching_guest_sid_and_marker(self):
         with patch("improvement_testing.os.name", "nt"), patch.dict(
-            os.environ, {"USERNAME": "WDAGUtilityAccount", "MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+            os.environ, {"MOYA_WINDOWS_SANDBOX": "1"}, clear=False,
+        ), patch("improvement_testing._current_windows_user_sid", return_value=b"wdag-user"), patch(
+            "improvement_testing._lookup_local_windows_account_sid", return_value=b"wdag-user",
         ):
             self.assertTrue(_is_windows_sandbox_guest())
         with patch("improvement_testing.os.name", "nt"), patch.dict(
-            os.environ, {"USERNAME": "WDAGUtilityAccount"}, clear=False,
+            os.environ, {}, clear=False,
+        ), patch("improvement_testing._current_windows_user_sid", return_value=b"wdag-user"), patch(
+            "improvement_testing._lookup_local_windows_account_sid", return_value=b"wdag-user",
         ):
             os.environ.pop("MOYA_WINDOWS_SANDBOX", None)
             self.assertFalse(_is_windows_sandbox_guest())
