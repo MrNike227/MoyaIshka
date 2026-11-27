@@ -22,6 +22,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "github_pr.py;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.6_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.7_RU.md;source_project"', build)
+        self.assertIn('--add-data "PLAN_4.2.8_RU.md;source_project"', build)
         self.assertIn("dist\\MoyaIshka.zip", build)
         self.assertIn("api-ms-win-crt-", build)
         self.assertIn("ucrtbase.dll", build)
@@ -32,6 +33,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"module_dependency_analyzer.py"', source)
         self.assertIn('"tests/test_module_dependency_analyzer.py"', source)
         self.assertIn('"PLAN_4.2.7_RU.md"', source)
+        self.assertIn('"PLAN_4.2.8_RU.md"', source)
+        self.assertIn('"tests/test_multi_file_diff_recovery.py"', source)
 
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -43,9 +46,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
         self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
 
-    def test_application_version_is_427(self):
+    def test_application_version_is_428(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "4.2.7"', source)
+        self.assertIn('APP_VERSION = "4.2.8"', source)
 
     def test_legacy_update_repository_is_migrated(self):
         from main import migrate_update_repository
@@ -227,7 +230,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("_CryptoAESGCM", source)
         self.assertIn("_CryptoScrypt", source)
         self.assertIn("cipher.decrypt", source)
-        self.assertEqual(source.count('b"4.2.7-smoke"'), 2)
+        self.assertIn('smoke_aad = f"{APP_VERSION}-smoke".encode("ascii")', source)
+        self.assertEqual(source.count("smoke_aad"), 3)
         self.assertIn("import _cffi_backend", source)
 
     def test_github_actions_use_node24_compatible_action_majors(self):
@@ -433,7 +437,7 @@ class ReleaseBuildTests(unittest.TestCase):
                 })
             manifest = {
                 "schema": 1,
-                "version": "4.2.7",
+                "version": "4.2.8",
                 "entrypoint": "MoyaIshka.exe",
                 "exe_sha256": hashlib.sha256(payloads["MoyaIshka.exe"]).hexdigest(),
                 "files": entries,
@@ -443,11 +447,11 @@ class ReleaseBuildTests(unittest.TestCase):
             (app / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
             (internal / "Thumbs.db").write_bytes(b"cache")
             (internal / "ehthumbs.db").write_bytes(b"cache")
-            self.assertEqual(validate_app_directory(app, "4.2.7")["version"], "4.2.7")
+            self.assertEqual(validate_app_directory(app, "4.2.8")["version"], "4.2.8")
 
             (internal / "unexpected.dll").write_bytes(b"unexpected")
             with self.assertRaisesRegex(RuntimeError, "лишние"):
-                validate_app_directory(app, "4.2.7")
+                validate_app_directory(app, "4.2.8")
 
     def test_directory_updater_has_verified_folder_swap_and_rollback(self):
         helper = (ROOT / "updater_helper.py").read_text(encoding="utf-8")
@@ -484,12 +488,12 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('pip install --upgrade "cryptography>=42.0" "cffi>=2.0.0"', launcher)
         self.assertIn(":crypto_install_failed", launcher)
 
-    def test_windows_version_resource_is_427(self):
+    def test_windows_version_resource_is_428(self):
         source = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(4, 2, 7, 0)", source)
-        self.assertIn("prodvers=(4, 2, 7, 0)", source)
-        self.assertIn("FileVersion', '4.2.7'", source)
-        self.assertIn("ProductVersion', '4.2.7'", source)
+        self.assertIn("filevers=(4, 2, 8, 0)", source)
+        self.assertIn("prodvers=(4, 2, 8, 0)", source)
+        self.assertIn("FileVersion', '4.2.8'", source)
+        self.assertIn("ProductVersion', '4.2.8'", source)
 
 
 
@@ -501,7 +505,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_workflow_uses_distinct_verified_name_and_node24_actions(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("Build Windows release — verified 4.2.7 onedir", workflow)
+        self.assertIn("Build Windows release — verified 4.2.8 onedir", workflow)
         self.assertIn("Audit python311.dll PE dependency tree on Windows", workflow)
         self.assertIn("runs-on: windows-2022", workflow)
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
@@ -546,20 +550,20 @@ class ReleaseBuildTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         release_step = workflow[workflow.index("- name: Create release or replace assets"): ]
         self.assertIn("startsWith(github.ref, 'refs/tags/')", release_step)
-        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.7]')", release_step)
+        self.assertIn("contains(github.event.head_commit.message, '[refresh-v4.2.8]')", release_step)
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
     def test_hotfix_marker_refreshes_existing_v4185_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.7' }}", workflow)
-        self.assertIn("- name: Update v4.2.7 tag to validated root source", workflow)
-        self.assertIn("git push --force origin refs/tags/v4.2.7", workflow)
-        self.assertIn('MoyaIshka 4.2.7 — onedir Windows 10 package" v4.2.7 $env:GITHUB_SHA', workflow)
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.2.8' }}", workflow)
+        self.assertIn("- name: Update v4.2.8 tag to validated root source", workflow)
+        self.assertIn("git push --force origin refs/tags/v4.2.8", workflow)
+        self.assertIn('MoyaIshka 4.2.8 — onedir Windows 10 package" v4.2.8 $env:GITHUB_SHA', workflow)
         self.assertIn("git tag --force --annotate --message", workflow)
         self.assertIn('git config user.name "github-actions[bot]"', workflow)
         self.assertIn('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"', workflow)
-        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.7 tag to validated root source"))
+        self.assertLess(workflow.index("Create release or replace assets"), workflow.index("Update v4.2.8 tag to validated root source"))
     def test_windows10_script_checks_exact_target_os_without_python(self):
         script = (ROOT / "TEST_WINDOWS10.ps1").read_text(encoding="utf-8")
         self.assertIn("19045", script)
@@ -622,10 +626,19 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("split_multi_file_unified_diff", apply_method)
         self.assertIn("нельзя применить пакет к исходникам напрямую", apply_method.lower())
         self.assertIn("split_multi_file_unified_diff", pr_method)
-        self.assertIn("пока принимает один файл", pr_method)
+        self.assertIn("if multi_file:", pr_method)
+        self.assertIn("find_matching_tested_proposal_bundle", pr_method)
+        self.assertIn("create_draft_pull_request_from_bundle", pr_method)
+        self.assertIn("if multi_file and bundle_dir is not None:", pr_method)
+        self.assertIn("create_draft_pull_request(", pr_method)
 
+
+
+
+    def test_inno_setup_installer_version_is_428(self):
+        installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
+        self.assertIn("AppVersion=4.2.8", installer)
 
 
 if __name__ == "__main__":
     unittest.main()
-

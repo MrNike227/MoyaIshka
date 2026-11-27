@@ -56,7 +56,7 @@ from module_dependency_analyzer import analyze_module_dependencies, build_depend
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, save_multi_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from windows_sandbox import get_windows_sandbox_status, record_windows_sandbox_install, request_windows_sandbox_install, wait_for_install_result
-from github_pr import GitHubProposalError, create_draft_pull_request
+from github_pr import (GitHubProposalError, create_draft_pull_request, create_draft_pull_request_from_bundle, find_matching_tested_proposal_bundle)
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     ensure_install_dir_writable, install_from_source, launch_windows_replacement, launch_windows_directory_replacement, validate_app_directory, sha256_file,
@@ -85,7 +85,7 @@ from resource_governor import ResourceGovernor
 from context_engine import trim_conversation_context
 
 APP_NAME = "Моя ИИшка"
-APP_VERSION = "4.2.7"
+APP_VERSION = "4.2.8"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -220,9 +220,9 @@ def prepare_source_workspace() -> Path:
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "improvement_testing.py", "windows_sandbox.py", "background_developer.py", "module_dependency_analyzer.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "supabase_backup.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
-            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.6_RU.md", "PLAN_4.2.7_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
+            "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.6_RU.md", "PLAN_4.2.7_RU.md", "PLAN_4.2.8_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py", "tests/test_multi_file_diff_recovery.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -6208,15 +6208,11 @@ class MoyaIshkaApp:
             messagebox.showwarning("GitHub Draft PR", "Сначала подготовь diff.")
             return
         try:
-            if len(split_multi_file_unified_diff(patch)) > 1:
-                messagebox.showwarning(
-                    "GitHub Draft PR",
-                    "Этот экран создания PR пока принимает один файл. Сначала сохрани и проверь многофайловый пакет в Windows Sandbox; отправка нескольких файлов в Draft PR будет добавлена отдельно.",
-                )
-                return
+            file_patches = split_multi_file_unified_diff(patch)
         except ValueError as exc:
             messagebox.showerror("GitHub Draft PR", f"Diff не прошёл проверку: {exc}")
             return
+
         token = unprotect_github_pr_token(self.config)
         if not token:
             messagebox.showwarning("GitHub Draft PR", "Сначала добавь GitHub Personal Access Token и сохрани настройки.")
@@ -6225,27 +6221,66 @@ class MoyaIshkaApp:
         base = self.github_pr_base_var.get().strip() if hasattr(self, "github_pr_base_var") else str(self.config.get("github_pr_base", "main"))
         prompt = self.improve_prompt_box.get("1.0", "end").strip()
         title = prompt.splitlines()[0][:180] if prompt else f"Предложение саморазвития: {relative}"
-        if not messagebox.askyesno(
-            "Создать Draft PR",
-            f"Будет создана отдельная ветка и черновик Pull Request в {repository}, базовая ветка — {base}.\n\n"
-            f"Изменяемый файл: {relative}\n\n"
-            "Перед отправкой diff будет применён к текущей версии файла на GitHub. Если исходник изменился и diff больше не подходит, PR не будет создан.\n\n"
-            "Изменения не попадут прямо в main. Merge и Release не выполняются. Продолжить?",
-        ):
+        multi_file = len(file_patches) > 1
+        bundle_dir = None
+
+        if multi_file:
+            try:
+                bundle_dir = find_matching_tested_proposal_bundle(self._updates_directory(), patch)
+            except Exception as exc:
+                messagebox.showerror("GitHub Draft PR", f"Не удалось проверить сохранённый пакет: {exc}")
+                return
+            if bundle_dir is None:
+                messagebox.showwarning(
+                    "GitHub Draft PR",
+                    "Для многофайлового PR нужен сохранённый пакет с точно таким же diff и успешным отчётом Windows Sandbox.\n\n"
+                    "Сначала нажми «Сохранить изменённые файлы в Updates», затем «Тестировать последнее предложение». "
+                    "После успешной проверки повтори создание PR.",
+                )
+                return
+            files_description = "\n".join("- " + path for path in file_patches)
+            confirmation = (
+                f"Будет создана отдельная ветка и черновик Pull Request в {repository}, базовая ветка — {base}.\n\n"
+                f"Проверенный пакет: {bundle_dir.name}\nИзменённые файлы:\n{files_description}\n\n"
+                "Отчёт подтверждает успешный запуск тестов в Windows Sandbox. Перед отправкой каждый файл "
+                "будет сверён с актуальным main и повторно проверен по SHA-256. Merge и Release не выполняются. Продолжить?"
+            )
+        else:
+            single_path = next(iter(file_patches))
+            canonical_patch = file_patches[single_path]
+            confirmation = (
+                f"Будет создана отдельная ветка и черновик Pull Request в {repository}, базовая ветка — {base}.\n\n"
+                f"Изменяемый файл: {single_path}\n\n"
+                "Перед отправкой diff будет применён к текущей версии файла на GitHub. Если исходник изменился "
+                "и diff больше не подходит, PR не будет создан. Merge и Release не выполняются. Продолжить?"
+            )
+
+        if not messagebox.askyesno("Создать Draft PR", confirmation):
             return
-        self.improve_status_var.set("Проверяю базовую версию файла на GitHub и создаю Draft PR…")
+        self.improve_status_var.set("Проверяю предложение и создаю Draft PR на GitHub…")
 
         def worker() -> None:
             try:
-                result = create_draft_pull_request(
-                    repository=repository,
-                    token=token,
-                    base_branch=base,
-                    file_path=relative,
-                    patch_text=patch,
-                    title=title,
-                    body=prompt,
-                )
+                if multi_file and bundle_dir is not None:
+                    result = create_draft_pull_request_from_bundle(
+                        repository=repository,
+                        token=token,
+                        base_branch=base,
+                        bundle_dir=bundle_dir,
+                        title=title,
+                        body=prompt,
+                    )
+                else:
+                    single_path = next(iter(file_patches))
+                    result = create_draft_pull_request(
+                        repository=repository,
+                        token=token,
+                        base_branch=base,
+                        file_path=single_path,
+                        patch_text=file_patches[single_path],
+                        title=title,
+                        body=prompt,
+                    )
                 self.events.put(("improvement_pr_created", result))
             except Exception as exc:
                 self.events.put(("improvement_delivery_error", str(exc)))
@@ -7093,8 +7128,9 @@ def _packaged_import_self_test() -> int:
         key = _CryptoScrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"packaging-smoke-test")
         cipher = _CryptoAESGCM(key)
         nonce = b"\x01" * 12
-        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", b"4.2.7-smoke")
-        plaintext = cipher.decrypt(nonce, ciphertext, b"4.2.7-smoke")
+        smoke_aad = f"{APP_VERSION}-smoke".encode("ascii")
+        ciphertext = cipher.encrypt(nonce, b"MoyaIshka cryptography bundle OK", smoke_aad)
+        plaintext = cipher.decrypt(nonce, ciphertext, smoke_aad)
         if plaintext != b"MoyaIshka cryptography bundle OK":
             return 71
         return 0
