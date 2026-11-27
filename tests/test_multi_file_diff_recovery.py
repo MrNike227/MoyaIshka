@@ -84,6 +84,23 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             set(self.sources),
         )
 
+    def test_context_only_dependency_files_may_be_omitted_from_diff(self):
+        sources = {
+            "feature.py": "VALUE = 1\n",
+            "tests/test_feature.py": "import unittest\nVALUE = 1\n",
+            "consumer.py": "from feature import VALUE\nRESULT = VALUE\n",
+        }
+        patch = (
+            "--- a/feature.py\n+++ b/feature.py\n@@ -1 +1 @@\n"
+            "-VALUE = 1\n+VALUE = 2\n"
+            "--- a/tests/test_feature.py\n+++ b/tests/test_feature.py\n@@ -2 +2 @@\n"
+            "-VALUE = 1\n+VALUE = 2\n"
+        )
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(set(updated), {"feature.py", "tests/test_feature.py"})
+        self.assertEqual(updated["feature.py"], "VALUE = 2\n")
+        self.assertNotIn("consumer.py", updated)
+
     def test_rejects_noop_file_and_retries_with_authoritative_file_heads(self):
         sources = {
             "main.py": "#!/usr/bin/env python3\nVALUE = 1\n",
