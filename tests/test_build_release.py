@@ -48,7 +48,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(backup_dir.name, "MoyaIshka_Backups")
         self.assertNotEqual(backup_dir.parent.name, "MoyaIshka_Backups")
 
-    def test_application_version_is_428(self):
+    def test_application_version_is_429(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.2.9"', source)
 
