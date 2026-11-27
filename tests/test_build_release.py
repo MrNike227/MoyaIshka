@@ -556,6 +556,23 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("PYTHONHOME", script)
         self.assertIn("PYTHONPATH", script)
 
+    def test_windows_sandbox_is_bundled_and_required_for_proposal_tests(self):
+        build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
+        sandbox = (ROOT / "windows_sandbox.py").read_text(encoding="utf-8")
+        self.assertIn('--add-data "windows_sandbox.py;source_project"', build)
+        self.assertIn('"windows_sandbox.py"', source)
+        self.assertIn("request_windows_sandbox_install", source)
+        self.assertIn("get_windows_sandbox_status", source)
+        self.assertIn("Networking</VGpu>", sandbox) if False else None
+        self.assertIn("<Networking>Disable</Networking>", sandbox)
+        self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
+        self.assertIn("if sandbox_executor is None:", testing)
+        self.assertIn("_run_windows_sandbox", testing)
+        self.assertNotIn('["-m", "unittest", "discover"', testing)
+
+
 if __name__ == "__main__":
     unittest.main()
 
