@@ -149,7 +149,7 @@ class BackupManagerTests(unittest.TestCase):
         legacy = Path(self.temp.name) / "legacy_corrupt"
         destination = Path(self.temp.name) / "new_corrupt"
         legacy.mkdir()
-        (legacy / "MoyaIshka_backup_corrupt.zip").write_bytes(b"not-a-zip")
+        (legacy / "ISH_backup_corrupt.zip").write_bytes(b"not-a-zip")
         copied, skipped = copy_verified_backups(legacy, destination)
         self.assertEqual((copied, skipped), (0, 1))
         self.assertFalse(any(destination.glob("*.zip")))
@@ -163,7 +163,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIsNone(second)
 
     def test_custom_backup_directory_is_used(self):
-        target = Path(self.temp.name) / "D_drive" / "MoyaIshka_Backups"
+        target = Path(self.temp.name) / "D_drive" / "ISH_Backups"
         archive = create_backup(self.root, app_version="4.1.9", backup_dir=target)
         self.assertTrue(archive.is_file())
         self.assertTrue(os.path.samefile(archive.parent, target))
