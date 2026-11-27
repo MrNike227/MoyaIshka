@@ -106,6 +106,7 @@ try {{
     $psi.EnvironmentVariables['APPDATA'] = 'C:\MoyaTemp\AppData'
     $psi.EnvironmentVariables['LOCALAPPDATA'] = 'C:\MoyaTemp\LocalAppData'
     $psi.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'
+    $psi.EnvironmentVariables['MOYA_WINDOWS_SANDBOX'] = '1'
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     if (-not $process.Start()) {{ throw 'Не удалось запустить тестовый EXE в песочнице.' }}
@@ -362,12 +363,26 @@ def test_change_bundle(
     return report
 
 
+
+def _is_windows_sandbox_guest() -> bool:
+    """Require both the Windows Sandbox guest account and its launcher marker."""
+    if os.name != "nt":
+        return False
+    return (
+        os.environ.get("USERNAME", "").casefold() == "wdagutilityaccount"
+        and os.environ.get("MOYA_WINDOWS_SANDBOX", "") == "1"
+    )
+
+
 def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) -> int:
     """Entry point used by the frozen EXE guest runner to test source files from the mapped project."""
     import importlib.machinery
     import os
     import unittest
 
+    if not _is_windows_sandbox_guest():
+        # This CLI is deliberately unusable as a host-side test runner.
+        return 3
     root = Path(project_root).expanduser().resolve()
     output_path = Path(result_path).expanduser().resolve()
     result_data: dict[str, Any] = {
