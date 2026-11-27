@@ -741,13 +741,16 @@ def apply_multi_file_unified_diff(
 ) -> dict[str, str]:
     """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
     patches = split_multi_file_unified_diff(patch_text)
-    if set(patches) != set(sources):
-        missing = sorted(set(sources) - set(patches))
-        extra = sorted(set(patches) - set(sources))
+    extra = sorted(set(patches) - set(sources))
+    if extra:
         raise ValueError(
-            "Список изменённых файлов в diff не совпадает с подготовленным пакетом. "
-            f"Нет в diff: {missing}; лишние: {extra}."
+            "Diff содержит файлы, для которых не был подготовлен исходный контекст: "
+            f"{extra}."
         )
+    if not patches:
+        raise ValueError("Diff не содержит ни одного файла для изменения.")
+    # Sources may also include read-only context modules. Only paths explicitly
+    # present in the diff are returned; callers can require particular files.
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
