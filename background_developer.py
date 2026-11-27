@@ -116,7 +116,7 @@ def run_background_development(
     timeout_seconds: int = 600,
     sandbox_executor: Callable[[Path, Path, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Generate a code change and its matching test, save both, and test the bundle.
+    """Generate a bounded multi-file change, save it separately, and test the bundle.
 
     Production calls use the real Windows Sandbox. sandbox_executor is only a
     deterministic test seam; generated code is never executed on the host by default.
