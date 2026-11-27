@@ -3758,7 +3758,8 @@ class MoyaIshkaApp:
                         )
                         bundle = str(result.get("bundle_path") or "не сохранён")
                         self.improve_status_var.set(f"{message} {tests}. Пакет: {bundle}")
-                        details = f"{message}\n\nНезависимый ревизор: {review}\n\n{tests}\n\nПакет изменений: {bundle}"
+                        architecture = (f"Архитектура проекта: {int(result.get('architecture_module_count', 0) or 0)} модулей, {int(result.get('architecture_symbol_count', 0) or 0)} классов и функций.")
+                        details = f"{message}\n\n{architecture}\n\nНезависимый ревизор: {review}\n\n{tests}\n\nПакет изменений: {bundle}"
                         findings = result.get("review_findings") or []
                         if findings:
                             details += "\n\nЗамечания:\n- " + "\n- ".join(str(item) for item in findings[:8])
