@@ -9,9 +9,9 @@ function Log([string]$Message) {
     Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
 }
 try {
-    Set-Content -LiteralPath $LogPath -Value 'MoyaIshka Windows 10 22H2 test' -Encoding UTF8
+    Set-Content -LiteralPath $LogPath -Value 'ISH Windows 10 22H2 test' -Encoding UTF8
     $app = [IO.Path]::GetFullPath($AppDir)
-    $exe = Join-Path $app 'MoyaIshka.exe'
+    $exe = Join-Path $app 'ISH.exe'
     $internal = Join-Path $app '_internal'
     $os = Get-CimInstance Win32_OperatingSystem
     Log "OS: $($os.Caption), build $($os.BuildNumber), architecture $($os.OSArchitecture)"
@@ -19,7 +19,7 @@ try {
         throw 'Тест предназначен для Windows 10 22H2 (build 19045).'
     }
     if ($os.OSArchitecture -notlike '*64*') { throw 'Требуется 64-разрядная Windows.' }
-    foreach ($name in @('MoyaIshka.exe','_internal/python311.dll','_internal/vcruntime140.dll','_internal/vcruntime140_1.dll','_internal/msvcp140.dll')) {
+    foreach ($name in @('ISH.exe','_internal/python311.dll','_internal/vcruntime140.dll','_internal/vcruntime140_1.dll','_internal/msvcp140.dll')) {
         $path = Join-Path $app $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Не найден файл: $path" }
     }
