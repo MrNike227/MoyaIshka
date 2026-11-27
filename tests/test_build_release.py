@@ -565,7 +565,6 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"windows_sandbox.py"', source)
         self.assertIn("request_windows_sandbox_install", source)
         self.assertIn("get_windows_sandbox_status", source)
-        self.assertIn("Networking</VGpu>", sandbox) if False else None
         self.assertIn("<Networking>Disable</Networking>", sandbox)
         self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
         self.assertIn("if sandbox_executor is None:", testing)
