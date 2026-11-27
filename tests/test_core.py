@@ -422,6 +422,10 @@ class SelfImprovementInteractionTests(unittest.TestCase):
         MoyaIshkaApp._scroll_nested_text(scroll_down, inner, page)
         self.assertEqual(page.calls, [1])
 
+        inner.first, inner.last = 0.5, 1.0
+        MoyaIshkaApp._scroll_nested_text(scroll_up, inner, page)
+        self.assertEqual(inner.calls, [1, -1])
+
         inner.first, inner.last = 0.0, 0.5
         MoyaIshkaApp._scroll_nested_text(scroll_up, inner, page)
         self.assertEqual(inner.calls, [1, -1])
