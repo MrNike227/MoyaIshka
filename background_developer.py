@@ -59,6 +59,7 @@ def _record_result(updates_dir: Path, result: dict[str, Any]) -> Path:
         for key in (
             "status", "tested_at", "target", "files", "title", "bundle_path",
             "report_path", "passed", "tests_run", "failures", "errors", "error", "dependency_report",
+            "review_approved", "review_summary", "review_findings",
         )
         if result.get(key) is not None
     }
@@ -284,7 +285,7 @@ def run_background_development(
         review_start = review_text.find("{")
         review_end = review_text.rfind("}")
         review_data = json.loads(review_text[review_start:review_end + 1]) if review_start >= 0 and review_end > review_start else {}
-        review_approved = bool(review_data.get("approved"))
+        review_approved = bool(report.get("passed")) and bool(review_data.get("approved"))
         review_summary = str(review_data.get("summary", ""))[:1500]
         raw_findings = review_data.get("findings", [])
         review_findings = [str(item)[:500] for item in raw_findings[:10]] if isinstance(raw_findings, list) else []
