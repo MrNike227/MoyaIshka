@@ -116,8 +116,13 @@ try {{
     }} else {{
         $exitCode = $process.ExitCode
     }}
-    if ((Test-Path -LiteralPath $runnerResult) -and ((Get-Item -LiteralPath $runnerResult).Length -le 1048576)) {{
-        $testData = Get-Content -LiteralPath $runnerResult -Raw | ConvertFrom-Json
+    if (Test-Path -LiteralPath $runnerResult) {{
+        $runnerInfo = Get-Item -LiteralPath $runnerResult -Force
+        if (($runnerInfo.Length -le 1048576) -and -not ($runnerInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) {{
+            $testData = Get-Content -LiteralPath $runnerResult -Raw | ConvertFrom-Json
+        }} else {{
+            $errorText = 'Отчёт тестового EXE слишком велик или является ссылкой.'
+        }}
     }} elseif (-not $errorText) {{
         $errorText = 'Тестовый EXE не создал отчёт.'
     }}
@@ -393,7 +398,7 @@ def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) ->
             tests_run=test_result.testsRun,
             failures=len(test_result.failures),
             errors=len(test_result.errors),
-            stdout=stream.getvalue(),
+            stdout=stream.getvalue()[-12000:],
         )
     except Exception as exc:
         result_data["stderr"] = str(exc)[:12000]
