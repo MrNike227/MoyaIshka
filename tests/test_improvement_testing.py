@@ -28,6 +28,7 @@ def run_local_test_executor(project_dir: Path, result_dir: Path, timeout_seconds
         "errors": 0,
         "stdout": process.stdout,
         "stderr": process.stderr,
+        "error": "В копии проекта не найдено ни одного unit-теста." if tests_run == 0 else "",
         "sandboxed": False,
     }
 
@@ -61,7 +62,7 @@ class ImprovementTestingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
             bundle = self.make_bundle(temp, 3)
-            result = test_change_bundle(bundle, root)
+            result = test_change_bundle(bundle, root, sandbox_executor=run_local_test_executor)
             self.assertFalse(result["passed"])
             self.assertEqual(result["tests_exit_code"], 1)
             self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
@@ -71,7 +72,7 @@ class ImprovementTestingTests(unittest.TestCase):
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
             bundle = self.make_bundle(temp, 2)
             (root / "sample.py").write_bytes(b"VALUE = 1\r\n")
-            result = test_change_bundle(bundle, root)
+            result = test_change_bundle(bundle, root, sandbox_executor=run_local_test_executor)
             self.assertTrue(result["passed"], result)
             self.assertEqual((root / "sample.py").read_bytes(), b"VALUE = 1\r\n")
 
@@ -105,7 +106,7 @@ class ImprovementTestingTests(unittest.TestCase):
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)
             (root / "tests" / "test_sample.py").unlink()
             bundle = self.make_bundle(temp, 2)
-            result = test_change_bundle(bundle, root)
+            result = test_change_bundle(bundle, root, sandbox_executor=run_local_test_executor)
             self.assertFalse(result["passed"])
             self.assertEqual(result["tests_run"], 0)
             self.assertIn("не найдено", result["error"])
