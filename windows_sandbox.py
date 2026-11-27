@@ -115,7 +115,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     executable = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsSandbox.exe"
     result["ready"] = (
         result["installed"] and not result["restart_required"]
-        and result["virtualization_ready"] and executable.is_file()
+        and result["virtualization_ready"] and result["memory_mb"] >= 4096
+        and result["logical_processors"] >= 2 and executable.is_file()
     )
     if result["restart_required"]:
         result["reason"] = "Windows Sandbox включена не полностью. Перезагрузи компьютер."
