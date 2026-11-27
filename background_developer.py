@@ -266,7 +266,7 @@ def run_background_development(
                 build_model_source_context(
                     source_text,
                     f"Оцени влияние изменения {relative} на {candidate}",
-                    max_chars=1800,
+                    max_chars=2200,
                 )
             )
     related_context = "\n\n".join(related_context_parts)[:int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.22)]
@@ -318,9 +318,9 @@ def run_background_development(
         },
     ]
     patch = generate_validated_multi_file_unified_diff(
-        sources, change_messages, model_call, max_attempts=3,
+        sources, change_messages, model_call, max_attempts=3, allow_subset=True,
     )
-    updated_files = apply_multi_file_unified_diff(sources, patch)
+    updated_files = apply_multi_file_unified_diff(sources, patch, allow_subset=True)
     if updated_files.get(relative) == original:
         raise ValueError("Модель не предложила фактического изменения программного модуля.")
     if updated_files.get(test_relative) is None:
