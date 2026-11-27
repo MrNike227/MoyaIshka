@@ -11,6 +11,7 @@ from xml.etree import ElementTree
 from windows_sandbox import (
     _is_reparse_point, create_sandbox_config, get_windows_sandbox_status,
     record_windows_sandbox_install, request_windows_sandbox_install,
+    wait_for_install_result,
 )
 
 
@@ -86,6 +87,31 @@ class WindowsSandboxTests(unittest.TestCase):
                 self.assertNotIn("unexpected", data)
 
 
+
+    def test_missing_install_result_is_not_a_reparse_point(self):
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / "install_result.json"
+            self.assertFalse(missing.exists())
+            self.assertFalse(_is_reparse_point(missing))
+
+    def test_wait_for_install_result_waits_until_powershell_creates_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result_path = Path(temp) / "install_result.json"
+            expected = {
+                "success": True,
+                "state": "Enabled",
+                "restart_required": False,
+                "boot_time": "2026-11-27T06:00:00.0000000Z",
+                "error": "",
+            }
+
+            def create_result(_delay):
+                result_path.write_text(json.dumps(expected), encoding="utf-8")
+
+            with patch("windows_sandbox.time.sleep", side_effect=create_result):
+                result = wait_for_install_result(result_path, timeout_seconds=30)
+
+            self.assertEqual(result, expected)
 
     def test_windows_reparse_points_are_rejected(self):
         with patch("windows_sandbox.Path.lstat", return_value=SimpleNamespace(st_file_attributes=0x400)):

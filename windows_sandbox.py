@@ -88,7 +88,13 @@ def _is_reparse_point(path: Path) -> bool:
     """Detect symlinks and Windows junction/reparse points without following them."""
     try:
         info = path.lstat()
+    except FileNotFoundError:
+        # PowerShell creates the result only after UAC is accepted and the
+        # optional-feature operation finishes. During polling, absence is
+        # expected and must not be confused with a link/reparse point.
+        return False
     except OSError:
+        # If the path cannot be inspected for another reason, fail closed.
         return True
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     attributes = int(getattr(info, "st_file_attributes", 0) or 0)
