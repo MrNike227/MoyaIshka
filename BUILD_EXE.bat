@@ -65,6 +65,8 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "self_improvement.py;source_project" ^
   --add-data "improvement_delivery.py;source_project" ^
   --add-data "improvement_testing.py;source_project" ^
+  --add-data "windows_sandbox.py;source_project" ^
+  --add-data "background_developer.py;source_project" ^
   --add-data "github_pr.py;source_project" ^
   --add-data "updater.py;source_project" ^
   --add-data "updater_helper.py;source_project" ^
