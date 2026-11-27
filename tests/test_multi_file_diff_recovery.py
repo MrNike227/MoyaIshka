@@ -60,6 +60,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             [{"role": "user", "content": "Измени функцию и тест"}],
             model_call,
             max_attempts=3,
+            allow_subset=True,
         )
         self.assertIn("--- a/feature.py", result)
         self.assertIn("--- /dev/null", result)
@@ -129,7 +130,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             "--- a/tests/test_feature.py\n+++ b/tests/test_feature.py\n@@ -2 +2 @@\n"
             "-VALUE = 1\n+VALUE = 2\n"
         )
-        updated = apply_multi_file_unified_diff(sources, patch)
+        updated = apply_multi_file_unified_diff(sources, patch, allow_subset=True)
         self.assertEqual(set(updated), {"feature.py", "tests/test_feature.py"})
         self.assertEqual(updated["feature.py"], "VALUE = 2\n")
         self.assertNotIn("consumer.py", updated)
