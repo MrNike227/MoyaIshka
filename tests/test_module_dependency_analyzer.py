@@ -66,7 +66,7 @@ class ModuleDependencyAnalyzerTests(unittest.TestCase):
             )
             self.assertEqual(
                 [row["path"] for row in result["transitive_dependents"]],
-                ["ui.py"],
+                ["pkg/service.py", "ui.py"],
             )
 
     def test_report_and_model_context_name_related_components(self):
