@@ -161,7 +161,7 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
                 model_call,
                 max_attempts=3,
             )
-        self.assertEqual(calls, [0, 1, 2])
+        self.assertEqual(calls, [0, 1])
 
     def test_diff_mismatch_diagnostic_includes_the_file_path(self):
         sources = {"tests/test_core.py": "import json\n"}
