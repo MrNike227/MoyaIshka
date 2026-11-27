@@ -245,7 +245,8 @@ def _extract_package(archive: Path, destination: Path, expected_version: str) ->
                 mode = (item.external_attr >> 16) & 0xFFFF
                 if (mode & 0o170000) not in (0, 0o040000, 0o100000):
                     raise RuntimeError("Архив содержит неподдерживаемый тип файла.")
-                normalized_parts = ("ISH", *parts[1:])\n                target = extracting.joinpath(*normalized_parts)
+                normalized_parts = ("ISH", *parts[1:])
+                target = extracting.joinpath(*normalized_parts)
                 if item.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
