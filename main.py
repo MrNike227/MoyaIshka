@@ -108,7 +108,22 @@ def migrate_update_repository(config: dict[str, Any]) -> bool:
 
 def user_data_dir() -> Path:
     base = os.environ.get("APPDATA")
-    directory = Path(base) / "ISH" if base else Path.home() / ".ish
+    directory = Path(base) / "ISH" if base else Path.home() / ".ish"
+    legacy_directory = Path(base) / "MoyaIshka" if base else Path.home() / ".moya_ishka"
+    if legacy_directory.is_dir() and not legacy_directory.is_symlink():
+        directory.mkdir(parents=True, exist_ok=True)
+        for legacy_item in legacy_directory.rglob("*"):
+            if legacy_item.is_symlink():
+                continue
+            destination = directory / legacy_item.relative_to(legacy_directory)
+            if legacy_item.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            elif not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(legacy_item, destination)
+                except OSError:
+                    pass
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
