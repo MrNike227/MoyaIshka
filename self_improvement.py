@@ -533,19 +533,29 @@ def _multi_diff_candidates(response: str) -> list[str]:
 
 
 def _extract_multi_diff_hunks(lines: list[str]) -> str:
-    """Extract hunk lines and discard prose surrounding the unified diff."""
+    """Extract hunks and repair common model line-wrap damage without guessing file paths."""
     start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
     if start is None:
         return ""
     body: list[str] = []
+    active_marker: str | None = None
     for line in lines[start:]:
         value = line.rstrip("\r\n")
-        if value.lstrip().startswith("@@ "):
-            body.append(value + "\n")
-        elif value.lstrip().startswith("\\ No newline at end of file"):
+        stripped = value.lstrip()
+        if stripped.startswith("@@ "):
+            body.append(stripped + "\n")
+            active_marker = None
+        elif stripped.startswith("\\ No newline at end of file"):
             body.append("\\ No newline at end of file\n")
+            active_marker = None
         elif value and value[0] in " +-":
             body.append(value + "\n")
+            active_marker = value[0]
+        elif active_marker in {"+", "-", " "} and value and not stripped.startswith(
+            ("--- ", "+++ ", "diff --git ", "index ", "new file mode ", "deleted file mode ")
+        ):
+            # Repair model output that wraps a logical diff line and drops its marker.
+            body.append(active_marker + value + "\n")
         else:
             break
     return "".join(body)
@@ -601,9 +611,42 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
         hunks = _extract_multi_diff_hunks(section_lines)
         if not hunks:
             raise ValueError(f"Для файла {path} не найден корректный блок изменений @@.")
-        if path in result:
-            raise ValueError(f"Diff содержит повторное изменение файла: {path}.")
-        result[path] = f"--- a/{path}\n+++ b/{path}\n" + hunks
+        if path not in result:
+            result[path] = f"--- a/{path}\n+++ b/{path}\n" + hunks
+            return
+
+        # Models sometimes split one file into several Git sections. Merge
+        # independent hunks, deduplicate identical hunks, and reject overlaps.
+        existing_body = result[path].split("+++ b/" + path + "\n", 1)[1]
+        existing_hunks = ["@@ " + item for item in existing_body.split("@@ ")[1:] if item.strip()]
+        incoming_hunks = ["@@ " + item for item in hunks.split("@@ ")[1:] if item.strip()]
+        combined: list[tuple[int, str, int]] = []
+        seen_hunks: set[str] = set()
+        for item in existing_hunks + incoming_hunks:
+            if item in seen_hunks:
+                continue
+            seen_hunks.add(item)
+            header = item.split("\n", 1)[0]
+            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@", header)
+            if not match:
+                raise ValueError(f"Файл {path}: повреждён заголовок повторного блока @@.")
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or 1)
+            combined.append((old_start, item, old_count))
+        combined.sort(key=lambda item: item[0])
+        for previous, current in zip(combined, combined[1:]):
+            prev_start, _, prev_count = previous
+            curr_start, _, _ = current
+            if prev_count and curr_start < prev_start + prev_count:
+                raise ValueError(
+                    f"Diff содержит повторные или пересекающиеся изменения файла {path}; "
+                    "оставь один согласованный блок для этого участка."
+                )
+        result[path] = (
+            f"--- a/{path}\n+++ b/{path}\n"
+            + "".join(item[1] for item in combined)
+        )
+
 
     if pairs:
         for position, (old_index, new_index) in enumerate(pairs):
