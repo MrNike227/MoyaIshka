@@ -629,7 +629,7 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
             add_section(old_header, new_header, section)
 
     if not result:
-        if "UNABLE_TO_CREATE_PATCH" in normalized:
+        if re.search(r"\bUNABLE_TO_CREATE_PATCH\b", normalized, re.IGNORECASE):
             raise ValueError(
                 "Модель сообщила, что не смогла подготовить изменения. Уточни задачу или выбери более узкий модуль."
             )
@@ -783,6 +783,48 @@ def generate_validated_multi_file_unified_diff(
     for attempt in range(attempts):
         response = model_call(conversation, attempt)
         last_response = str(response or "")
+
+        # A refusal is not a malformed diff. Give the model one scoped recovery
+        # prompt, instead of treating the sentinel as patch syntax and repeating
+        # the same broad instruction.
+        if re.search(r"\bUNABLE_TO_CREATE_PATCH\b", last_response, re.IGNORECASE):
+            note = re.sub(r".*?\bUNABLE_TO_CREATE_PATCH\b", "", last_response, count=1, flags=re.IGNORECASE)
+            note = " ".join(note.split())[:400]
+            last_error = ValueError(
+                "Модель не смогла выбрать безопасное изменение в текущем объёме задачи."
+                + (f" Комментарий модели: {note}" if note else "")
+            )
+            if attempt + 1 >= attempts:
+                break
+            paths = ", ".join(sources)
+            repair_context = build_multi_file_repair_context(
+                sources,
+                max_chars=16_000,
+                head_lines=32,
+                context_radius=12,
+            )
+            scoped_retry = (
+                f"Предыдущий ответ был UNABLE_TO_CREATE_PATCH. Это не команда остановиться: "
+                "уменьши объём задачи и попробуй выполнить минимальное полезное изменение.\\n"
+                f"Работай только с этими файлами: {paths}. Измени один узкий участок исходного модуля "
+                "и добавь/обнови один соответствующий тест. Не делай общий рефакторинг и не пытайся "
+                "реализовать все возможные улучшения сразу.\\n"
+                "Не выдумывай функции и исходные строки. Используй приведённые ниже реальные фрагменты "
+                "и исходный контекст из первого сообщения. Если часть задачи не покрыта показанным кодом, "
+                "реализуй только ту безопасную часть, для которой кода достаточно.\\n"
+                "Верни полноценный unified diff для каждого указанного файла. Не возвращай "
+                "UNABLE_TO_CREATE_PATCH только потому, что исходная просьба слишком широкая. "
+                "Используй этот маркер повторно лишь тогда, когда из переданного кода нельзя определить "
+                "ни одного безопасного и проверяемого изменения; в этом случае после маркера назови "
+                "конкретный отсутствующий файл, класс или функцию.\\n"
+                f"{repair_context}"
+            )
+            conversation.extend([
+                {"role": "assistant", "content": last_response[:16_000]},
+                {"role": "user", "content": scoped_retry},
+            ])
+            continue
+
         try:
             updated = apply_multi_file_unified_diff(sources, last_response)
             sections = split_multi_file_unified_diff(last_response)
@@ -838,6 +880,12 @@ def generate_validated_multi_file_unified_diff(
     detail = str(last_error) if last_error else "Модель не вернула проверяемый diff."
     preview = last_response.strip()[:700]
     suffix = f"\nПоследний ответ модели (фрагмент, переносы строк сохранены): {preview!r}." if preview else ""
+    if last_response and re.search(r"\bUNABLE_TO_CREATE_PATCH\b", last_response, re.IGNORECASE):
+        raise ValueError(
+            f"Модель не смогла подготовить безопасное изменение после {attempts} попыток. "
+            f"{detail} Уточни задачу до одного небольшого изменения в указанном модуле "
+            "или выбери файл, где находится нужная функция." + suffix
+        )
     raise ValueError(
         f"Не удалось получить корректный многофайловый diff после {attempts} попыток. {detail}{suffix}"
     )
