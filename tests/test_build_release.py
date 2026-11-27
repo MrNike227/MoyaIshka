@@ -576,6 +576,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
         self.assertIn("if sandbox_executor is None:", testing)
         self.assertIn("_run_windows_sandbox", testing)
+        self.assertIn("_is_windows_sandbox_guest", testing)
+        self.assertIn("wdagutilityaccount", testing)
+        self.assertIn("MOYA_WINDOWS_SANDBOX", testing)
         self.assertNotIn('["-m", "unittest", "discover"', testing)
 
 
