@@ -51,7 +51,7 @@ from supabase_backup import (
     MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
 )
 from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
+from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from github_pr import GitHubProposalError, create_draft_pull_request
@@ -5615,14 +5615,14 @@ class MoyaIshkaApp:
         self._set_status("Python-плагины разрешены" if enabled else "Python-плагины выключены")
 
     # Review-first self-improvement. The model only proposes a patch; user approves it.
-    def _current_model_call(self, messages: list[dict[str, str]]) -> str:
+    def _current_model_call(self, messages: list[dict[str, str]], generation_attempt: int = 0) -> str:
         settings = {
             "online_url": self.config.get("online_url", ""),
             "online_model": self.config.get("online_model", ""),
             "api_key": self.api_key,
             "ollama_url": self.config.get("ollama_url", ""),
             "ollama_model": self.config.get("ollama_model", ""),
-            "temperature": 0.15,
+            "temperature": min(0.35, 0.15 + max(0, int(generation_attempt)) * 0.10),
             "task_profile": "self_improvement",
             "resource_pressure": bool(self.resource_governor.snapshot().system_pressure),
         }
@@ -5873,32 +5873,15 @@ class MoyaIshkaApp:
 
         def worker() -> None:
             try:
-                response = self._current_model_call(messages)
-                try:
-                    diff = extract_unified_diff(response, relative)
-                    apply_unified_diff(source, diff, relative)
-                except ValueError as first_error:
-                    # Retry once when the model returns prose or code instead of a unified diff.
-                    repair_messages = messages + [
-                        {"role": "assistant", "content": str(response)[:30000]},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Предыдущий ответ не является применимым unified diff: {first_error}. "
-                                f"Верни исправленный diff только для файла {relative}. "
-                                "Не добавляй пояснений, Markdown или полный файл. "
-                                "Используй строки --- a/путь и +++ b/путь, затем стандартные заголовки @@ -N,N +N,N @@. "
-                                "Строки контекста и удаления должны посимвольно совпадать с переданным исходником. "
-                                "Не используй заглушки вроде '# main.py original content', '# остальной код без изменений' "
-                                "или вымышленные строки. Если нужного фрагмента нет в переданном контексте, "
-                                "не создавай diff и сообщи, что нужен более точный фрагмент. "
-                                "Не меняй задачу и не добавляй новых изменений."
-                            ),
-                        },
-                    ]
-                    repaired_response = self._current_model_call(repair_messages)
-                    diff = extract_unified_diff(repaired_response, relative)
-                    apply_unified_diff(source, diff, relative)
+                diff = generate_validated_unified_diff(
+                    source,
+                    relative,
+                    messages,
+                    lambda prompt_messages, attempt: self._current_model_call(
+                        prompt_messages, generation_attempt=attempt
+                    ),
+                    max_attempts=3,
+                )
                 self.events.put(("patch_generated", diff))
             except Exception as exc:
                 self.events.put(("patch_error", str(exc)))
