@@ -92,6 +92,7 @@ if exist "dist\MoyaIshka.zip.sha256" del /q "dist\MoyaIshka.zip.sha256"
   --add-data "GOOGLE_DRIVE_SETUP_RU.md;source_project" ^
   --add-data "CHANGELOG_RU.md;source_project" ^
   --add-data "PLAN_4.2.6_RU.md;source_project" ^
+  --add-data "PLAN_4.2.7_RU.md;source_project" ^
   --add-data "PLAN_4.2.8_RU.md;source_project" ^
   --add-data "LICENSE.txt;source_project" ^
   --add-data "THIRD_PARTY_NOTICES.md;source_project" ^
