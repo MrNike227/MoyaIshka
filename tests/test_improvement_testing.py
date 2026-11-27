@@ -8,7 +8,7 @@ import sys
 import re
 from unittest.mock import patch
 from pathlib import Path
-from improvement_delivery import save_change_bundle
+from improvement_delivery import save_change_bundle, save_multi_change_bundle
 from improvement_testing import ProposalTestError, _is_windows_sandbox_guest, run_proposal_tests_cli, test_change_bundle
 
 def run_local_test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> dict:
@@ -148,6 +148,83 @@ class ImprovementTestingTests(unittest.TestCase):
             (root / "private.db").write_bytes(b"database")
             ignored = _ignore_sandbox_copy(str(root), [p.name for p in root.iterdir()])
             self.assertEqual(ignored, {".env", "config.json", "private.db"})
+
+
+
+    def make_multi_bundle(self, temp, value=2):
+        test_text = (
+            "import unittest\nimport sample\n\n"
+            "class SampleFeatureTests(unittest.TestCase):\n"
+            "    def test_feature_value(self):\n"
+            f"        self.assertEqual(sample.VALUE, {value})\n"
+        )
+        patch = (
+            "--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n"
+            "-VALUE = 1\n+VALUE = " + str(value) + "\n"
+            "--- /dev/null\n+++ b/tests/test_sample_feature.py\n@@ -0,0 +1,6 @@\n"
+            "+import unittest\n+import sample\n+\n"
+            "+class SampleFeatureTests(unittest.TestCase):\n"
+            "+    def test_feature_value(self):\n"
+            f"+        self.assertEqual(sample.VALUE, {value})\n"
+        )
+        return save_multi_change_bundle(
+            Path(temp) / "Updates",
+            [
+                {"path": "sample.py", "original_text": "VALUE = 1\n", "updated_text": f"VALUE = {value}\n"},
+                {"path": "tests/test_sample_feature.py", "original_text": None, "updated_text": test_text},
+            ],
+            patch,
+        )
+
+    def test_multi_file_bundle_runs_new_test_with_feature_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            self.make_project(root)
+            bundle = self.make_multi_bundle(temp, 2)
+            observed = {}
+
+            def executor(project_dir, result_dir, timeout_seconds):
+                observed["test_exists"] = (project_dir / "tests" / "test_sample_feature.py").is_file()
+                return run_local_test_executor(project_dir, result_dir, timeout_seconds)
+
+            result = test_change_bundle(bundle, root, sandbox_executor=executor)
+            self.assertTrue(result["passed"], result)
+            self.assertEqual(result["checked_files"], 2)
+            self.assertTrue(observed["test_exists"])
+            self.assertEqual(result["tests_run"], 2)
+            self.assertFalse((root / "tests" / "test_sample_feature.py").exists())
+            self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
+
+    def test_multi_file_bundle_rejects_diff_missing_test_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            self.make_project(root)
+            bundle = self.make_multi_bundle(temp, 2)
+            patch = (
+                "--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n"
+                "-VALUE = 1\n+VALUE = 2\n"
+            ).encode("utf-8")
+            (bundle / "changes.patch").write_bytes(patch)
+            manifest_path = bundle / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["patch"]["size"] = len(patch)
+            manifest["patch"]["sha256"] = hashlib.sha256(patch).hexdigest()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ProposalTestError, "Состав diff"):
+                test_change_bundle(bundle, root)
+
+    def test_multi_file_bundle_rejects_new_test_that_already_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            self.make_project(root)
+            bundle = self.make_multi_bundle(temp, 2)
+            (root / "tests" / "test_sample_feature.py").write_text("VALUE = 99\n", encoding="utf-8")
+            result = test_change_bundle(bundle, root)
+            self.assertFalse(result["passed"])
+            self.assertIn("уже существует", result["error"])
 
 
     def test_guest_runner_rejects_non_sandbox_account_even_with_marker(self):
