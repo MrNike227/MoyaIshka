@@ -372,7 +372,7 @@ def test_change_bundle(
         readonly_root.mkdir(parents=True, exist_ok=False)
         writable_root.mkdir(parents=True, exist_ok=False)
         shutil.copytree(source, project_copy, ignore=_ignore_sandbox_copy)
-        for relative, _old, updated in checked:
+        for relative, _old, updated, _old_text in checked:
             destination = project_copy / Path(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(updated)
