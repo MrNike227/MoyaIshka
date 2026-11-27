@@ -271,6 +271,8 @@ def wait_for_sandbox_completion(
         try:
             for item in directory.rglob("*"):
                 if item.is_symlink():
+                    if sandbox_process is not None and sandbox_process.poll() is None:
+                        sandbox_process.kill()
                     raise RuntimeError("Sandbox создала ссылку в папке результатов; отчёт отклонён.")
                 if item.is_file():
                     total_bytes += item.stat().st_size
@@ -279,6 +281,8 @@ def wait_for_sandbox_completion(
                             sandbox_process.kill()
                         raise RuntimeError("Sandbox превысила лимит 16 МБ для отчётов; процесс остановлен.")
         except OSError as exc:
+            if sandbox_process is not None and sandbox_process.poll() is None:
+                sandbox_process.kill()
             raise RuntimeError(f"Не удалось проверить результаты Windows Sandbox: {exc}") from exc
         process_exited = sandbox_process is None or sandbox_process.poll() is not None
         if process_exited and completion.is_file() and not completion.is_symlink():
