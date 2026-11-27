@@ -54,7 +54,7 @@ from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
-from windows_sandbox import get_windows_sandbox_status, request_windows_sandbox_install, wait_for_install_result
+from windows_sandbox import get_windows_sandbox_status, record_windows_sandbox_install, request_windows_sandbox_install, wait_for_install_result
 from github_pr import GitHubProposalError, create_draft_pull_request
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
@@ -6047,6 +6047,7 @@ class MoyaIshkaApp:
                 result_path = request_windows_sandbox_install()
                 result_dir = result_path.parent
                 result = wait_for_install_result(result_path, timeout_seconds=900)
+                record_windows_sandbox_install(result)
                 result["sandbox_status"] = get_windows_sandbox_status()
                 self.events.put(("windows_sandbox_install_complete", result))
             except Exception as exc:
