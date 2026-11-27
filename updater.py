@@ -126,8 +126,10 @@ def check_latest_release(repository: str, current_version: str) -> dict[str, Any
     package = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
     checksum = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
     # Accept legacy release assets during the transition to the ISH package name.
-    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
-    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
+    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
+    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)  # legacy release compatibility
+    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
+    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)  # legacy release compatibility
     return {
         "version": tag.lstrip("v"),
         "url": data.get("html_url", ""),
