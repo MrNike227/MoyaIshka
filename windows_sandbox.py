@@ -6,6 +6,8 @@ import base64
 import ctypes
 import json
 import os
+import platform
+import shutil
 import subprocess
 import tempfile
 import time
@@ -42,17 +44,40 @@ def _host_details() -> dict[str, Any]:
     except (OSError, ValueError, TypeError):
         version = __import__("sys").getwindowsversion()
         edition, build = "", int(version.build)
+    machine = platform.machine().casefold()
     if build < MINIMUM_BUILD:
         return {
             "supported": False, "edition": edition, "build": build,
             "reason": "Нужна Windows 10 версии 1903 или новее.",
+        }
+    allowed_architectures = {"amd64", "x86_64"} if build < 22000 else {"amd64", "x86_64", "arm64"}
+    if machine not in allowed_architectures:
+        return {
+            "supported": False, "edition": edition, "build": build, "architecture": machine,
+            "reason": "Эта архитектура Windows не поддерживается Windows Sandbox в установленной версии ОС.",
         }
     if edition and edition not in SUPPORTED_EDITIONS:
         return {
             "supported": False, "edition": edition, "build": build,
             "reason": "Windows Sandbox не поддерживается этой редакцией Windows.",
         }
-    return {"supported": True, "edition": edition, "build": build, "reason": ""}
+    system_drive = os.environ.get("SystemDrive", "C:")
+    system_root = Path(system_drive.rstrip("\\/") + "\\")
+    try:
+        disk_free_bytes = shutil.disk_usage(system_root).free
+    except OSError:
+        disk_free_bytes = 0
+    disk_free_gb = round(disk_free_bytes / (1024 ** 3), 2)
+    if disk_free_bytes < 1024 ** 3:
+        return {
+            "supported": False, "edition": edition, "build": build, "architecture": machine,
+            "disk_free_gb": disk_free_gb,
+            "reason": "Для Windows Sandbox нужен как минимум 1 ГБ свободного места на системном диске.",
+        }
+    return {
+        "supported": True, "edition": edition, "build": build,
+        "architecture": machine, "disk_free_gb": disk_free_gb, "reason": "",
+    }
 
 
 def _state_marker_path() -> Path:
@@ -125,7 +150,7 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         "$o=Get-CimInstance Win32_OperatingSystem; "
         "$boot=$o.LastBootUpTime.ToUniversalTime().ToString('o'); "
         "$virt=(($p | Where-Object {$_.VirtualizationFirmwareEnabled -ne $true}).Count -eq 0); "
-        "$cores=[int](($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum); "
+        "$cores=[int](($p | Measure-Object -Property NumberOfCores -Sum).Sum); "
         "Write-Output ('MOYA_HYPERVISOR=' + [string]$c.HypervisorPresent); "
         "Write-Output ('MOYA_VIRT=' + [string]$virt); "
         "Write-Output ('MOYA_MEM_MB=' + [string][math]::Floor($c.TotalPhysicalMemory / 1MB)); "
@@ -158,7 +183,7 @@ def get_windows_sandbox_status() -> dict[str, Any]:
             values[key] = value.strip()
     try:
         result["memory_mb"] = int(values.get("MOYA_MEM_MB", "0") or 0)
-        result["logical_processors"] = int(values.get("MOYA_CORES", "0") or 0)
+        result["cpu_cores"] = int(values.get("MOYA_CORES", "0") or 0)
     except ValueError:
         result["reason"] = "Windows вернула некорректные данные о памяти или процессорах."
         return result
@@ -193,7 +218,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     result["ready"] = (
         executable_exists and not result["restart_required"]
         and result["virtualization_ready"] and hypervisor_ready
-        and result["memory_mb"] >= 4096 and result["logical_processors"] >= 2
+        and result["memory_mb"] >= 4096 and result["cpu_cores"] >= 2
+        and float(details.get("disk_free_gb", 0) or 0) >= 1
     )
     if result["restart_required"]:
         result["reason"] = "Компонент включён, но Windows ещё не перезагружалась после установки."
@@ -201,8 +227,8 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         result["reason"] = "Windows Sandbox не установлена. Нажми «Установить Windows Sandbox»."
     elif not result["virtualization_ready"]:
         result["reason"] = "Включи Intel VT-x / AMD-V (виртуализацию) в BIOS/UEFI и перезагрузи ПК."
-    elif result["memory_mb"] < 4096 or result["logical_processors"] < 2:
-        result["reason"] = "Для Windows Sandbox нужно не менее 4 ГБ ОЗУ и двух логических процессоров."
+    elif result["memory_mb"] < 4096 or result.get("cpu_cores", 0) < 2:
+        result["reason"] = "Для Windows Sandbox нужно не менее 4 ГБ ОЗУ и двух физических ядер процессора."
     elif not hypervisor_ready:
         result["reason"] = "Гипервизор Windows не запущен. Проверь виртуализацию и перезагрузи ПК."
     else:
