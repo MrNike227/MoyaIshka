@@ -3353,14 +3353,23 @@ class MoyaIshkaApp:
         parts: list[str] = []
         for attempt in range(3):
             cpu_fallback = False
+            repeat_fallback = False
             while True:
                 options = {
                     "temperature": float(settings.get("temperature", 0.7)),
                     "num_ctx": context_window,
                     "num_thread": min(logical_threads, 4) if cpu_fallback else logical_threads,
-                    "num_batch": 32 if cpu_fallback else num_batch,
-                    "num_predict": max_tokens,
+                    "num_batch": 32 if (cpu_fallback or repeat_fallback) else num_batch,
+                    "num_predict": min(max_tokens, 768) if repeat_fallback else max_tokens,
                 }
+                if repeat_fallback:
+                    # Ask Ollama to sample away from a degenerate repeated-token loop.
+                    options.update({
+                        "temperature": max(float(settings.get("temperature", 0.7)), 0.25),
+                        "repeat_penalty": 1.15,
+                        "repeat_last_n": 128,
+                        "top_k": 40,
+                    })
                 if cpu_fallback:
                     # Ollama's per-request num_gpu=0 disables GPU layer offload
                     # without changing the user's global Ollama configuration.
@@ -3377,11 +3386,31 @@ class MoyaIshkaApp:
                     break
                 except RuntimeError as exc:
                     error_body = str(exc)
+                    lowered_error = error_body.casefold()
+                    repeat_limit = "token repeat limit reached" in lowered_error
+                    if self_improvement and repeat_limit and not repeat_fallback:
+                        repeat_fallback = True
+                        # Preserve the JSON schema while asking for fewer, concise findings.
+                        for message in reversed(conversation):
+                            if message.get("role") == "user":
+                                message["content"] = str(message.get("content", "")) + (
+                                    "\\n\\nПовторная попытка: сохрани требуемый JSON-формат, "
+                                    "дай только самые важные и краткие предложения; не повторяй "
+                                    "одинаковые слова, символы или фрагменты."
+                                )
+                                break
+                        continue
+                    if self_improvement and repeat_limit:
+                        raise RuntimeError(
+                            "Ollama остановила самоанализ: локальная модель зациклилась на повторяющихся токенах. "
+                            "Повторная попытка с защитными параметрами не помогла. Попробуй другую локальную "
+                            "модель или обнови Ollama."
+                        ) from exc
                     access_violation = (
                         self_improvement
                         and not cpu_fallback
-                        and "llama-server" in error_body.casefold()
-                        and ("0xc0000005" in error_body.casefold() or "3221225477" in error_body)
+                        and "llama-server" in lowered_error
+                        and ("0xc0000005" in lowered_error or "3221225477" in error_body)
                     )
                     if not access_violation:
                         raise
