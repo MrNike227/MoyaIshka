@@ -48,6 +48,28 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(backup_dir.name, "ISH_Backups")
         self.assertNotEqual(backup_dir.parent.name, "ISH_Backups")
 
+    def test_application_identity_is_ish(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('APP_NAME = "ISH"', source)
+        self.assertIn("class ISHApp:", source)
+        self.assertNotIn("class MoyaIshkaApp:", source)
+        self.assertIn('"assistant_name": "ISH"', source)
+
+    def test_legacy_user_data_is_copied_to_ish_without_deleting_source(self):
+        import os
+        from unittest.mock import patch
+        from main import user_data_dir
+        with tempfile.TemporaryDirectory() as temp:
+            appdata = Path(temp)
+            legacy = appdata / "MoyaIshka"
+            legacy.mkdir()
+            (legacy / "config.json").write_text('{"assistant_name":"old"}', encoding="utf-8")
+            with patch.dict(os.environ, {"APPDATA": str(appdata)}):
+                target = user_data_dir()
+            self.assertEqual(target, appdata / "ISH")
+            self.assertEqual((target / "config.json").read_text(encoding="utf-8"), '{"assistant_name":"old"}')
+            self.assertTrue((legacy / "config.json").is_file())
+
     def test_application_version_is_429(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.2.9"', source)
