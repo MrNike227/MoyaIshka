@@ -116,7 +116,7 @@ try {{
     }} else {{
         $exitCode = $process.ExitCode
     }}
-    if (Test-Path -LiteralPath $runnerResult) {{
+    if ((Test-Path -LiteralPath $runnerResult) -and ((Get-Item -LiteralPath $runnerResult).Length -le 1048576)) {{
         $testData = Get-Content -LiteralPath $runnerResult -Raw | ConvertFrom-Json
     }} elseif (-not $errorText) {{
         $errorText = 'Тестовый EXE не создал отчёт.'
@@ -173,15 +173,17 @@ def _run_windows_sandbox(
     config = readonly_root.parent / "MoyaIshkaTests.wsb"
     create_sandbox_config(readonly_root, writable_root, config, memory_mb=4096)
     try:
-        launch_windows_sandbox(config)
-        completion = wait_for_sandbox_completion(writable_root, timeout_seconds=timeout_seconds)
+        sandbox_process = launch_windows_sandbox(config)
+        completion = wait_for_sandbox_completion(
+            writable_root, timeout_seconds=timeout_seconds, sandbox_process=sandbox_process,
+        )
     except TimeoutError as exc:
         raise ProposalTestError(
             f"{exc} Временный пакет оставлен для диагностики: {readonly_root.parent}"
         ) from exc
     report_path = writable_root / "host_report.json"
-    if not report_path.is_file():
-        raise ProposalTestError("Песочница завершилась без итогового отчёта.")
+    if report_path.is_symlink() or not report_path.is_file() or report_path.stat().st_size > 1024 * 1024:
+        raise ProposalTestError("Итоговый отчёт отсутствует, слишком велик или является ссылкой.")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
@@ -394,7 +396,7 @@ def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) ->
             stdout=stream.getvalue(),
         )
     except Exception as exc:
-        result_data["stderr"] = str(exc)
+        result_data["stderr"] = str(exc)[:12000]
     finally:
         try:
             os.chdir(old_cwd)
