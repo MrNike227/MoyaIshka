@@ -259,7 +259,7 @@ class PatchTests(unittest.TestCase):
             "first\r\nSECOND\r\nthird\r\n",
         )
 
-    def test_local_self_improvement_uses_longer_ollama_timeout_and_larger_context(self):
+    def test_local_self_improvement_uses_longer_timeout_and_safe_context(self):
         from unittest.mock import patch
         import main
 
@@ -281,8 +281,8 @@ class PatchTests(unittest.TestCase):
             )
         self.assertEqual(result, "diff")
         self.assertEqual(captured["timeout"], 900)
-        self.assertEqual(captured["payload"]["options"]["num_ctx"], 8192)
-        self.assertEqual(captured["payload"]["options"]["num_batch"], 128)
+        self.assertEqual(captured["payload"]["options"]["num_ctx"], 4096)
+        self.assertEqual(captured["payload"]["options"]["num_batch"], 64)
 
     def test_local_self_improvement_reduces_context_when_system_is_under_pressure(self):
         from unittest.mock import patch
@@ -335,12 +335,12 @@ class PluginTests(unittest.TestCase):
 
 
 class UtilityTests(unittest.TestCase):
-    def test_application_release_version_is_423(self):
+    def test_application_release_version_is_424(self):
         import os
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from main import APP_VERSION
-        self.assertEqual(APP_VERSION, "4.2.3")
+        self.assertEqual(APP_VERSION, "4.2.4")
 
     def test_saved_container_overrides_legacy_install_directory(self):
         import main
