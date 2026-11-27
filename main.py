@@ -199,6 +199,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "background_ram_limit_mb": 5120,
     "background_min_available_ram_mb": 8192,
     "background_cpu_limit_percent": 85,
+    "developer_architect_model": "",
+    "developer_coder_model": "",
+    "developer_reviewer_model": "",
 }
 
 
@@ -2137,6 +2140,22 @@ class MoyaIshkaApp:
         prompt_actions.pack(fill="x", pady=(0, 8))
         ttk.Button(prompt_actions, text="Копировать задание", command=self.copy_improvement_task).pack(side="left")
         ttk.Button(prompt_actions, text="Вставить из буфера", command=self.paste_improvement_task).pack(side="left", padx=8)
+        developer_models = ttk.LabelFrame(self_dev, text="Модели по ролям (необязательно)", padding=8)
+        developer_models.pack(fill="x", pady=(0, 8))
+        ttk.Label(developer_models, text="Оставь поле пустым, чтобы использовать основную модель. Указывай имя модели для текущего режима (Ollama или онлайн).", style="MutedPanel.TLabel", wraplength=860).pack(anchor="w")
+        self.developer_model_vars = {}
+        role_row = ttk.Frame(developer_models, style="Panel.TFrame")
+        role_row.pack(fill="x", pady=(6, 0))
+        for role_key, role_label in (
+            ("architect", "Архитектор"),
+            ("coder", "Программист"),
+            ("reviewer", "Ревизор"),
+        ):
+            ttk.Label(role_row, text=role_label, style="Panel.TLabel").pack(side="left", padx=(0, 4))
+            variable = tk.StringVar(value=str(self.config.get(f"developer_{role_key}_model", "")))
+            self.developer_model_vars[role_key] = variable
+            ttk.Entry(role_row, textvariable=variable, width=17).pack(side="left", padx=(0, 10))
+        ttk.Button(role_row, text="Сохранить модели", command=self.save_developer_models).pack(side="left")
         self.improve_auto_var = tk.BooleanVar(value=bool(self.config.get("self_improve_auto_enabled", False)))
         self._make_checkbox(self_dev, "Автоанализ выбранного файла раз в сутки (без автоматического изменения кода)", self.improve_auto_var, self._toggle_auto_improvement, background_key="panel").pack(anchor="w", pady=(0, 6))
         analysis_actions = ttk.Frame(self_dev, style="Panel.TFrame")
@@ -5771,6 +5790,16 @@ class MoyaIshkaApp:
             "task_profile": "self_improvement",
             "resource_pressure": bool(self.resource_governor.snapshot().system_pressure),
         }
+        system_text = str(messages[0].get("content", "")) if messages else ""
+        role_key = (
+            "architect" if "РОЛЬ: АРХИТЕКТОР" in system_text else
+            "coder" if "РОЛЬ: ПРОГРАММИСТ" in system_text else
+            "reviewer" if "РОЛЬ: НЕЗАВИСИМЫЙ РЕВИЗОР" in system_text else ""
+        )
+        role_model = str(self.config.get(f"developer_{role_key}_model", "")).strip() if role_key else ""
+        if role_model:
+            settings["online_model"] = role_model
+            settings["ollama_model"] = role_model
         mode = str(self.config.get("mode", "Авто"))
         errors = []
         if mode != "Только локально" and settings["api_key"]:
@@ -6145,6 +6174,15 @@ class MoyaIshkaApp:
                 self.events.put(("improvement_analysis_error", (silent, str(exc), relative)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def save_developer_models(self) -> None:
+        """Save optional per-role model names; blank values fall back to the main model."""
+        variables = getattr(self, "developer_model_vars", {})
+        for role_key in ("architect", "coder", "reviewer"):
+            variable = variables.get(role_key)
+            self.config[f"developer_{role_key}_model"] = str(variable.get() if variable else "").strip()[:120]
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.improve_status_var.set("Настройки моделей архитектора, программиста и ревизора сохранены.")
 
     def run_background_developer(self) -> None:
         """Run one opt-in architect/coder/tester/reviewer cycle without editing live sources."""
