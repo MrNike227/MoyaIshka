@@ -1,4 +1,5 @@
 -- ISH 4.1.9: E2E-encrypted cloud vault and private backup storage.
+-- Legacy table/bucket IDs are intentionally retained for existing user data.
 -- Run this entire script in Supabase Dashboard -> SQL Editor -> New query.
 -- Do NOT create or paste a service_role/secret key into the desktop application.
 
