@@ -574,8 +574,10 @@ def scan_application_copies(
         roots.append((Path(current_exe).expanduser().resolve().parent, 1))
     roots.extend([
         (local / "Programs", 4),
-        (local / "ISH", 3),\n        (local / "MoyaIshka", 3),
-        (roaming / "ISH" / "update_staging", 2),\n        (roaming / "MoyaIshka" / "update_staging", 2),
+        (local / "ISH", 3),
+        (local / "MoyaIshka", 3),
+        (roaming / "ISH" / "update_staging", 2),
+        (roaming / "MoyaIshka" / "update_staging", 2),
         (home / "Desktop", 2),
         (home / "Downloads", 2),
     ])
