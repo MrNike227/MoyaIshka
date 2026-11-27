@@ -289,6 +289,19 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
             split_multi_file_unified_diff(patch)
 
+    def test_distinct_insertions_at_same_source_anchor_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,0 +1 @@
++FIRST = 1
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,0 +1 @@
++SECOND = 2
+"""
+        with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
+            split_multi_file_unified_diff(patch)
+
     def test_wrapped_added_line_is_recovered(self):
         sources = {"plugin_manager.py": "class PluginManager:\n    pass\n"}
         patch = """--- a/plugin_manager.py
