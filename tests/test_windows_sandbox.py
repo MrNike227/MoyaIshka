@@ -1,9 +1,16 @@
+import json
+import os
 import tempfile
 import unittest
+import inspect
+from unittest.mock import patch
 from pathlib import Path
 from xml.etree import ElementTree
 
-from windows_sandbox import create_sandbox_config, get_windows_sandbox_status, request_windows_sandbox_install
+from windows_sandbox import (
+    create_sandbox_config, get_windows_sandbox_status,
+    record_windows_sandbox_install, request_windows_sandbox_install,
+)
 
 
 class WindowsSandboxTests(unittest.TestCase):
@@ -49,6 +56,33 @@ class WindowsSandboxTests(unittest.TestCase):
         self.assertFalse(status["supported"])
         with self.assertRaisesRegex(RuntimeError, "только в Windows"):
             request_windows_sandbox_install()
+
+
+    def test_status_check_does_not_call_admin_only_optional_feature_cmdlets(self):
+        source = inspect.getsource(get_windows_sandbox_status)
+        self.assertNotIn("Get-WindowsOptionalFeature", source)
+        self.assertIn("Get-CimInstance Win32_OperatingSystem", source)
+        self.assertIn("HypervisorPresent", source)
+
+    def test_install_result_is_persisted_for_reboot_detection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"APPDATA": temp}):
+                path = record_windows_sandbox_install({
+                    "success": True,
+                    "state": "EnablePending",
+                    "restart_required": True,
+                    "boot_time": "2026-11-27T06:00:00.0000000Z",
+                    "error": "",
+                    "unexpected": "must not be persisted",
+                })
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(data["schema"], 1)
+                self.assertTrue(data["success"])
+                self.assertEqual(data["state"], "EnablePending")
+                self.assertTrue(data["restart_required"])
+                self.assertIn("2026-11-27", data["boot_time"])
+                self.assertNotIn("unexpected", data)
+
 
 
 if __name__ == "__main__":
