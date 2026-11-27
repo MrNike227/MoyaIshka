@@ -196,7 +196,7 @@ def test_change_bundle(
     bundle_dir: str | Path,
     source_root: str | Path,
     *,
-    timeout_seconds: int = 240,
+    timeout_seconds: int = 600,
     sandbox_executor: Callable[[Path, Path, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Verify a proposal and test it in Windows Sandbox, never on the host.
