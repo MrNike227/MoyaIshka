@@ -53,6 +53,7 @@ from supabase_backup import (
 from plugin_manager import PluginManager
 from self_improvement import (editable_project_files, editable_test_files, related_test_path, build_model_source_context, build_multi_file_repair_context, apply_patch_with_backup, apply_unified_diff, apply_multi_file_unified_diff, split_multi_file_unified_diff, generate_validated_multi_file_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
 from module_dependency_analyzer import analyze_module_dependencies, build_dependency_context, format_dependency_report
+from background_developer import run_background_development
 from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, save_multi_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from windows_sandbox import get_windows_sandbox_status, record_windows_sandbox_install, request_windows_sandbox_install, wait_for_install_result
@@ -2143,6 +2144,8 @@ class MoyaIshkaApp:
         ttk.Button(analysis_actions, text="Автоанализ выбранного файла", command=self.analyze_improvements).pack(side="left")
         ttk.Button(analysis_actions, text="Копировать текст улучшения", command=self.copy_selected_improvement).pack(side="left", padx=8)
         ttk.Button(analysis_actions, text="Подготовить diff выбранного предложения", style="Accent.TButton", command=self.prepare_selected_improvement).pack(side="left", padx=8)
+        self.background_developer_button = ttk.Button(analysis_actions, text="Фоновый разработчик: создать и проверить", command=self.run_background_developer)
+        self.background_developer_button.pack(side="left", padx=8)
         improvement_panel = ttk.Frame(self_dev, style="Panel.TFrame")
         improvement_panel.pack(fill="both", expand=True, pady=(0, 6))
         improvement_panel.columnconfigure(0, weight=1)
@@ -3719,6 +3722,37 @@ class MoyaIshkaApp:
                     self.improve_status_var.set(str(error_text))
                     if not automatic:
                         messagebox.showerror("Саморазвитие", str(error_text))
+                elif event == "background_development_complete":
+                    self.background_development_busy = False
+                    if hasattr(self, "background_developer_button"):
+                        self.background_developer_button.configure(state="normal")
+                    result = payload if isinstance(payload, dict) else {}
+                    message = str(result.get("message") or "Фоновая разработка завершена.")
+                    if result.get("status") == "no_suggestions":
+                        self.improve_status_var.set(message)
+                    else:
+                        review = str(result.get("review_summary") or "Независимая проверка не дала заключения.")
+                        tests = (
+                            f"Тестов: {int(result.get('tests_run', 0) or 0)}; "
+                            f"ошибок: {int(result.get('errors', 0) or 0)}; "
+                            f"провалено: {int(result.get('failures', 0) or 0)}"
+                        )
+                        bundle = str(result.get("bundle_path") or "не сохранён")
+                        self.improve_status_var.set(f"{message} {tests}. Пакет: {bundle}")
+                        details = f"{message}\n\nНезависимый ревизор: {review}\n\n{tests}\n\nПакет изменений: {bundle}"
+                        findings = result.get("review_findings") or []
+                        if findings:
+                            details += "\n\nЗамечания:\n- " + "\n- ".join(str(item) for item in findings[:8])
+                        if result.get("passed"):
+                            messagebox.showinfo("Фоновая разработка", details)
+                        else:
+                            messagebox.showwarning("Фоновая разработка — требуется проверка", details)
+                elif event == "background_development_error":
+                    self.background_development_busy = False
+                    if hasattr(self, "background_developer_button"):
+                        self.background_developer_button.configure(state="normal")
+                    self.improve_status_var.set(str(payload))
+                    messagebox.showerror("Фоновая разработка", str(payload))
                 elif event == "patch_generated":
                     self.pending_patch_text = str(payload)
                     self.patch_preview.delete("1.0", "end")
@@ -6111,6 +6145,38 @@ class MoyaIshkaApp:
                 self.events.put(("improvement_analysis_error", (silent, str(exc), relative)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def run_background_developer(self) -> None:
+        """Run one opt-in architect/coder/tester/reviewer cycle without editing live sources."""
+        if bool(getattr(self, "background_development_busy", False)):
+            self.improve_status_var.set("Фоновый разработчик уже выполняет задачу.")
+            return
+        relative = self.improve_target_var.get().strip()
+        if not relative:
+            messagebox.showwarning("Фоновая разработка", "Сначала выбери Python-модуль проекта.")
+            return
+        self.background_development_busy = True
+        if hasattr(self, "background_developer_button"):
+            self.background_developer_button.configure(state="disabled")
+        self.improve_status_var.set(f"Фоновый разработчик анализирует архитектуру и готовит изменение для {relative}…")
+
+        def worker() -> None:
+            try:
+                result = run_background_development(
+                    project_dir(),
+                    relative,
+                    self._updates_directory(),
+                    lambda messages, attempt: self._current_model_call(
+                        messages, generation_attempt=attempt
+                    ),
+                    version=APP_VERSION,
+                    timeout_seconds=600,
+                )
+                self.events.put(("background_development_complete", result))
+            except Exception as exc:
+                self.events.put(("background_development_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True, name="MoyaBackgroundDeveloper").start()
 
     def prepare_selected_improvement(self) -> None:
         if bool(getattr(self, "improvement_analysis_busy", False)):
