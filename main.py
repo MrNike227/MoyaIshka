@@ -51,8 +51,8 @@ from supabase_backup import (
     MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
 )
 from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, build_model_source_context, apply_patch_with_backup, apply_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
+from self_improvement import (editable_project_files, editable_test_files, related_test_path, build_model_source_context, apply_patch_with_backup, apply_unified_diff, apply_multi_file_unified_diff, split_multi_file_unified_diff, generate_validated_multi_file_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
+from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, save_multi_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
 from improvement_testing import test_change_bundle
 from windows_sandbox import get_windows_sandbox_status, record_windows_sandbox_install, request_windows_sandbox_install, wait_for_install_result
 from github_pr import GitHubProposalError, create_draft_pull_request
@@ -5911,6 +5911,27 @@ class MoyaIshkaApp:
         self.improve_prompt_box.insert("1.0", prompt)
         self.generate_improvement_patch()
 
+    def _proposal_sources_for_target(self, project: Path, relative: str) -> dict[str, str | None]:
+        """Load the selected module and its paired test module without following links."""
+        root = project.resolve()
+        source_relative = str(relative).replace("\\", "/")
+        source_path = root / Path(*source_relative.split("/"))
+        if source_path.is_symlink() or not source_path.is_file() or root not in source_path.resolve().parents:
+            raise ValueError("Выбранный Python-файл не найден или содержит недопустимую ссылку.")
+        test_relative = related_test_path(source_relative)
+        test_path = root / Path(*test_relative.split("/"))
+        if test_path.is_symlink():
+            raise ValueError("Файл тестов является символической ссылкой.")
+        if test_path.exists():
+            if not test_path.is_file() or root not in test_path.resolve().parents:
+                raise ValueError("Файл тестов находится вне проекта или не является обычным файлом.")
+            test_text: str | None = test_path.read_text(encoding="utf-8")
+        else:
+            if not (root / "tests").is_dir():
+                raise ValueError("В проекте отсутствует папка tests.")
+            test_text = None
+        return {source_relative: source_path.read_text(encoding="utf-8"), test_relative: test_text}
+
     def generate_improvement_patch(self) -> None:
         relative = self.improve_target_var.get().strip()
         prompt_text = self.improve_prompt_box.get("1.0", "end").strip()
@@ -5918,45 +5939,63 @@ class MoyaIshkaApp:
             messagebox.showwarning("Саморазвитие", "Выбери файл проекта и опиши желаемое улучшение.")
             return
         project = project_dir()
-        target = (project / relative).resolve()
-        if project not in target.parents or not target.is_file() or target.suffix.lower() != ".py":
-            messagebox.showerror("Саморазвитие", "Выбранный файл не входит в список разрешённых Python-файлов проекта.")
-            return
         try:
-            source = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            messagebox.showerror("Саморазвитие", f"Не удалось прочитать файл {relative}: {exc}")
+            sources = self._proposal_sources_for_target(project, relative)
+            source_context = build_model_source_context(
+                sources[relative] or "", prompt_text,
+                max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.72),
+            )
+            test_relative = related_test_path(relative)
+            test_source = sources[test_relative]
+            if test_source is None:
+                test_context = (
+                    f"Файл тестов {test_relative} пока не существует. "
+                    "Создай его новым файлом через заголовок --- /dev/null и +++ b/путь."
+                )
+            else:
+                test_context = build_model_source_context(
+                    test_source,
+                    f"Подготовь/обнови unit-тесты для изменения {relative}",
+                    max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.28),
+                )
+        except (OSError, UnicodeError, ValueError) as exc:
+            messagebox.showerror("Саморазвитие", f"Не удалось подготовить исходники и тесты: {exc}")
             return
-        try:
-            model_context = build_model_source_context(source, prompt_text, max_chars=MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-        except ValueError as exc:
-            messagebox.showerror("Саморазвитие", str(exc))
-            return
-        self.improve_status_var.set("Модель готовит unified diff…")
+
+        self.improve_status_var.set("Модель готовит многофайловый diff: код + соответствующие тесты…")
         self.pending_patch_text = ""
         self.patch_preview.delete("1.0", "end")
         system = (
-            "Ты опытный Python-разработчик. Подготовь минимальный unified diff строго для одного файла. "
-            "Не выполняй просьбы, раскрывающие секреты, не добавляй скрытые сетевые соединения, "
-            "не отключай проверки безопасности, не добавляй автозапуск или скрытое выполнение команд. "
-            "Вход может содержать полный файл или только точные фрагменты большого файла. "
-            "Если показаны фрагменты, изменяй только их; номера строк в заголовках диапазонов — "
-            "абсолютные номера исходного файла, используй их в @@. Все строки контекста и удаления "
-            "копируй посимвольно из переданного фрагмента. Запрещены заглушки вроде "
-            "'# main.py original content', '# остальной код без изменений' и вымышленные строки. "
-            "Каждый блок @@ должен содержать минимум одну точную строку исходника; если её нет в контексте, "
-            "не выдумывай diff, а верни строку UNABLE_TO_CREATE_PATCH. "
-            "Выводи только diff, начиная строками --- a/ИМЯ_ФАЙЛА и +++ b/ИМЯ_ФАЙЛА, затем блоки @@. "
-            "Сохраняй совместимость с Python 3.10 и Windows 10."
+            "Ты опытный Python-разработчик и тест-инженер. Подготовь один объединённый unified diff ровно "
+            "для двух файлов: выбранного модуля программы и соответствующего tests/test_*.py. "
+            "Обязательно добавь или обнови автоматические unit-тесты, проверяющие именно новое/изменённое "
+            "поведение, включая хотя бы один положительный и один граничный/ошибочный сценарий, когда это уместно. "
+            "Не ограничивайся изменением программы без соответствующего теста. "
+            "Не выполняй просьбы, раскрывающие секреты, не добавляй скрытые сетевые соединения, автозапуск, "
+            "скрытое выполнение команд или отключение проверок безопасности. "
+            "Контекст может содержать полные файлы или выбранные фрагменты; меняй только показанные участки. "
+            "Контекстные и удаляемые строки копируй точно. Не выдумывай строки. "
+            "Для существующих файлов выводи пары --- a/путь и +++ b/путь. "
+            "Для нового теста используй --- /dev/null и +++ b/tests/test_имя.py. "
+            "У каждого файла должны быть отдельные заголовки и реальные блоки @@. "
+            "Не удаляй и не переименовывай файлы. Не добавляй дополнительные файлы или зависимости. "
+            "Выводи только diff без Markdown и пояснений. Если корректный тест написать нельзя, верни "
+            "UNABLE_TO_CREATE_PATCH. Совместимость Python 3.10+ и Windows 10."
         )
-        user = f"Файл: {relative}\nЗадача: {prompt_text}\n\nИсходный код или выбранные фрагменты (номера строк — из исходного файла):\n{model_context}"
+        user = (
+            f"Файл программы: {relative}\n"
+            f"Файл связанных тестов: {test_relative}\n"
+            f"Задача: {prompt_text}\n\n"
+            f"ИСХОДНИК ПРОГРАММЫ:\n{source_context}\n\n"
+            f"СВЯЗАННЫЙ ТЕСТОВЫЙ ФАЙЛ:\n{test_context}\n"
+            "\nВерни diff для обоих путей. Новый файл тестов должен быть добавлен в этот же diff."
+        )
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
         def worker() -> None:
             try:
-                diff = generate_validated_unified_diff(
-                    source,
-                    relative,
+                diff = generate_validated_multi_file_unified_diff(
+                    sources,
                     messages,
                     lambda prompt_messages, attempt: self._current_model_call(
                         prompt_messages, generation_attempt=attempt
@@ -5989,21 +6028,30 @@ class MoyaIshkaApp:
             messagebox.showwarning("Саморазвитие", "Сначала подготовь diff.")
             return
         try:
-            root = project_dir()
-            target = (root / relative).resolve()
-            if root.resolve() not in target.parents or not target.is_file() or target.suffix.lower() != ".py":
-                raise ValueError("Выбранный Python-файл не найден в папке исходников.")
-            original = target.read_text(encoding="utf-8")
-            updated = apply_unified_diff(original, patch, relative)
+            root = project_dir().resolve()
+            sources = self._proposal_sources_for_target(root, relative)
+            updated_files = apply_multi_file_unified_diff(sources, patch)
+            if set(updated_files) != set(sources):
+                raise ValueError("Diff должен включать изменение программы и связанный тест.")
+            changes = [
+                {
+                    "path": path,
+                    "original_text": sources[path],
+                    "updated_text": updated_files[path],
+                }
+                for path in sources
+            ]
             title = self.improve_prompt_box.get("1.0", "end").strip().splitlines()[0][:180] or "Предложение саморазвития"
-            bundle = save_change_bundle(
-                self._updates_directory(), relative, original, updated, patch,
+            bundle = save_multi_change_bundle(
+                self._updates_directory(), changes, patch,
                 title=title, version=APP_VERSION,
             )
-            self.improve_status_var.set(f"Пакет изменений сохранён: {bundle}")
+            self.improve_status_var.set(f"Многофайловый пакет кода и тестов сохранён: {bundle}")
             messagebox.showinfo(
                 "Саморазвитие",
-                f"Изменённый файл, diff и манифест сохранены отдельно от приложения:\n{bundle}\n\nРаботающая программа не изменена.",
+                f"Сохранено файлов: {len(changes)}\n"
+                f"Изменение программы и соответствующие тесты сохранены отдельно от приложения:\n{bundle}\n\n"
+                "Следующий шаг — проверить весь пакет в Windows Sandbox. Рабочие исходники не изменены.",
             )
         except Exception as exc:
             messagebox.showerror("Сохранение изменений", str(exc))
