@@ -533,7 +533,7 @@ def _multi_diff_candidates(response: str) -> list[str]:
 
 
 def _extract_multi_diff_hunks(lines: list[str]) -> str:
-    """Extract hunks and repair wrapped lines without leaving stale @@ counts."""
+    """Extract hunks and repair wrapped lines without leaving stale @@ offsets."""
     start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
     if start is None:
         return ""
@@ -543,17 +543,26 @@ def _extract_multi_diff_hunks(lines: list[str]) -> str:
     hunk_lines: list[str] = []
     hunk_was_wrapped = False
     active_marker: str | None = None
+    cumulative_line_delta = 0
 
     def flush_hunk() -> None:
-        nonlocal hunk_header, hunk_lines, hunk_was_wrapped
+        nonlocal hunk_header, hunk_lines, hunk_was_wrapped, cumulative_line_delta
         if hunk_header is None:
             return
-        if hunk_was_wrapped:
-            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
-            if match:
+        match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
+        if match:
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or 1)
+            new_count = int(match.group(4) or 1)
+            if hunk_was_wrapped:
                 old_count = sum(1 for item in hunk_lines if item and item[0] in " -")
                 new_count = sum(1 for item in hunk_lines if item and item[0] in " +")
-                hunk_header = f"@@ -{match.group(1)},{old_count} +{match.group(3)},{new_count} @@"
+            if hunk_was_wrapped or cumulative_line_delta:
+                # The old coordinate is measured in the untouched source.
+                # Recalculate the new coordinate after every earlier hunk delta.
+                new_start = old_start + cumulative_line_delta + (1 if old_count == 0 else 0)
+                hunk_header = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@"
+            cumulative_line_delta += new_count - old_count
         body.append(hunk_header + "\n")
         body.extend(item + "\n" for item in hunk_lines)
         hunk_header = None
