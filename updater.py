@@ -123,13 +123,11 @@ def check_latest_release(repository: str, current_version: str) -> dict[str, Any
     data = json.loads(_get(f"https://api.github.com/repos/{repository}/releases/latest").decode("utf-8"))
     tag = str(data.get("tag_name", ""))
     assets = data.get("assets", [])
+    # Prefer new ISH assets, but keep old package names readable during migration.
     package = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
+    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)
     checksum = next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
-    # Accept legacy release assets during the transition to the ISH package name.
-    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip"), None)
-    package = package or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip"), None)  # legacy release compatibility
-    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "ish.zip.sha256"), None)
-    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)  # legacy release compatibility
+    checksum = checksum or next((a for a in assets if str(a.get("name", "")).lower() == "moyaishka.zip.sha256"), None)
     return {
         "version": tag.lstrip("v"),
         "url": data.get("html_url", ""),
