@@ -350,13 +350,20 @@ def test_change_bundle(
         reconstructed_files = apply_multi_file_unified_diff(sources, patch_text)
     except ValueError as exc:
         raise ProposalTestError(f"Diff не совпадает с исходниками: {exc}") from exc
+    def _normalize_diff_result(value: str) -> str:
+        # A unified diff may omit only the final newline marker. Preserve strict
+        # comparison of every actual source line while accepting CRLF/LF variants.
+        normalized = value.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        return normalized[:-1] if normalized.endswith("\\n") else normalized
+
     for relative, _old, new, _old_text in checked:
         name = relative.as_posix()
         try:
             updated_text = new.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ProposalTestError(f"Файл предложения {name} не является UTF-8.") from exc
-        if reconstructed_files.get(name) != updated_text:
+        reconstructed = reconstructed_files.get(name)
+        if reconstructed is None or _normalize_diff_result(reconstructed) != _normalize_diff_result(updated_text):
             raise ProposalTestError(f"Сохранённый diff не соответствует содержимому файла {name}.")
 
     report: dict[str, Any] = {
