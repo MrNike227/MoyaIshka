@@ -800,6 +800,19 @@ def apply_multi_file_unified_diff(
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
+        is_test_file = relative.startswith("tests/") or PurePosixPath(relative).name.startswith("test_")
+        if not is_test_file:
+            added_test_imports = [
+                line[1:].strip()
+                for line in file_patch.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+                and re.match(r"(?:from\\s+unittest(?:\\.mock)?\\s+import|import\\s+(?:unittest|pytest)(?:\\s|$))", line[1:].strip())
+            ]
+            if added_test_imports:
+                raise ValueError(
+                    f"Файл {relative}: в исходный модуль попал импорт тестового фреймворка "
+                    f"({added_test_imports[0]}). Перенеси его только в tests/test_*.py."
+                )
         try:
             result = apply_unified_diff(original or "", file_patch, relative)
         except ValueError as exc:
