@@ -409,7 +409,7 @@ def _clean_suggestion_items(raw: list) -> list[dict[str, str]]:
             continue
         clean = {
             key: str(item.get(key, "")).strip()[:1800]
-            for key in ("title", "problem", "current", "proposed", "benefit")
+            for key in ("title", "problem", "location", "current", "proposed", "benefit")
         }
         if clean["title"] and clean["current"] and clean["proposed"]:
             result.append(clean)
