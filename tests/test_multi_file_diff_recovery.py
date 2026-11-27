@@ -318,6 +318,23 @@ PluginManager:
         self.assertEqual(updated["plugin_manager.py"], "class\nPluginManager:\n    pass\n")
 
 
+    def test_wrapped_hunk_updates_following_new_line_offsets(self):
+        sources = {"plugin_manager.py": "A\\nB\\nC\\nD\\nE\\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,1 +1,1 @@
+-A
++A
+X
+@@ -4,1 +4,1 @@
+-D
++D2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -4,1 +5,1 @@", sections["plugin_manager.py"])
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "A\\nX\\nB\\nC\\nD2\\nE\\n")
+
     def test_rejects_test_framework_import_leaking_into_application_module(self):
         sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\nclass PluginManager: pass\n"}
         patch = """--- a/plugin_manager.py
