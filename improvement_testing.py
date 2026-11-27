@@ -37,7 +37,7 @@ def _ignore_sandbox_copy(directory: str, names: list[str]) -> set[str]:
     ignored_dirs = {
         ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
         ".ruff_cache", "build", "dist", "node_modules", "Updates",
-        "MoyaIshka_Backups", "backups",
+        "ISH_Backups", "backups",
     }
     ignored_files = {
         ".env", ".env.local", ".env.production", "config.json", "credentials.json",
@@ -66,13 +66,13 @@ def _prepare_guest_runner(readonly_root: Path) -> Path:
     """Copy only the installed onedir EXE and its private runtime into the read-only payload."""
     if not getattr(sys, "frozen", False):
         raise ProposalTestError(
-            "Для реального тестирования нужна установленная сборка Моя ИИшка (EXE onedir). "
+            "Для реального тестирования нужна установленная сборка ISH (EXE onedir). "
             "Запуск тестового кода на основном Python запрещён."
         )
     executable = Path(sys.executable).resolve()
     internal = executable.parent / "_internal"
     if executable.name.casefold() != "moyaishka.exe" or not executable.is_file() or not internal.is_dir():
-        raise ProposalTestError("Для тестирования требуется полная сборка MoyaIshka.exe с каталогом _internal.")
+        raise ProposalTestError("Для тестирования требуется полная сборка ISH.exe с каталогом _internal.")
     runner = readonly_root / "Runner"
     runner.mkdir(parents=True, exist_ok=True)
     shutil.copy2(executable, runner / executable.name)
@@ -86,7 +86,7 @@ def _guest_script(timeout_seconds: int) -> str:
 $root = 'C:\MoyaTest\ReadOnly'
 $result = 'C:\MoyaTest\Result'
 $project = Join-Path $root 'Project'
-$runner = Join-Path $root 'Runner\MoyaIshka.exe'
+$runner = Join-Path $root 'Runner\ISH.exe'
 $runnerResult = Join-Path $result 'runner_result.json'
 $hostReport = Join-Path $result 'host_report.json'
 $completion = Join-Path $result 'complete.json'
@@ -178,7 +178,7 @@ def _run_windows_sandbox(
         )
     runner = _prepare_guest_runner(readonly_root)
     (readonly_root / "run_tests.ps1").write_text(_guest_script(timeout_seconds), encoding="utf-8")
-    config = readonly_root.parent / "MoyaIshkaTests.wsb"
+    config = readonly_root.parent / "ISH_Tests.wsb"
     create_sandbox_config(readonly_root, writable_root, config, memory_mb=4096)
     try:
         sandbox_process = launch_windows_sandbox(config)
