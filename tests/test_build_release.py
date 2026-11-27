@@ -516,8 +516,9 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         helper = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
-        self.assertIn("generate_validated_unified_diff", source)
-        self.assertIn("generate_validated_unified_diff(", source)
+        self.assertIn("generate_validated_multi_file_unified_diff", source)
+        self.assertIn("generate_validated_multi_file_unified_diff(", source)
+        self.assertIn("apply_multi_file_unified_diff(sources, patch)", source)
         self.assertIn("max_attempts=3", source)
         self.assertIn("generation_attempt=attempt", source)
         self.assertIn("def generate_validated_unified_diff(", helper)
