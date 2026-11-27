@@ -198,6 +198,9 @@ class OnedirUpdateTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(RuntimeError):
                 _safe_member_path(path)
 
+    def test_legacy_archive_root_remains_accepted_for_upgrade(self):
+        self.assertEqual(_safe_member_path("MoyaIshka/MoyaIshka.exe"), ("MoyaIshka", "MoyaIshka.exe"))
+
     def test_archive_root_must_be_ish(self):
         with self.assertRaisesRegex(RuntimeError, "корневую папку"):
             _safe_member_path("OtherApp/ISH.exe")
