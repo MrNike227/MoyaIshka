@@ -348,8 +348,31 @@ try {
     }
     if (-not $confirmed) { throw 'Новая версия не подтвердила запуск за 90 секунд. Выполняется откат.' }
 
-    if (Test-Path -LiteralPath $oldSwap) { Remove-Item -LiteralPath $oldSwap -Force -ErrorAction SilentlyContinue }
+    # The new process has confirmed its version, path and hash. Rollback files are
+    # no longer needed; remove them now, but never let a cleanup failure undo a
+    # verified installation.
+    foreach ($obsolete in @($backup, $oldSwap)) {
+        if (Test-Path -LiteralPath $obsolete -PathType Leaf) {
+            try {
+                Remove-Item -LiteralPath $obsolete -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $obsolete) { throw 'Файл остался после удаления.' }
+                Write-UpdateLog "Удалена резервная копия после подтверждения обновления: $obsolete"
+            } catch {
+                Write-UpdateLog "ПРЕДУПРЕЖДЕНИЕ: не удалось удалить резервную копию $obsolete : $($_.Exception.Message)"
+            }
+        }
+    }
     Remove-Item -LiteralPath $StagedPath -Force -ErrorAction SilentlyContinue
+    $stagingAttemptDir = Split-Path -Parent $StagedPath
+    if ((Split-Path -Leaf $stagingAttemptDir) -like 'ISH_update_*') {
+        try {
+            if (Test-Path -LiteralPath $stagingAttemptDir -PathType Container) {
+                Remove-Item -LiteralPath $stagingAttemptDir -Recurse -Force -ErrorAction Stop
+            }
+        } catch {
+            Write-UpdateLog "ПРЕДУПРЕЖДЕНИЕ: не удалось удалить временную папку $stagingAttemptDir : $($_.Exception.Message)"
+        }
+    }
     Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
     Write-UpdateLog "ПОДТВЕРЖДЕНО: версия $ExpectedVersion установлена и запущена из $TargetPath. SHA-256 проверен."
     exit 0
@@ -523,15 +546,66 @@ def apply_update(staged_path: str, target_path: str, process_id: str) -> int:
         return 1
 
 
+APPLICATION_DIRECTORY_NAMES = frozenset({
+    "ish", "moyaishka", "моя иишка", "мояишка",
+})
+
+
 def _looks_like_ish_executable(filename: str) -> bool:
-    """Recognize only this application's executable names."""
+    """Recognize current, legacy and updater EXE names case-insensitively."""
     name = filename.casefold()
+    exact_names = {
+        "ish.exe", "moyaishka.exe", "moya_ishka.exe", "moya-ishka.exe",
+        "moya ishka.exe", "моя иишка.exe", "мояишка.exe",
+        "ish_update.exe", "moyaishka_update.exe", "моя иишка_update.exe",
+        "ish.previous.exe", "ish.rollback.exe", "ish.installing.exe",
+        "moyaishka.previous.exe", "moyaishka.rollback.exe", "moyaishka.installing.exe",
+    }
     return (
-        name in {"ish.exe", "moyaishka.exe", "моя иишка.exe", "ish_update.exe", "moyaishka_update.exe", "моя иишка_update.exe", "ish.previous.exe", "ish.installing.exe", "moyaishka.previous.exe", "moyaishka.installing.exe"}
-        or (name.startswith("ish_") and name.endswith(".exe"))
-        or (name.startswith("moyaishka_") and name.endswith(".exe"))
-        or (name.startswith("моя иишка_") and name.endswith(".exe"))
+        name in exact_names
+        or (name.startswith(("ish_", "moyaishka_", "моя иишка_")) and name.endswith(".exe"))
     )
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Detect symlinks and Windows junction/reparse points without following them."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return True
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def _is_complete_application_directory(executable: Path) -> bool:
+    """Return true only for a recognizable self-contained onedir installation."""
+    directory = executable.parent
+    if _is_reparse_point(directory):
+        return False
+    manifest_path = directory / "build_manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entrypoint = str(manifest.get("entrypoint", "")).casefold()
+            return entrypoint == executable.name.casefold() and isinstance(manifest.get("files"), list)
+        except (OSError, ValueError, AttributeError):
+            return False
+    internal = directory / "_internal"
+    return (
+        executable.name.casefold() in {
+            "ish.exe", "moyaishka.exe", "moya_ishka.exe", "моя иишка.exe", "мояишка.exe",
+        }
+        and internal.is_dir()
+        and (internal / "python311.dll").is_file()
+    )
+
+
+def _directory_contains_reparse_points(directory: Path) -> bool:
+    for current, dirnames, filenames in os.walk(directory, topdown=True, followlinks=False):
+        root = Path(current)
+        for name in [*dirnames, *filenames]:
+            if _is_reparse_point(root / name):
+                return True
+    return False
 
 
 def _version_hint_from_path(path: Path) -> str:
@@ -552,37 +626,80 @@ def scan_application_copies(
     roaming_app_data: str | Path | None = None,
     user_home: str | Path | None = None,
 ) -> list[dict[str, str | int | bool]]:
-    """Find likely ISH EXE copies in common install/download locations.
+    """Find current and legacy ISH/MoyaIshka copies in bounded known locations.
 
-    This intentionally does not scan the entire disk. It checks the active and
-    configured install folders, per-user Programs folders, the app's updater
-    staging folder, Desktop and Downloads. The currently running EXE is always
-    excluded from results.
+    It does not crawl entire drives. In addition to common user folders it checks
+    exact application-named sibling folders beside the selected/current install,
+    which catches older MoyaIshka installations without searching unrelated data.
     """
     home = Path(user_home or Path.home()).expanduser()
     local = Path(local_app_data or os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
     roaming = Path(roaming_app_data or os.environ.get("APPDATA", home / "AppData" / "Roaming"))
     running = Path(current_exe).expanduser().resolve() if current_exe else None
-
     roots: list[tuple[Path, int]] = []
-    if configured_install_dir:
-        roots.append((Path(configured_install_dir).expanduser(), 1))
-    if current_exe:
-        roots.append((Path(current_exe).expanduser().resolve().parent, 1))
+
+    def add_root(path: Path, depth: int) -> None:
+        roots.append((path, depth))
+
+    configured = Path(configured_install_dir).expanduser() if configured_install_dir else None
+    if configured:
+        add_root(configured, 3)
+    if running:
+        add_root(running.parent, 2)
+
+    # Look for exact product-named sibling folders at the install and container
+    # levels. This finds D:\MoyaIshka next to D:\ISH\App without crawling D:\.
+    anchors: list[Path] = []
+    for value in (configured, running.parent if running else None):
+        if value:
+            anchors.extend((value, value.parent, value.parent.parent))
+    seen_anchors: set[str] = set()
+    for anchor in anchors:
+        try:
+            resolved_anchor = anchor.resolve()
+            anchor_key = os.path.normcase(str(resolved_anchor))
+            if anchor_key in seen_anchors:
+                continue
+            seen_anchors.add(anchor_key)
+            for name in APPLICATION_DIRECTORY_NAMES:
+                candidate = resolved_anchor / name
+                add_root(candidate, 4)
+            try:
+                for sibling in resolved_anchor.iterdir():
+                    sibling_name = sibling.name.casefold()
+                    if sibling.is_dir() and (
+                        sibling_name.startswith("app.previous.")
+                        or sibling_name.startswith("ish.previous.")
+                        or sibling_name.startswith("moyaishka.previous.")
+                    ):
+                        add_root(sibling, 4)
+            except OSError:
+                pass
+        except (OSError, RuntimeError):
+            continue
+
     roots.extend([
-        (local / "Programs", 4),
-        (local / "ISH", 3),
-        (local / "MoyaIshka", 3),
-        (roaming / "ISH" / "update_staging", 2),
-        (roaming / "MoyaIshka" / "update_staging", 2),
-        (home / "Desktop", 2),
-        (home / "Downloads", 2),
+        (local / "Programs", 5),
+        (local / "ISH", 4),
+        (local / "MoyaIshka", 4),
+        (roaming / "ISH", 4),
+        (roaming / "MoyaIshka", 4),
+        (roaming / "ISH" / "update_staging", 3),
+        (roaming / "MoyaIshka" / "update_staging", 3),
+        (home / "ISH", 4),
+        (home / "MoyaIshka", 4),
+        (home / "Desktop", 3),
+        (home / "Downloads", 3),
     ])
     if data_dir:
-        # Only inspect the updater staging folder, never the whole data directory.
-        roots.append((Path(data_dir).expanduser() / "update_staging", 2))
+        roots.append((Path(data_dir).expanduser() / "update_staging", 3))
+    for environment_key in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(environment_key)
+        if base:
+            roots.extend((Path(base) / name, 4) for name in APPLICATION_DIRECTORY_NAMES)
 
     found: dict[str, dict[str, str | int | bool]] = {}
+    scanned_roots: set[str] = set()
     prune_names = {
         "$recycle.bin", "windows", "system volume information", "node_modules",
         ".git", "__pycache__", "temp", "tmp",
@@ -590,33 +707,43 @@ def scan_application_copies(
     for raw_root, max_depth in roots:
         try:
             root = raw_root.resolve()
-            if not root.is_dir():
+            if not root.is_dir() or _is_reparse_point(root):
                 continue
+            root_key = os.path.normcase(str(root))
+            if root_key in scanned_roots:
+                continue
+            scanned_roots.add(root_key)
         except (OSError, RuntimeError):
             continue
-        for directory, dirnames, filenames in os.walk(root):
+        for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
             current_dir = Path(directory)
             try:
                 depth = len(current_dir.relative_to(root).parts)
             except ValueError:
                 depth = max_depth + 1
-            dirnames[:] = [
-                name for name in dirnames
-                if name.casefold() not in prune_names and depth < max_depth
-            ]
+            safe_dirs = []
+            for name in dirnames:
+                candidate_dir = current_dir / name
+                if name.casefold() in prune_names or depth >= max_depth or _is_reparse_point(candidate_dir):
+                    continue
+                safe_dirs.append(name)
+            dirnames[:] = safe_dirs
             for filename in filenames:
                 if not _looks_like_ish_executable(filename):
                     continue
                 candidate = current_dir / filename
                 try:
+                    if _is_reparse_point(candidate):
+                        continue
                     resolved = candidate.resolve(strict=True)
                     if not resolved.is_file() or (running and resolved == running):
                         continue
-                    stat = resolved.stat()
+                    stat_result = resolved.stat()
                     key = os.path.normcase(str(resolved))
-                    parent_name = resolved.parent.name.casefold()
-                    if parent_name == "update_staging":
+                    if any(part.casefold() == "update_staging" for part in resolved.parts):
                         category = "Временный файл обновления"
+                    elif _is_complete_application_directory(resolved):
+                        category = "Папка старой установки"
                     elif "programs" in {part.casefold() for part in resolved.parts}:
                         category = "Копия в папке программ"
                     else:
@@ -625,30 +752,72 @@ def scan_application_copies(
                         "path": str(resolved),
                         "version": _version_hint_from_path(resolved),
                         "category": category,
-                        "size": int(stat.st_size),
-                        "modified": _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+                        "size": int(stat_result.st_size),
+                        "modified": _dt.datetime.fromtimestamp(stat_result.st_mtime).strftime("%d.%m.%Y %H:%M"),
                         "is_current": False,
                     }
                 except (OSError, RuntimeError):
                     continue
-
     return sorted(found.values(), key=lambda item: str(item["path"]).casefold())
 
 
 def delete_application_copy(path: str | Path, current_exe: str | Path | None = None) -> None:
-    """Delete a selected stale copy, refusing to delete the running executable."""
-    target = Path(path).expanduser().resolve(strict=True)
-    if current_exe:
-        running = Path(current_exe).expanduser().resolve()
-        if target == running:
-            raise ValueError("Нельзя удалить приложение, которое сейчас запущено.")
+    """Delete an obsolete app copy, including its onedir folder when verified safe."""
+    raw_target = Path(path).expanduser()
+    if _is_reparse_point(raw_target):
+        raise ValueError("Нельзя удалять ссылку или reparse point вместо обычного файла.")
+    target = raw_target.resolve(strict=True)
     if not target.is_file() or not _looks_like_ish_executable(target.name):
-        raise ValueError("Выбранный файл не распознан как исполняемый файл ISH.")
+        raise ValueError("Выбранный файл не распознан как исполняемый файл ISH/MoyaIshka.")
+    running = Path(current_exe).expanduser().resolve() if current_exe else None
+    if running and target == running:
+        raise ValueError("Нельзя удалить приложение, которое сейчас запущено.")
+
+    app_directory = target.parent
+    running_inside_directory = bool(
+        running and (running == app_directory or app_directory in running.parents)
+    )
+    if _is_complete_application_directory(target) and not running_inside_directory:
+        if _directory_contains_reparse_points(app_directory):
+            raise ValueError("В старой папке приложения есть ссылки/reparse points. Автоматическое удаление отменено.")
+        shutil.rmtree(app_directory)
+        if app_directory.exists():
+            raise OSError("Папка старой версии осталась после удаления.")
+        return
+
     target.unlink()
+    # Legacy one-file folders are removed only when the executable was their
+    # last item; any unrelated files are intentionally preserved.
+    if app_directory.name.casefold() in APPLICATION_DIRECTORY_NAMES:
+        try:
+            app_directory.rmdir()
+        except OSError:
+            pass
 
 
-
-
+def cleanup_old_application_copies(
+    configured_install_dir: str | Path | None = None,
+    current_exe: str | Path | None = None,
+    data_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Automatically remove detected old installations after a verified update."""
+    copies = scan_application_copies(
+        configured_install_dir=configured_install_dir,
+        current_exe=current_exe,
+        data_dir=data_dir,
+    )
+    deleted = 0
+    errors: list[str] = []
+    for item in copies:
+        path = Path(str(item.get("path", "")))
+        if item.get("category") == "Временный файл обновления" or "_update" in path.stem.casefold():
+            continue
+        try:
+            delete_application_copy(path, current_exe=current_exe)
+            deleted += 1
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return {"found": len(copies), "deleted": deleted, "errors": errors}
 
 def validate_app_directory(app_dir: str | Path, expected_version: str | None = None) -> dict[str, Any]:
     """Verify every manifest file and reject unexpected files except Windows shell caches."""
@@ -1047,9 +1216,31 @@ def _directory_updater_script() -> str:
             Start-Sleep -Milliseconds 400
         }
         if (-not $confirmed) { throw 'Новая версия не подтвердила запуск за 90 секунд.' }
+        # The startup receipt is the rollback boundary. Only after it has been
+        # verified may the previous installation and this attempt's staging data
+        # be removed. Cleanup failures are warnings, not installation failures.
         Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
+        if ($BackupReady -and (Test-Path -LiteralPath $BackupDir -PathType Container)) {
+            try {
+                Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $BackupDir) { throw 'Папка резервной копии осталась после удаления.' }
+                Log "Резервная папка старой версии удалена: $BackupDir"
+            } catch {
+                Log "ПРЕДУПРЕЖДЕНИЕ: не удалось удалить резервную папку $BackupDir : $($_.Exception.Message)"
+            }
+        }
         Remove-Item -LiteralPath $StagedDir -Recurse -Force -ErrorAction SilentlyContinue
-        Log "УСПЕХ: версия $ExpectedVersion работает. Резервная копия: $BackupDir"
+        $stagingAttemptDir = Split-Path -Parent $StagedDir
+        if ((Split-Path -Leaf $stagingAttemptDir) -like 'ISH_update_*') {
+            try {
+                if (Test-Path -LiteralPath $stagingAttemptDir -PathType Container) {
+                    Remove-Item -LiteralPath $stagingAttemptDir -Recurse -Force -ErrorAction Stop
+                }
+            } catch {
+                Log "ПРЕДУПРЕЖДЕНИЕ: не удалось удалить временную папку $stagingAttemptDir : $($_.Exception.Message)"
+            }
+        }
+        Log "УСПЕХ: версия $ExpectedVersion работает; временные копии обновления очищены."
         try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}
         exit 0
     } catch {
