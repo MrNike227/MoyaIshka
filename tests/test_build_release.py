@@ -444,8 +444,7 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_staged_update_modes_share_one_install_implementation(self):
         source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
         start = source.index("    def _start_staged_update_install(")
-        end = source.index("    def _selected_install_dir(", start)
-        installer = source[start:end]
+        installer = source[start:]
         self.assertEqual(installer.count("launch_windows_directory_replacement("), 1)
         self.assertIn("staged_verified=True", installer)
         self.assertIn("self._start_staged_update_install(install_dir, source_process=True)", installer)
