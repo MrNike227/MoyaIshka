@@ -139,6 +139,7 @@ from self_improvement import (
 )
 
 # Updates, voice input/output, desktop control and online research.
+from temporary_storage import configure_temporary_storage, get_temp_directory
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     cleanup_old_application_copies,
@@ -329,13 +330,13 @@ def prepare_source_workspace() -> Path:
     source_root = DATA_DIR / f"source_project_{APP_VERSION}"
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
+            "main.py", "temporary_storage.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "improvement_testing.py", "windows_sandbox.py", "background_developer.py", "module_dependency_analyzer.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "supabase_backup.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.6_RU.md", "PLAN_4.2.7_RU.md", "PLAN_4.2.8_RU.md", "PLAN_4.2.9_RU.md", "PLAN_4.3.0_RU.md", "PLAN_4.3.1_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py", "tests/test_multi_file_diff_recovery.py", "tests/test_import_organization.py",
+            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py", "tests/test_multi_file_diff_recovery.py", "tests/test_import_organization.py", "tests/test_temporary_storage.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -798,6 +799,12 @@ class ISHApp:
         if running_exe and running_exe.parent.name.casefold() == "app":
             self.config["install_dir"] = str(install_layout["app"])
         atomic_json_save(CONFIG_PATH, self.config)
+        configure_temporary_storage(
+            config=self.config,
+            config_path=CONFIG_PATH,
+            running_path=running_exe,
+            source_root=Path(__file__).resolve().parent,
+        )
 
         # Enable the requested background research profile when upgrading from releases
         # where it was opt-in by default and the user has not explicitly configured it.
@@ -5274,7 +5281,7 @@ class ISHApp:
         temp_root: Path | None = None
         try:
             backup_dir.mkdir(parents=True, exist_ok=True)
-            temp_root = Path(tempfile.mkdtemp(prefix=".cloud-restore-", dir=str(backup_dir)))
+            temp_root = Path(tempfile.mkdtemp(prefix=".cloud-restore-", dir=str(get_temp_directory("cloud_restore"))))
             safe_name = Path(str(item.get("name", "cloud-backup.mibak"))).name
             encrypted_path = temp_root / safe_name
             archive_path = temp_root / "restored_backup.zip"
@@ -5408,7 +5415,7 @@ class ISHApp:
         temp_root: Path | None = None
         try:
             backup_dir.mkdir(parents=True, exist_ok=True)
-            temp_root = Path(tempfile.mkdtemp(prefix=".supabase-restore-", dir=str(backup_dir)))
+            temp_root = Path(tempfile.mkdtemp(prefix=".supabase-restore-", dir=str(get_temp_directory("supabase_restore"))))
             safe_name = Path(str(item.get("name", "supabase-backup.mibak"))).name
             encrypted_path, archive_path = temp_root / safe_name, temp_root / "restored_backup.zip"
             client, auth_client = self._supabase_backup_client(package)
@@ -5488,6 +5495,12 @@ class ISHApp:
         self.config = dict(DEFAULT_CONFIG)
         if isinstance(saved, dict):
             self.config.update(saved)
+        configure_temporary_storage(
+            config=self.config,
+            config_path=CONFIG_PATH,
+            running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+            source_root=Path(__file__).resolve().parent,
+        )
         self.api_key = unprotect_api_key(self.config)
         self.store = Store(DB_PATH)
         self.research_library = ResearchLibrary(DATA_DIR / "research_library.json", max_items=1000)
@@ -6923,8 +6936,14 @@ class ISHApp:
             if current_app and (layout["updates"] == current_app or current_app in layout["updates"].parents):
                 raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
             ensure_install_dir_writable(layout["updates"])
+            configure_temporary_storage(
+                config={**self.config, "install_root_dir": str(root)},
+                config_path=CONFIG_PATH,
+                running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+                source_root=Path(__file__).resolve().parent,
+            )
         except Exception as exc:
-            messagebox.showerror("Папка контейнера", f"Не удалось использовать выбранную папку.\n\n{exc}")
+            messagebox.showerror("Папка контейнера", f"Не удалось использовать выбранную папку или её папку Temp.\n\n{exc}")
             return
         self.config["update_repo"] = self.update_repo_var.get().strip()
         self.config["auto_update_check"] = bool(self.auto_update_var.get())
@@ -7008,7 +7027,7 @@ class ISHApp:
             ):
                 return
 
-            staging_root = DATA_DIR / "update_staging"
+            staging_root = get_temp_directory("update_staging", config=self.config, config_path=CONFIG_PATH)
             staging_root.mkdir(parents=True, exist_ok=True)
             staged_dir = staging_root / f"ISH_install_{uuid.uuid4().hex}"
             shutil.copytree(current_dir, staged_dir)
@@ -7237,7 +7256,7 @@ class ISHApp:
 
     def _download_update_worker(self, info: dict[str, Any]) -> None:
         try:
-            path = download_verified_update(info, DATA_DIR / "update_staging")
+            path = download_verified_update(info, get_temp_directory("update_staging", config=self.config, config_path=CONFIG_PATH))
             self.events.put(("update_downloaded", {"path": str(path), "version": str(info.get("version", ""))}))
         except Exception as exc:
             self.events.put(("update_error", str(exc)))
@@ -7277,6 +7296,12 @@ class ISHApp:
             self.config["install_dir"] = str(destination)
             self.config["install_dir_user_selected"] = True
             atomic_json_save(CONFIG_PATH, self.config)
+            configure_temporary_storage(
+                config=self.config,
+                config_path=CONFIG_PATH,
+                running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+                source_root=Path(__file__).resolve().parent,
+            )
             if source_process and hasattr(self, "update_install_dir_var"):
                 self.update_install_dir_var.set(str(destination))
 
@@ -7714,6 +7739,24 @@ def _packaged_import_self_test() -> int:
 
 
 def main() -> None:
+    try:
+        startup_config = load_json(CONFIG_PATH, {})
+        configure_temporary_storage(
+            config=startup_config if isinstance(startup_config, dict) else {},
+            config_path=CONFIG_PATH,
+            running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+            source_root=Path(__file__).resolve().parent,
+        )
+    except Exception as exc:
+        try:
+            messagebox.showerror(
+                "Временная папка контейнера",
+                f"Не удалось подготовить временную папку на выбранном диске. "
+                f"Системная папка TEMP не будет использоваться.\\n\\n{exc}",
+            )
+        except Exception:
+            pass
+        return
     if os.name == "nt":
         try:
             # A stable AppUserModelID helps Windows associate the high-resolution
