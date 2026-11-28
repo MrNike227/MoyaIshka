@@ -205,24 +205,56 @@ def project_dir() -> Path:
     return Path(configured).resolve() if configured else Path(__file__).resolve().parent
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """Detect symlinks and Windows junctions without following them."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    reparse_flag = getattr(__import__("stat"), "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def _contains_reparse_component(path: Path, boundary: Path) -> bool:
+    """Reject links/junctions between a candidate and the trusted project root."""
+    current = path
+    boundary = boundary.resolve()
+    while current != boundary.parent and current != current.parent:
+        if os.path.lexists(current) and _is_reparse_point(current):
+            return True
+        current = current.parent
+    return False
+
+
 def editable_project_files() -> list[str]:
     root = project_dir()
     ignored_directories = {
         "__pycache__", ".venv", "venv", "tests", ".git", ".github",
         "build", "dist", ".pytest_cache", ".mypy_cache",
     }
-    result = []
-    for path in root.rglob("*.py"):
-        try:
-            relative = path.relative_to(root)
-        except ValueError:
-            continue
-        if any(part.casefold() in ignored_directories for part in relative.parts):
-            continue
-        rel = relative.as_posix()
-        if rel == "updater_helper.py":
-            continue
-        result.append(rel)
+    result: list[str] = []
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = sorted(
+            name for name in directories
+            if name.casefold() not in ignored_directories
+            and not _is_reparse_point(current_path / name)
+        )
+        for filename in sorted(filenames):
+            if not filename.casefold().endswith(".py"):
+                continue
+            path = current_path / filename
+            if _is_reparse_point(path):
+                continue
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            rel = relative.as_posix()
+            if rel != "updater_helper.py" and len(rel) <= 240 and path.is_file():
+                result.append(rel)
     return sorted(result)
 
 
@@ -454,11 +486,11 @@ def editable_test_files() -> list[str]:
     root = project_dir()
     result: list[str] = []
     tests_root = root / "tests"
-    if not tests_root.is_dir() or tests_root.is_symlink():
+    if not tests_root.is_dir() or _is_reparse_point(tests_root):
         return result
     for path in tests_root.glob("test_*.py"):
         try:
-            if path.is_symlink() or not path.is_file():
+            if _contains_reparse_component(path, root) or not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()
             if len(relative) <= 240:
@@ -1271,7 +1303,10 @@ def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool
     ):
         raise ValueError("Разрешено изменять только Python-файлы проекта вне служебных папок.")
     root = project_dir()
-    target = (root / relative).resolve()
+    candidate = root / relative
+    if _contains_reparse_component(candidate, root):
+        raise ValueError("Выбранный файл или один из родительских каталогов является ссылкой/reparse point.")
+    target = candidate.resolve()
     if root.resolve() not in target.parents or not target.is_file():
         raise ValueError("Выбранный файл отсутствует или находится вне папки проекта.")
     original = target.read_text(encoding="utf-8")
