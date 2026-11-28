@@ -19,12 +19,25 @@ MAX_PROPOSAL_TOTAL_BYTES = 8 * 1024 * 1024
 
 def _safe_relative_path(value: str | Path) -> PurePosixPath:
     raw = str(value).replace("\\", "/").strip()
+    raw_parts = raw.split("/")
     path = PurePosixPath(raw)
+    reserved_names = {
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    invalid_windows_component = any(
+        part.endswith((" ", "."))
+        or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+        or part.split(".", 1)[0].casefold() in reserved_names
+        for part in raw_parts
+    )
     if (
         not raw
         or path.is_absolute()
         or not path.parts
-        or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or invalid_windows_component
         or any(part.casefold() in {".git", ".github"} for part in path.parts)
         or path.suffix.casefold() != ".py"
     ):
@@ -137,9 +150,13 @@ def save_multi_change_bundle(
             raise TypeError("Элемент пакета должен быть словарём с путём и содержимым файла.")
         relative = _safe_relative_path(change.get("path", ""))
         path = relative.as_posix()
-        if path in seen:
-            raise ValueError(f"Файл повторяется в пакете: {path}.")
-        seen.add(path)
+        folded_path = path.casefold()
+        if folded_path in seen:
+            raise ValueError(
+                f"Файл {path} повторяется или отличается только регистром; "
+                "Windows считает такие пути одним файлом."
+            )
+        seen.add(folded_path)
 
         original_text = change.get("original_text")
         updated_text = change.get("updated_text")
