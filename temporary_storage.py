@@ -57,11 +57,15 @@ def resolve_container_root(
     install_dir = str(settings.get("install_dir", "")).strip()
     if install_dir:
         install_path = _expand_path(install_dir)
-        # Current installations point to Container\\App. Legacy installations
-        # are migrated into the sibling Container\\ISH_Container by the app's
-        # default-install policy, so choose that same root before the UI starts.
-        if install_path.name.casefold() == "app":
+        # Current installations point to Container\\App; a few older/manual
+        # installs may store the container root itself in install_dir.
+        leaf = install_path.name.casefold()
+        if leaf == "app":
             return install_path.parent
+        if leaf in {"ish_container", "container"}:
+            return install_path
+        # Legacy single-folder installs migrate into the same default container
+        # chosen by improvement_delivery.default_install_root().
         return install_path.parent / "ISH_Container"
 
     if running_path:
