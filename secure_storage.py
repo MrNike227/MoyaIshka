@@ -22,7 +22,7 @@ class DATA_BLOB(ctypes.Structure):
     ]
 
 
-def dpapi_transform(data: bytes, protect: bool, *, description: str = "ISH data") -> bytes:
+def dpapi_transform(data: bytes, protect: bool, *, description: str = "ISH API key") -> bytes:
     """Protect or unprotect bytes for the current Windows user account.
 
     The description is only a Windows display label, not encryption entropy.
@@ -71,7 +71,7 @@ def _unprotect_config_value(config: Mapping[str, Any], protected_field: str, pla
     protected = str(config.get(protected_field, ""))
     if protected and os.name == "nt":
         try:
-            encrypted = base64.b64decode(protected, validate=True)
+            encrypted = base64.b64decode(protected)
             return dpapi_transform(encrypted, False).decode("utf-8")
         except Exception:
             # Do not silently use stale plaintext when a protected Windows value exists.
