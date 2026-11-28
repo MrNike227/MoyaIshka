@@ -11,6 +11,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as main_module
+import chat_interface
+import research_interface
 from conversation_store import Store as ConversationStore
 from main import DEFAULT_CONFIG, ISHApp, Store, extract_openai_content, read_attachment
 
@@ -121,8 +123,8 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
         app.config = {"research_results_limit": 3, "research_fetch_pages": 1}
         app.events = queue.Queue()
         app._call_ollama = lambda *_args: (_ for _ in ()).throw(ConnectionError("Ollama недоступна"))
-        original_search = main_module.search_and_fetch
-        main_module.search_and_fetch = lambda *_args, **_kwargs: [{
+        original_search = research_interface.search_and_fetch
+        research_interface.search_and_fetch = lambda *_args, **_kwargs: [{
             "title": "Проверенная статья",
             "url": "https://example.com/article",
             "snippet": "Краткая выдержка из статьи",
@@ -133,7 +135,7 @@ class KeyboardAndPrivacyTests(unittest.TestCase):
                 {"role": "user", "content": "поищи тест"}
             ], "chat-1")
         finally:
-            main_module.search_and_fetch = original_search
+            research_interface.search_and_fetch = original_search
         events = []
         while not app.events.empty():
             events.append(app.events.get_nowait())
@@ -240,7 +242,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "ollama_model": "local-model",
             "task_profile": "self_improvement",
         }
-        with patch.object(main_module, "post_json", side_effect=fake_post):
+        with patch.object(chat_interface, "post_json", side_effect=fake_post):
             result = ISHApp._call_ollama(
                 settings, [{"role": "user", "content": "Проверь код"}]
             )
