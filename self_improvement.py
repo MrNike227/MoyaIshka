@@ -900,7 +900,11 @@ def apply_multi_file_unified_diff(
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
-        is_test_file = relative.startswith("tests/") or PurePosixPath(relative).name.startswith("test_")
+        relative_parts = PurePosixPath(relative).parts
+        is_test_file = (
+            (bool(relative_parts) and relative_parts[0].casefold() == "tests")
+            or PurePosixPath(relative).name.casefold().startswith("test_")
+        )
         if not is_test_file:
             added_test_imports = [
                 line[1:].strip()
