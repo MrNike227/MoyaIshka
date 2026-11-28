@@ -7,14 +7,14 @@ never asked to replace itself while it is locked by Windows.
 """
 from __future__ import annotations
 
+# Standard library
 import hashlib
 import json
-from pathlib import PurePosixPath
 import os
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -419,8 +419,7 @@ def launch_windows_replacement(
     # the user still gets a clear record that launch was attempted.
     try:
         with log.open("a", encoding="utf-8") as stream:
-            from datetime import datetime
-            stream.write(f"{datetime.now().astimezone().isoformat()}  Запуск установщика обновления {expected_version.strip().lstrip('v')}.\n")
+            stream.write(f"{_dt.datetime.now().astimezone().isoformat()}  Запуск установщика обновления {expected_version.strip().lstrip('v')}.\n")
             stream.write(f"Целевой EXE: {target}\nВременный EXE: {staged}\n")
     except OSError as exc:
         raise OSError(f"Не удалось создать журнал обновления {log}: {exc}") from exc
@@ -490,9 +489,8 @@ def launch_windows_replacement(
 
                 try:
                     with log.open("a", encoding="utf-8") as stream:
-                        from datetime import datetime
                         stream.write(
-                            f"{datetime.now().astimezone().isoformat()}  "
+                            f"{_dt.datetime.now().astimezone().isoformat()}  "
                             f"PowerShell-установщик запущен: {powershell}; PID: {getattr(process, 'pid', 'unknown')}\n"
                         )
                 except OSError:
@@ -505,8 +503,7 @@ def launch_windows_replacement(
         helper.unlink(missing_ok=True)
         try:
             with log.open("a", encoding="utf-8") as stream:
-                from datetime import datetime
-                stream.write(f"{datetime.now().astimezone().isoformat()}  ОШИБКА запуска PowerShell-установщика: {exc}\n")
+                stream.write(f"{_dt.datetime.now().astimezone().isoformat()}  ОШИБКА запуска PowerShell-установщика: {exc}\n")
         except OSError:
             pass
         raise
@@ -536,7 +533,6 @@ def _looks_like_ish_executable(filename: str) -> bool:
 
 
 def _version_hint_from_path(path: Path) -> str:
-    import re
     candidates = [path.stem, *reversed(path.parts[:-1])]
     for value in candidates:
         match = re.search(r"(?<!\d)v?(\d+\.\d+(?:\.\d+){0,2})(?!\d)", value, re.IGNORECASE)
@@ -561,7 +557,6 @@ def scan_application_copies(
     staging folder, Desktop and Downloads. The currently running EXE is always
     excluded from results.
     """
-    import datetime as _dt
     home = Path(user_home or Path.home()).expanduser()
     local = Path(local_app_data or os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
     roaming = Path(roaming_app_data or os.environ.get("APPDATA", home / "AppData" / "Roaming"))
@@ -1140,9 +1135,8 @@ def launch_windows_directory_replacement(
                 raise
             subprocess.Popen(command, close_fds=True, creationflags=0)
         with log.open("a", encoding="utf-8") as stream:
-            from datetime import datetime
             stream.write(
-                f"{datetime.now().astimezone().isoformat()}  "
+                f"{_dt.datetime.now().astimezone().isoformat()}  "
                 f"Запущена безопасная замена всей папки версии {expected_version}.\n"
             )
             stream.write(f"Источник: {staged}\nПапка установки: {target}\n")
@@ -1151,8 +1145,7 @@ def launch_windows_directory_replacement(
         helper.unlink(missing_ok=True)
         try:
             with log.open("a", encoding="utf-8") as stream:
-                from datetime import datetime
-                stream.write(f"{datetime.now().astimezone().isoformat()}  Ошибка запуска установщика: {exc}\n")
+                stream.write(f"{_dt.datetime.now().astimezone().isoformat()}  Ошибка запуска установщика: {exc}\n")
         except OSError:
             pass
         raise
