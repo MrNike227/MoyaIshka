@@ -69,6 +69,7 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "windows_sandbox.py;source_project" ^
   --add-data "background_developer.py;source_project" ^
   --add-data "module_dependency_analyzer.py;source_project" ^
+  --add-data "architecture_knowledge.py;source_project" ^
   --add-data "github_pr.py;source_project" ^
   --add-data "updater.py;source_project" ^
   --add-data "updater_helper.py;source_project" ^

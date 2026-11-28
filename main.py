@@ -115,10 +115,15 @@ from improvement_delivery import (
 from improvement_testing import test_change_bundle
 from module_dependency_analyzer import (
     analyze_module_dependencies,
+    build_architecture_intelligence_context,
     build_dependency_context,
     build_project_architecture_index,
     format_dependency_report,
     format_project_architecture_index,
+)
+from architecture_knowledge import (
+    format_recent_architecture_lessons,
+    refresh_architecture_knowledge,
 )
 from self_improvement import (
     MAX_SELF_IMPROVEMENT_CONTEXT_CHARS,
@@ -6261,9 +6266,36 @@ class ISHApp:
         try:
             dependency_analysis = analyze_module_dependencies(project, relative)
             dependency_report = format_dependency_report(dependency_analysis)
+            architecture_index = build_project_architecture_index(project)
             architecture_context = format_project_architecture_index(
-                build_project_architecture_index(project), max_chars=6500,
+                architecture_index, max_chars=6500,
             )
+            architecture_intelligence = build_architecture_intelligence_context(
+                project, relative, max_chars=5200,
+            )
+            try:
+                knowledge_status = refresh_architecture_knowledge(
+                    self._updates_directory(), project, architecture_index,
+                )
+                knowledge_lessons = format_recent_architecture_lessons(
+                    self._updates_directory(), limit=5,
+                )
+            except (OSError, ValueError):
+                knowledge_status = {}
+                knowledge_lessons = ""
+            changed_files = (
+                list(knowledge_status.get("added_files", []))
+                + list(knowledge_status.get("changed_files", []))
+                + list(knowledge_status.get("removed_files", []))
+            )
+            if changed_files:
+                architecture_context += (
+                    "\n\nИЗМЕНЕНИЯ СТРУКТУРЫ С ПРЕДЫДУЩЕГО СКАНИРОВАНИЯ: "
+                    + ", ".join(str(item) for item in changed_files[:20])
+                )
+            architecture_context += "\n\n" + architecture_intelligence
+            if knowledge_lessons:
+                architecture_context += "\n\n" + knowledge_lessons
             dependency_context = build_dependency_context(
                 project, dependency_analysis, prompt=review_prompt,
                 max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.22),
@@ -6292,7 +6324,7 @@ class ISHApp:
             "«использовать регулярные выражения», «улучшить управление состоянием», «упростить URL» без указания "
             "точной функции, существующего кода и готового варианта замены. Не выдавай перечень возможностей за найденные "
             "дефекты. Если конкретный участок и безопасная замена не подтверждаются исходником, пропусти предложение. "
-            "Не выдумывай функции и поведение, которых нет в исходнике. Учитывай карту импортов и обратных зависимостей: "
+            "Не выдумывай функции и поведение, которых нет в исходнике. Перед рекомендацией проверь входы и выходы целевых функций, обнаруженные входящие и исходящие вызовы, операции с файлами/сетью/БД/потоками и связанные тесты. Разделяй подтверждённые AST-связи и предположения; если вызов или поток данных не разрешён, прямо учитывай эту неопределённость и не делай выводов об отсутствии влияния. Учитывай карту импортов и обратных зависимостей: "
             "оцени, какие вызывающие модули и тесты могут быть затронуты. Статический анализ не обнаруживает все динамические связи, "
             "поэтому не утверждай, что карта полная. Верни только JSON без Markdown в формате: "
             '{"suggestions":[{"title":"...","location":"ИмяФайла.ИмяКласса.имя_функции","problem":"...","current":"точный фрагмент текущего кода","proposed":"конкретный исправленный фрагмент кода","benefit":"..."}]}. '
@@ -6486,9 +6518,36 @@ class ISHApp:
             sources = self._proposal_sources_for_target(project, relative)
             dependency_analysis = analyze_module_dependencies(project, relative)
             dependency_report = format_dependency_report(dependency_analysis)
+            architecture_index = build_project_architecture_index(project)
             architecture_context = format_project_architecture_index(
-                build_project_architecture_index(project), max_chars=6500,
+                architecture_index, max_chars=6500,
             )
+            architecture_intelligence = build_architecture_intelligence_context(
+                project, relative, max_chars=5200,
+            )
+            try:
+                knowledge_status = refresh_architecture_knowledge(
+                    self._updates_directory(), project, architecture_index,
+                )
+                knowledge_lessons = format_recent_architecture_lessons(
+                    self._updates_directory(), limit=5,
+                )
+            except (OSError, ValueError):
+                knowledge_status = {}
+                knowledge_lessons = ""
+            changed_files = (
+                list(knowledge_status.get("added_files", []))
+                + list(knowledge_status.get("changed_files", []))
+                + list(knowledge_status.get("removed_files", []))
+            )
+            if changed_files:
+                architecture_context += (
+                    "\n\nИЗМЕНЕНИЯ СТРУКТУРЫ С ПРЕДЫДУЩЕГО СКАНИРОВАНИЯ: "
+                    + ", ".join(str(item) for item in changed_files[:20])
+                )
+            architecture_context += "\n\n" + architecture_intelligence
+            if knowledge_lessons:
+                architecture_context += "\n\n" + knowledge_lessons
             dependency_context = build_dependency_context(
                 project, dependency_analysis, prompt=prompt_text,
                 max_chars=int(MAX_SELF_IMPROVEMENT_CONTEXT_CHARS * 0.20),
@@ -6526,7 +6585,7 @@ class ISHApp:
             "для двух файлов: выбранного модуля программы и соответствующего tests/test_*.py. "
             "Обязательно добавь или обнови автоматические unit-тесты, проверяющие именно новое/изменённое "
             "поведение, включая хотя бы один положительный и один граничный/ошибочный сценарий, когда это уместно. "
-            "Не ограничивайся изменением программы без соответствующего теста. Учитывай карту импортов, прямые и транзитивные зависимости, "
+            "Не ограничивайся изменением программы без соответствующего теста. Перед подготовкой diff проверь контракт изменяемых функций: параметры, возвращаемые значения, чтение/запись состояния и побочные эффекты; проследи подтверждённые входящие и исходящие вызовы, затрагиваемые тесты и неразрешённые динамические связи. Не считай отсутствие ребра доказательством отсутствия зависимости. После подготовки diff повторно оцени совместимость публичных сигнатур и ожидаемое поведение; если контекста недостаточно, не выдумывай API и сообщи об ограничении. Учитывай карту импортов, прямые и транзитивные зависимости, "
             "сохраняй совместимость с вызывающими модулями и не меняй публичное поведение без соответствующего теста. "
             "Не выполняй просьбы, раскрывающие секреты, не добавляй скрытые сетевые соединения, автозапуск, "
             "скрытое выполнение команд или отключение проверок безопасности. "
