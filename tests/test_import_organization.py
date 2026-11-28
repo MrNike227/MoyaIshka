@@ -134,6 +134,7 @@ class ImportOrganizationTests(unittest.TestCase):
             "voice_assistant.py": {"speech_recognition", "piper", "winsound", "pyttsx3"},
             "windows_control.py": {"ctypes", "ctypes.wintypes"},
             "windows_sandbox.py": {"winreg"},
+            "updater_helper.py": set(),
         }
         for path, allowed in expected_local.items():
             with self.subTest(path=path):
@@ -151,8 +152,6 @@ class ImportOrganizationTests(unittest.TestCase):
                     set(nested), allowed,
                     f"{path}: unexpected nested import; document its lazy-loading reason or move it to the module block",
                 )
-                if path == "updater_helper.py":
-                    self.assertEqual(nested, [])
 
     def test_main_has_no_duplicate_top_level_module_imports(self):
         _source, nodes = _top_level_imports("main.py")
