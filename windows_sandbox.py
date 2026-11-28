@@ -437,7 +437,14 @@ def wait_for_sandbox_completion(
             try:
                 if completion.stat().st_size <= 16 * 1024:
                     data = json.loads(completion.read_text(encoding="utf-8-sig"))
-                    if isinstance(data, dict) and data.get("schema") == 1 and data.get("completed") is True:
+                    if (
+                        isinstance(data, dict)
+                        and data.get("schema") == 1
+                        and data.get("completed") is True
+                        and data.get("sandboxed") is True
+                        and isinstance(data.get("guest_exit_code"), int)
+                        and not isinstance(data.get("guest_exit_code"), bool)
+                    ):
                         return data
             except (OSError, ValueError):
                 pass

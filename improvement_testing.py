@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from improvement_delivery import _safe_relative_path, _write_text_atomic
+from improvement_delivery import _is_test_module_path, _safe_relative_path, _write_text_atomic
 from self_improvement import split_multi_file_unified_diff, apply_multi_file_unified_diff
 from windows_sandbox import _is_reparse_point
 
@@ -30,6 +30,17 @@ def _sha256(data: bytes) -> str:
 def _normalized_text_sha256(data: bytes) -> str:
     text = data.decode("utf-8")
     return _sha256(text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
+
+
+def _path_has_reparse_component(path: Path) -> bool:
+    """Check the supplied path and each existing parent without resolving links first."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if os.path.lexists(current) and _is_reparse_point(current):
+            return True
+    return False
 
 
 def _ignore_sandbox_copy(directory: str, names: list[str]) -> set[str]:
@@ -196,8 +207,19 @@ def _run_windows_sandbox(
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ProposalTestError(f"Отчёт песочницы повреждён: {exc}") from exc
-    if not isinstance(report, dict) or report.get("schema") != 1 or report.get("sandboxed") is not True:
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != 1
+        or report.get("sandboxed") is not True
+    ):
         raise ProposalTestError("Отчёт не подтвердил выполнение внутри Windows Sandbox.")
+    if (
+        completion.get("sandboxed") is not True
+        or completion.get("guest_exit_code") != report.get("tests_exit_code")
+    ):
+        raise ProposalTestError(
+            "Квитанция завершения Windows Sandbox не совпадает с кодом возврата тестового процесса."
+        )
     report["guest_completion"] = completion
     report["runner_path"] = str(runner)
     return report
@@ -214,12 +236,17 @@ def test_change_bundle(
 
     New Python test files are supported. Production callers never execute generated code on the host.
     """
-    bundle = Path(bundle_dir).expanduser().resolve()
-    source = Path(source_root).expanduser().resolve()
+    bundle_input = Path(bundle_dir).expanduser()
+    source_input = Path(source_root).expanduser()
+    if _path_has_reparse_component(bundle_input) or _path_has_reparse_component(source_input):
+        raise ProposalTestError("Путь к предложению или исходникам содержит ссылку/reparse point.")
+    try:
+        bundle = bundle_input.resolve(strict=True)
+        source = source_input.resolve(strict=True)
+    except OSError as exc:
+        raise ProposalTestError(f"Не удалось открыть папку предложения или исходников: {exc}") from exc
     if not bundle.is_dir() or not source.is_dir():
         raise ProposalTestError("Не найдена папка предложения или исходников.")
-    if _is_reparse_point(bundle) or _is_reparse_point(source):
-        raise ProposalTestError("Папка предложения или исходников содержит недопустимую ссылку.")
 
     manifest_path = bundle / "manifest.json"
     if _is_reparse_point(manifest_path) or not manifest_path.is_file() or manifest_path.stat().st_size > 128 * 1024:
@@ -336,9 +363,9 @@ def test_change_bundle(
             f"Состав diff не совпадает с манифестом. Нет в diff: {missing}; лишние: {extra}."
         )
     if len(seen) > 1:
-        has_source = any(not path.startswith("tests/") for path in seen)
+        has_source = any(not _is_test_module_path(path) for path in seen)
         has_test = any(
-            path.startswith("tests/") and Path(path).name.startswith("test_")
+            _is_test_module_path(path)
             for path in seen
         )
         if not has_source or not has_test:
@@ -408,7 +435,14 @@ def test_change_bundle(
                 "writable_host_mapping": sandbox_report.get("writable_host_mapping", "dedicated_results_only" if sandbox_report.get("sandboxed") else "test_executor"),
             },
         )
-        report["passed"] = report["passed"] and report["tests_run"] > 0 and report["tests_exit_code"] == 0
+        report["passed"] = (
+            report["passed"]
+            and report["tests_run"] > 0
+            and report["tests_exit_code"] == 0
+            and report["failures"] == 0
+            and report["errors"] == 0
+            and (sandbox_executor is not None or report["sandboxed"] is True)
+        )
         if not report["tests_run"] and not report["error"]:
             report["error"] = "В копии проекта не найдено ни одного unit-теста."
         if sandbox_report.get("workspace_must_be_kept"):

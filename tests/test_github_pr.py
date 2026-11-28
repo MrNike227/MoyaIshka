@@ -156,6 +156,32 @@ class GitHubMultiFileProposalTests(unittest.TestCase):
             with self.assertRaisesRegex(GitHubProposalError, "Windows Sandbox"):
                 load_tested_proposal_bundle(bundle)
 
+    def test_bundle_rejects_non_integer_test_counters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self.make_tested_bundle(Path(temp) / "Updates")
+            report_path = bundle / "test_report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["tests_run"] = "three"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(GitHubProposalError, "Отчёт"):
+                load_tested_proposal_bundle(bundle)
+
+    def test_bundle_rejects_case_insensitive_manifest_path_collisions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self.make_tested_bundle(Path(temp) / "Updates")
+            manifest_path = bundle / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            duplicate = dict(manifest["files"][0])
+            duplicate["path"] = "FEATURE.py"
+            manifest["files"].append(duplicate)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            report_path = bundle / "test_report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["checked_files"] = 3
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(GitHubProposalError, "отличается только регистром"):
+                load_tested_proposal_bundle(bundle)
+
     def test_creates_one_draft_pr_for_all_files_in_tested_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             bundle = self.make_tested_bundle(Path(temp) / "Updates")
@@ -206,6 +232,7 @@ class GitHubMultiFileProposalTests(unittest.TestCase):
             self.assertEqual(result["number"], 456)
             self.assertTrue(result["draft"])
             self.assertTrue(result["sandboxed"])
+            self.assertTrue(result["branch"].startswith("moya-improvement/4.2.8/"))
             self.assertEqual(len(result["files"]), 2)
             pull_payload = next(payload for method, endpoint, payload in calls if endpoint.endswith("/pulls"))
             self.assertIn("Windows Sandbox", pull_payload["body"])

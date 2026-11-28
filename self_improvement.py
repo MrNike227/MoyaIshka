@@ -205,24 +205,56 @@ def project_dir() -> Path:
     return Path(configured).resolve() if configured else Path(__file__).resolve().parent
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """Detect symlinks and Windows junctions without following them."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    reparse_flag = getattr(__import__("stat"), "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def _contains_reparse_component(path: Path, boundary: Path) -> bool:
+    """Reject links/junctions between a candidate and the trusted project root."""
+    current = path
+    boundary = boundary.resolve()
+    while current != boundary.parent and current != current.parent:
+        if os.path.lexists(current) and _is_reparse_point(current):
+            return True
+        current = current.parent
+    return False
+
+
 def editable_project_files() -> list[str]:
     root = project_dir()
     ignored_directories = {
         "__pycache__", ".venv", "venv", "tests", ".git", ".github",
         "build", "dist", ".pytest_cache", ".mypy_cache",
     }
-    result = []
-    for path in root.rglob("*.py"):
-        try:
-            relative = path.relative_to(root)
-        except ValueError:
-            continue
-        if any(part.casefold() in ignored_directories for part in relative.parts):
-            continue
-        rel = relative.as_posix()
-        if rel == "updater_helper.py":
-            continue
-        result.append(rel)
+    result: list[str] = []
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = sorted(
+            name for name in directories
+            if name.casefold() not in ignored_directories
+            and not _is_reparse_point(current_path / name)
+        )
+        for filename in sorted(filenames):
+            if not filename.casefold().endswith(".py"):
+                continue
+            path = current_path / filename
+            if _is_reparse_point(path):
+                continue
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            rel = relative.as_posix()
+            if rel != "updater_helper.py" and len(rel) <= 240 and path.is_file():
+                result.append(rel)
     return sorted(result)
 
 
@@ -454,11 +486,11 @@ def editable_test_files() -> list[str]:
     root = project_dir()
     result: list[str] = []
     tests_root = root / "tests"
-    if not tests_root.is_dir() or tests_root.is_symlink():
+    if not tests_root.is_dir() or _is_reparse_point(tests_root):
         return result
     for path in tests_root.glob("test_*.py"):
         try:
-            if path.is_symlink() or not path.is_file():
+            if _contains_reparse_component(path, root) or not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()
             if len(relative) <= 240:
@@ -533,21 +565,69 @@ def _multi_diff_candidates(response: str) -> list[str]:
 
 
 def _extract_multi_diff_hunks(lines: list[str]) -> str:
-    """Extract hunk lines and discard prose surrounding the unified diff."""
-    start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("@@ ")), None)
+    """Extract hunks and repair wrapped lines without leaving stale @@ offsets."""
+    start = next((i for i, line in enumerate(lines) if re.match(r"^@@ -\d+", line)), None)
     if start is None:
         return ""
+
     body: list[str] = []
+    hunk_header: str | None = None
+    hunk_lines: list[str] = []
+    hunk_was_wrapped = False
+    active_marker: str | None = None
+    cumulative_line_delta = 0
+
+    def flush_hunk() -> None:
+        nonlocal hunk_header, hunk_lines, hunk_was_wrapped, cumulative_line_delta
+        if hunk_header is None:
+            return
+        match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
+        if match:
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or 1)
+            new_count = int(match.group(4) or 1)
+            if hunk_was_wrapped:
+                old_count = sum(1 for item in hunk_lines if item and item[0] in " -")
+                new_count = sum(1 for item in hunk_lines if item and item[0] in " +")
+            if hunk_was_wrapped or cumulative_line_delta:
+                # The old coordinate is measured in the untouched source.
+                # Recalculate the new coordinate after every earlier hunk delta.
+                new_start = (
+                    old_start + cumulative_line_delta + 1 if old_count == 0
+                    else old_start + cumulative_line_delta - 1 if new_count == 0
+                    else old_start + cumulative_line_delta
+                )
+                hunk_header = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@"
+            cumulative_line_delta += new_count - old_count
+        body.append(hunk_header + "\n")
+        body.extend(item + "\n" for item in hunk_lines)
+        hunk_header = None
+        hunk_lines = []
+        hunk_was_wrapped = False
+
     for line in lines[start:]:
         value = line.rstrip("\r\n")
-        if value.lstrip().startswith("@@ "):
-            body.append(value + "\n")
-        elif value.lstrip().startswith("\\ No newline at end of file"):
-            body.append("\\ No newline at end of file\n")
+        stripped = value.lstrip()
+        if value.startswith("@@ "):
+            flush_hunk()
+            hunk_header = stripped
+            active_marker = None
+        elif value.startswith("\\ No newline at end of file"):
+            hunk_lines.append("\\ No newline at end of file")
+            active_marker = None
         elif value and value[0] in " +-":
-            body.append(value + "\n")
+            hunk_lines.append(value)
+            active_marker = value[0]
+        elif active_marker in {"+", "-", " "} and value and not stripped.startswith(
+            ("--- ", "+++ ", "diff --git ", "index ", "new file mode ", "deleted file mode ")
+        ):
+            # The model split one logical line across physical lines and dropped
+            # its diff marker. Restore the marker and update this hunk's counts.
+            hunk_lines.append(active_marker + value)
+            hunk_was_wrapped = True
         else:
             break
+    flush_hunk()
     return "".join(body)
 
 
@@ -556,11 +636,24 @@ def _validated_multi_diff_path(old_header: str, new_header: str) -> str:
     new_path = _normalize_diff_path(new_header)
     if new_path == "/dev/null":
         raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
+    raw_parts = new_path.split("/")
     relative = PurePosixPath(new_path)
+    windows_reserved_names = {
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    invalid_windows_component = any(
+        part.endswith((" ", "."))
+        or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+        or part.split(".", 1)[0].casefold() in windows_reserved_names
+        for part in raw_parts
+    )
     if (
         not new_path
         or relative.is_absolute()
-        or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or invalid_windows_component
         or any(part.casefold() in {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"} for part in relative.parts)
         or relative.suffix.casefold() != ".py"
         or len(new_path) > 240
@@ -578,14 +671,14 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
     pairs: list[tuple[int, int]] = []
 
     for index, line in enumerate(lines):
-        old_line = line.lstrip(" \t")
+        old_line = line
         if not old_line.startswith("--- "):
             continue
         old_header = old_line[4:].strip().split("\t", 1)[0].strip('"')
         if old_header != "/dev/null" and not old_header.startswith("a/"):
             continue
         for next_index in range(index + 1, min(len(lines), index + 7)):
-            next_line = lines[next_index].lstrip(" \t")
+            next_line = lines[next_index]
             if next_line.startswith("+++ "):
                 new_header = next_line[4:].strip().split("\t", 1)[0].strip('"')
                 if new_header.startswith("b/"):
@@ -598,17 +691,89 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
 
     def add_section(old_header: str, new_header: str, section_lines: list[str]) -> None:
         path = _validated_multi_diff_path(old_header, new_header)
+        case_collision = next(
+            (existing for existing in result if existing.casefold() == path.casefold() and existing != path),
+            None,
+        )
+        if case_collision is not None:
+            raise ValueError(
+                f"Пути {case_collision!r} и {path!r} отличаются только регистром; "
+                "Windows считает их одним файлом."
+            )
         hunks = _extract_multi_diff_hunks(section_lines)
         if not hunks:
             raise ValueError(f"Для файла {path} не найден корректный блок изменений @@.")
-        if path in result:
-            raise ValueError(f"Diff содержит повторное изменение файла: {path}.")
-        result[path] = f"--- a/{path}\n+++ b/{path}\n" + hunks
+        if path not in result:
+            result[path] = f"--- a/{path}\n+++ b/{path}\n" + hunks
+            return
+
+        # Models sometimes split one file into several Git sections. Merge
+        # independent hunks, deduplicate identical hunks, and reject overlaps.
+        existing_body = result[path].split("+++ b/" + path + "\n", 1)[1]
+
+        def split_hunk_blocks(body: str) -> list[str]:
+            starts = [match.start() for match in re.finditer(r"(?m)^@@ ", body)]
+            return [
+                body[start:starts[index + 1] if index + 1 < len(starts) else len(body)]
+                for index, start in enumerate(starts)
+            ]
+
+        existing_hunks = split_hunk_blocks(existing_body)
+        incoming_hunks = split_hunk_blocks(hunks)
+        combined: list[tuple[int, str, int, int]] = []
+        seen_hunks: set[str] = set()
+        for item in existing_hunks + incoming_hunks:
+            if item in seen_hunks:
+                continue
+            seen_hunks.add(item)
+            header = item.split("\n", 1)[0]
+            match = re.match(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@", header)
+            if not match:
+                raise ValueError(f"Файл {path}: повреждённый заголовок повторного блока @@.")
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or 1)
+            new_count = int(match.group(4) or 1)
+            combined.append((old_start, item, old_count, new_count))
+        combined.sort(key=lambda item: item[0])
+        for previous, current in zip(combined, combined[1:]):
+            prev_start, _, prev_count, _ = previous
+            curr_start, _, curr_count, _ = current
+            overlaps = curr_start < prev_start + prev_count
+            same_insertion_anchor = (
+                curr_start == prev_start and (prev_count == 0 or curr_count == 0)
+            )
+            if overlaps or same_insertion_anchor:
+                raise ValueError(
+                    f"Diff содержит повторные или пересекающиеся изменения файла {path}; "
+                    "оставь один согласованный блок для этого участка."
+                )
+
+        # Rebuild new-file coordinates after sorting, including deltas from
+        # hunks that arrived in separate repeated sections of the same path.
+        cumulative_delta = 0
+        normalized_hunks: list[str] = []
+        for old_start, item, old_count, new_count in combined:
+            if old_count == 0:
+                new_start = old_start + cumulative_delta + 1
+            elif new_count == 0:
+                new_start = old_start + cumulative_delta - 1
+            else:
+                new_start = old_start + cumulative_delta
+            header, separator, remainder = item.partition("\n")
+            normalized_hunks.append(
+                f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+                + (remainder if separator else "")
+            )
+            cumulative_delta += new_count - old_count
+        result[path] = (
+            f"--- a/{path}\n+++ b/{path}\n" + "".join(normalized_hunks)
+        )
+
 
     if pairs:
         for position, (old_index, new_index) in enumerate(pairs):
-            old_header = lines[old_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
-            new_header = lines[new_index].lstrip(" \t")[4:].strip().split("\t", 1)[0].strip('"')
+            old_header = lines[old_index][4:].strip().split("\t", 1)[0].strip('"')
+            new_header = lines[new_index][4:].strip().split("\t", 1)[0].strip('"')
             section_end = pairs[position + 1][0] if position + 1 < len(pairs) else len(lines)
             add_section(old_header, new_header, lines[new_index + 1:section_end])
     else:
@@ -742,6 +907,16 @@ def apply_multi_file_unified_diff(
     allow_subset: bool = False,
 ) -> dict[str, str]:
     """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
+    source_paths = list(sources)
+    folded_paths: dict[str, str] = {}
+    for source_path in source_paths:
+        folded = str(source_path).casefold()
+        if folded in folded_paths and folded_paths[folded] != source_path:
+            raise ValueError(
+                f"Пути {folded_paths[folded]!r} и {source_path!r} отличаются только регистром; "
+                "Windows считает их одним файлом."
+            )
+        folded_paths[folded] = str(source_path)
     patches = split_multi_file_unified_diff(patch_text)
     missing = sorted(set(sources) - set(patches))
     extra = sorted(set(patches) - set(sources))
@@ -757,6 +932,23 @@ def apply_multi_file_unified_diff(
     updated: dict[str, str] = {}
     for relative, file_patch in patches.items():
         original = sources[relative]
+        relative_parts = PurePosixPath(relative).parts
+        is_test_file = (
+            (bool(relative_parts) and relative_parts[0].casefold() == "tests")
+            or PurePosixPath(relative).name.casefold().startswith("test_")
+        )
+        if not is_test_file:
+            added_test_imports = [
+                line[1:].strip()
+                for line in file_patch.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+                and re.match(r"(?:from\s+unittest(?:\.mock)?\s+import|import\s+(?:unittest|pytest)(?:\s|$))", line[1:].strip())
+            ]
+            if added_test_imports:
+                raise ValueError(
+                    f"Файл {relative}: в исходный модуль попал импорт тестового фреймворка "
+                    f"({added_test_imports[0]}). Перенеси его только в tests/test_*.py."
+                )
         try:
             result = apply_unified_diff(original or "", file_patch, relative)
         except ValueError as exc:
@@ -873,7 +1065,7 @@ def generate_validated_multi_file_unified_diff(
                 f"Предыдущий ответ не прошёл проверку: {exc}\n"
                 f"{scope_instruction}\n"
                 "Для каждого файла обязательно выведи отдельную пару заголовков --- и +++ непосредственно "
-                "перед блоком @@. Не заменяй diff полным текстом файлов.\n"
+                "перед блоком @@. Не заменяй diff полным текстом файлов. Для каждого пути создай ровно одну секцию ---/+++ и помести все его hunks в эту секцию; никогда не повторяй plugin_manager.py или любой другой путь второй раз.\n"
                 "КРИТИЧЕСКИ ВАЖНО: используй нижеприведённые актуальные фрагменты как единственный источник "
                 "исходных строк. У каждого файла своё содержимое. Не копируй shebang, импорты или другие строки "
                 "из main.py в tests/test_*.py. Не повторяй фиктивные hunks вида -строка/+та же строка: "
@@ -1111,7 +1303,10 @@ def apply_patch_with_backup(relative_path: str, patch_text: str, run_tests: bool
     ):
         raise ValueError("Разрешено изменять только Python-файлы проекта вне служебных папок.")
     root = project_dir()
-    target = (root / relative).resolve()
+    candidate = root / relative
+    if _contains_reparse_component(candidate, root):
+        raise ValueError("Выбранный файл или один из родительских каталогов является ссылкой/reparse point.")
+    target = candidate.resolve()
     if root.resolve() not in target.parents or not target.is_file():
         raise ValueError("Выбранный файл отсутствует или находится вне папки проекта.")
     original = target.read_text(encoding="utf-8")

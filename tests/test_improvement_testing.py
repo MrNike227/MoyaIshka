@@ -68,6 +68,36 @@ class ImprovementTestingTests(unittest.TestCase):
             self.assertEqual(result["tests_exit_code"], 1)
             self.assertEqual((root / "sample.py").read_text(encoding="utf-8"), "VALUE = 1\n")
 
+    def test_pass_requires_zero_failures_and_errors_even_if_executor_claims_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+
+            def inconsistent_executor(_project, _results, _timeout):
+                return {
+                    "passed": True, "tests_exit_code": 0, "tests_run": 1,
+                    "failures": 1, "errors": 0, "sandboxed": False,
+                }
+
+            result = test_change_bundle(bundle, root, sandbox_executor=inconsistent_executor)
+            self.assertFalse(result["passed"])
+
+    def test_production_pass_requires_sandbox_confirmation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            self.make_project(root)
+            bundle = self.make_bundle(temp, 2)
+            with patch("improvement_testing._run_windows_sandbox", return_value={
+                "passed": True, "tests_exit_code": 0, "tests_run": 1,
+                "failures": 0, "errors": 0, "sandboxed": False,
+            }):
+                result = test_change_bundle(bundle, root)
+            self.assertFalse(result["passed"])
+            self.assertFalse(result["sandboxed"])
+
     def test_source_hash_accepts_crlf_line_endings(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"; root.mkdir(); self.make_project(root)

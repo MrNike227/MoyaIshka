@@ -17,14 +17,37 @@ MAX_PROPOSAL_FILE_BYTES = 2 * 1024 * 1024
 MAX_PROPOSAL_TOTAL_BYTES = 8 * 1024 * 1024
 
 
+def _is_test_module_path(path: str | PurePosixPath) -> bool:
+    parts = PurePosixPath(str(path).replace("\\", "/")).parts
+    return bool(
+        len(parts) >= 2
+        and parts[0].casefold() == "tests"
+        and PurePosixPath(parts[-1]).name.casefold().startswith("test_")
+        and PurePosixPath(parts[-1]).suffix.casefold() == ".py"
+    )
+
+
 def _safe_relative_path(value: str | Path) -> PurePosixPath:
     raw = str(value).replace("\\", "/").strip()
+    raw_parts = raw.split("/")
     path = PurePosixPath(raw)
+    reserved_names = {
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    invalid_windows_component = any(
+        part.endswith((" ", "."))
+        or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+        or part.split(".", 1)[0].casefold() in reserved_names
+        for part in raw_parts
+    )
     if (
         not raw
         or path.is_absolute()
         or not path.parts
-        or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or invalid_windows_component
         or any(part.casefold() in {".git", ".github"} for part in path.parts)
         or path.suffix.casefold() != ".py"
     ):
@@ -137,9 +160,13 @@ def save_multi_change_bundle(
             raise TypeError("Элемент пакета должен быть словарём с путём и содержимым файла.")
         relative = _safe_relative_path(change.get("path", ""))
         path = relative.as_posix()
-        if path in seen:
-            raise ValueError(f"Файл повторяется в пакете: {path}.")
-        seen.add(path)
+        folded_path = path.casefold()
+        if folded_path in seen:
+            raise ValueError(
+                f"Файл {path} повторяется или отличается только регистром; "
+                "Windows считает такие пути одним файлом."
+            )
+        seen.add(folded_path)
 
         original_text = change.get("original_text")
         updated_text = change.get("updated_text")
@@ -153,9 +180,9 @@ def save_multi_change_bundle(
             raise ValueError(f"Файл {path} указан в пакете, но его содержимое не изменилось.")
         if len(updated_bytes) > MAX_PROPOSAL_FILE_BYTES:
             raise ValueError(f"Файл {path} превышает безопасный лимит 2 МБ.")
-        if original_text is None and not path.startswith("tests/test_"):
+        if original_text is None and not _is_test_module_path(path):
             raise ValueError("Добавлять новые файлы разрешено только как tests/test_*.py.")
-        if path.startswith("tests/") and not Path(path).name.startswith("test_"):
+        if PurePosixPath(path).parts[0].casefold() == "tests" and not _is_test_module_path(path):
             raise ValueError("В папке tests разрешено изменять только файлы test_*.py.")
         compile(updated_text, path, "exec")
 
@@ -171,12 +198,8 @@ def save_multi_change_bundle(
         })
 
     if len(normalized) > 1:
-        has_source = any(not item["path"].startswith("tests/") for item in normalized)
-        has_test = any(
-            item["path"].startswith("tests/")
-            and Path(item["path"]).name.startswith("test_")
-            for item in normalized
-        )
+        has_source = any(not _is_test_module_path(item["path"]) for item in normalized)
+        has_test = any(_is_test_module_path(item["path"]) for item in normalized)
         if not has_source or not has_test:
             raise ValueError(
                 "Многофайловое изменение должно включать хотя бы один файл программы "

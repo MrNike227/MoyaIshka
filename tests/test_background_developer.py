@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from background_developer import run_background_development, _load_recent_development_lessons
+from background_developer import run_background_development, _load_recent_development_lessons, _has_explicit_reviewer_approval
 
 
 def test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> dict:
@@ -31,6 +31,14 @@ def test_executor(project_dir: Path, result_dir: Path, timeout_seconds: int) -> 
 
 
 class BackgroundDeveloperTests(unittest.TestCase):
+    def test_reviewer_approval_requires_json_boolean_true(self):
+        self.assertTrue(_has_explicit_reviewer_approval({"approved": True, "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": "true", "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": "false", "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": 1, "findings": []}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": True, "findings": ["Проблема"]}))
+        self.assertFalse(_has_explicit_reviewer_approval({"approved": True, "findings": "нет"}))
+        self.assertFalse(_has_explicit_reviewer_approval([]))
     def make_project(self, root: Path) -> None:
         (root / "tests").mkdir(parents=True)
         (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")

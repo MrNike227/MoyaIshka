@@ -240,5 +240,204 @@ class MultiFileDiffRecoveryTests(unittest.TestCase):
             split_multi_file_unified_diff("Я не могу подготовить изменения.")
 
 
+    def test_repeated_file_sections_merge_non_overlapping_hunks(self):
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\nVALUE = 1\nOTHER = 2\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -2 +2 @@
+-VALUE = 1
++VALUE = 10
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -3 +3 @@
+-OTHER = 2
++OTHER = 20
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(
+            updated["plugin_manager.py"],
+            "# -*- coding: utf-8 -*-\nVALUE = 10\nOTHER = 20\n",
+        )
+
+    def test_repeated_sections_preserve_context_lines_that_look_like_hunk_headers(self):
+        sources = {"plugin_manager.py": "@@ literal marker\nVALUE = 1\nOTHER = 2\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,2 +1,2 @@
+ @@ literal marker
+-VALUE = 1
++VALUE = 10
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -3,1 +3,1 @@
+-OTHER = 2
++OTHER = 20
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(
+            updated["plugin_manager.py"],
+            "@@ literal marker\nVALUE = 10\nOTHER = 20\n",
+        )
+
+    def test_repeated_sections_recalculate_downstream_new_offsets(self):
+        sources = {"plugin_manager.py": "A\nB\nC\nD\nE\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,1 +1,1 @@
+-A
++A
+X
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -4,1 +4,1 @@
+-D
++D2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -4,1 +5,1 @@", sections["plugin_manager.py"])
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "A\nX\nB\nC\nD2\nE\n")
+
+    def test_case_insensitive_duplicate_paths_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/PLUGIN_MANAGER.py
++++ b/PLUGIN_MANAGER.py
+@@ -1 +1 @@
+-OTHER = 1
++OTHER = 2
+"""
+        with self.assertRaisesRegex(ValueError, "отличаются только регистром"):
+            split_multi_file_unified_diff(patch)
+
+    def test_windows_reserved_device_paths_are_rejected(self):
+        for path in ("CON.py", "pkg/NUL.py", "bad?.py", "trailing./module.py"):
+            with self.subTest(path=path):
+                patch = (
+                    f"--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n"
+                    "-VALUE = 1\\n+VALUE = 2\\n"
+                )
+                with self.assertRaises(ValueError):
+                    split_multi_file_unified_diff(patch)
+
+    def test_exact_duplicate_hunk_is_deduplicated(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertEqual(sections["plugin_manager.py"].count("@@ "), 1)
+
+    def test_overlapping_duplicate_hunks_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 3
+"""
+        with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
+            split_multi_file_unified_diff(patch)
+
+    def test_distinct_insertions_at_same_source_anchor_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,0 +1 @@
++FIRST = 1
+--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,0 +1 @@
++SECOND = 2
+"""
+        with self.assertRaisesRegex(ValueError, "повторные или пересекающиеся"):
+            split_multi_file_unified_diff(patch)
+
+    def test_context_line_starting_with_hunk_marker_is_not_a_header(self):
+        sources = {"plugin_manager.py": "@@ source marker\nVALUE = 1\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,2 +1,2 @@
+ @@ source marker
+-VALUE = 1
++VALUE = 2
+"""
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "@@ source marker\nVALUE = 2\n")
+
+    def test_context_lines_resembling_file_headers_are_not_new_sections(self):
+        source = "--- a/decoy.py\n+++ b/decoy.py\nVALUE = 1\n"
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,3 +1,3 @@
+ --- a/decoy.py
+ +++ b/decoy.py
+-VALUE = 1
++VALUE = 2
+"""
+        updated = apply_multi_file_unified_diff({"plugin_manager.py": source}, patch)
+        self.assertEqual(
+            updated["plugin_manager.py"],
+            "--- a/decoy.py\n+++ b/decoy.py\nVALUE = 2\n",
+        )
+
+    def test_wrapped_added_line_is_recovered(self):
+        sources = {"plugin_manager.py": "class PluginManager:\n    pass\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,2 +1,2 @@
+-class PluginManager:
++class
+PluginManager:
+     pass
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -1,2 +1,3 @@", sections["plugin_manager.py"])
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "class\nPluginManager:\n    pass\n")
+
+
+    def test_wrapped_hunk_updates_following_new_line_offsets(self):
+        sources = {"plugin_manager.py": "A\nB\nC\nD\nE\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1,1 +1,1 @@
+-A
++A
+X
+@@ -4,1 +4,1 @@
+-D
++D2
+"""
+        sections = split_multi_file_unified_diff(patch)
+        self.assertIn("@@ -4,1 +5,1 @@", sections["plugin_manager.py"])
+        updated = apply_multi_file_unified_diff(sources, patch)
+        self.assertEqual(updated["plugin_manager.py"], "A\nX\nB\nC\nD2\nE\n")
+
+    def test_rejects_test_framework_import_leaking_into_application_module(self):
+        sources = {"plugin_manager.py": "# -*- coding: utf-8 -*-\nclass PluginManager: pass\n"}
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-# -*- coding: utf-8 -*-
++from unittest.mock import MagicMock
+"""
+        with self.assertRaisesRegex(ValueError, "в исходный модуль попал импорт тестового фреймворка"):
+            apply_multi_file_unified_diff(sources, patch)
+
+
 if __name__ == "__main__":
     unittest.main()

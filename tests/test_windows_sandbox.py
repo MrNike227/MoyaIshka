@@ -11,7 +11,7 @@ from xml.etree import ElementTree
 from windows_sandbox import (
     _is_reparse_point, create_sandbox_config, get_windows_sandbox_status,
     record_windows_sandbox_install, request_windows_sandbox_install,
-    wait_for_install_result,
+    wait_for_install_result, wait_for_sandbox_completion,
 )
 
 
@@ -111,6 +111,34 @@ class WindowsSandboxTests(unittest.TestCase):
             with patch("windows_sandbox.time.sleep", side_effect=create_result):
                 result = wait_for_install_result(result_path, timeout_seconds=30)
 
+            self.assertEqual(result, expected)
+
+    def test_sandbox_completion_requires_explicit_sandbox_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result_dir = Path(temp)
+            (result_dir / "complete.json").write_text(json.dumps({
+                "schema": 1,
+                "completed": True,
+                "sandboxed": False,
+                "guest_exit_code": 0,
+            }), encoding="utf-8")
+            with patch("windows_sandbox.time.monotonic", side_effect=[0, 1, 121]), patch(
+                "windows_sandbox.time.sleep", return_value=None,
+            ):
+                with self.assertRaises(TimeoutError):
+                    wait_for_sandbox_completion(result_dir, timeout_seconds=0)
+
+    def test_sandbox_completion_accepts_matching_sandbox_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result_dir = Path(temp)
+            expected = {
+                "schema": 1,
+                "completed": True,
+                "sandboxed": True,
+                "guest_exit_code": 0,
+            }
+            (result_dir / "complete.json").write_text(json.dumps(expected), encoding="utf-8")
+            result = wait_for_sandbox_completion(result_dir, timeout_seconds=0)
             self.assertEqual(result, expected)
 
     def test_windows_reparse_points_are_rejected(self):
