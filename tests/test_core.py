@@ -274,7 +274,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "temperature": 0.15,
         }
         messages = [{"role": "user", "content": "Проведи аудит кода"}]
-        with patch.object(main_module, "post_json", side_effect=fake_post):
+        with patch.object(chat_interface, "post_json", side_effect=fake_post):
             result = ISHApp._call_ollama(settings, messages)
 
         self.assertEqual(result, '{"suggestions":[]}')
@@ -299,7 +299,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "ollama_model": "local-model",
             "task_profile": "self_improvement",
         }
-        with patch.object(main_module, "post_json", side_effect=failure) as post:
+        with patch.object(chat_interface, "post_json", side_effect=failure) as post:
             with self.assertRaisesRegex(RuntimeError, "зациклилась на повторяющихся токенах"):
                 ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Проведи аудит"}]
@@ -316,7 +316,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "ollama_model": "local-model",
             "task_profile": "chat",
         }
-        with patch.object(main_module, "post_json", side_effect=failure) as post:
+        with patch.object(chat_interface, "post_json", side_effect=failure) as post:
             with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
                 ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Привет"}]
@@ -333,7 +333,7 @@ class OllamaSelfImprovementRecoveryTests(unittest.TestCase):
             "ollama_model": "local-model",
             "task_profile": "chat",
         }
-        with patch.object(main_module, "post_json", side_effect=failure):
+        with patch.object(chat_interface, "post_json", side_effect=failure):
             with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
                 ISHApp._call_ollama(
                     settings, [{"role": "user", "content": "Привет"}]
