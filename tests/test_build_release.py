@@ -30,7 +30,9 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_module_dependency_analyzer_is_in_packaged_source_workspace(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertIn("from module_dependency_analyzer import analyze_module_dependencies", source)
+        self.assertIn("from module_dependency_analyzer import (", source)
+        dependency_imports = source.split("from module_dependency_analyzer import (", 1)[1].split(")", 1)[0]
+        self.assertIn("analyze_module_dependencies", dependency_imports)
         self.assertIn('"module_dependency_analyzer.py"', source)
         self.assertIn('"tests/test_module_dependency_analyzer.py"', source)
         self.assertIn('"PLAN_4.2.7_RU.md"', source)
