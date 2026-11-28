@@ -23,6 +23,11 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "temporary_storage.py;source_project"', build)
         self.assertIn('--add-data "conversation_store.py;source_project"', build)
         self.assertIn('--add-data "secure_storage.py;source_project"', build)
+        self.assertIn('--add-data "app_initialization_interface.py;source_project"', build)
+        self.assertIn('--add-data "app_lifecycle_interface.py;source_project"', build)
+        self.assertIn('--add-data "model_settings_interface.py;source_project"', build)
+        self.assertIn('--add-data "ui_pages_interface.py;source_project"', build)
+        self.assertIn('--add-data "ui_theme_interface.py;source_project"', build)
         self.assertIn('--add-data "app_runtime.py;source_project"', build)
         self.assertIn('--add-data "backup_interface.py;source_project"', build)
         self.assertIn('--add-data "chat_interface.py;source_project"', build)
@@ -52,6 +57,11 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertNotIn("def dpapi_transform(", source)
         self.assertIn("secure_storage.py", source)
         self.assertIn("tests/test_secure_storage.py", source)
+        self.assertIn('"app_initialization_interface.py"', source)
+        self.assertIn('"app_lifecycle_interface.py"', source)
+        self.assertIn('"model_settings_interface.py"', source)
+        self.assertIn('"ui_pages_interface.py"', source)
+        self.assertIn('"ui_theme_interface.py"', source)
         self.assertIn('"app_runtime.py"', source)
         self.assertIn('"backup_interface.py"', source)
         self.assertIn('"chat_interface.py"', source)
@@ -331,7 +341,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertNotIn("build_patched_pyinstaller.py", workflow)
 
     def test_windows_and_voice_page_has_mousewheel_scroll_container(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "ui_pages_interface.py").read_text(encoding="utf-8")
         page_start = source.index("    def _build_windows_page(self) -> None:")
         page_end = source.index("    def _build_workshop_page(self) -> None:", page_start)
         windows_page = source[page_start:page_end]
@@ -425,7 +435,7 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertIn('return resolve_install_layout(root)["app"]', selector)
 
     def test_container_layout_is_created_on_application_start_and_before_update(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "app_initialization_interface.py").read_text(encoding="utf-8")
         self.assertIn("install_layout = ensure_install_layout(self.config[\"install_root_dir\"])", source)
         update_source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
         start = update_source.index("    def _start_staged_update_install(")
@@ -666,7 +676,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"tests/test_supabase_backup.py"', source)
         self.assertIn('"windows_sandbox.py"', source)
         self.assertIn("request_windows_sandbox_install", source)
-        self.assertIn("record_windows_sandbox_install", voice)
+        self.assertIn("record_windows_sandbox_install", selfdev)
         self.assertIn("record_windows_sandbox_install(result)", selfdev)
         self.assertIn("get_windows_sandbox_status", source)
         self.assertIn("<ProtectedClient>Enable</ProtectedClient>", sandbox)

@@ -1,4 +1,7 @@
 ## 4.3.1
+- Из `main.py` вынесены конструктор приложения, сборка страниц UI, палитры и темы, тесты подключений Ollama/онлайн, а также операции жизненного цикла окна.
+- Созданы `app_initialization_interface.py`, `app_lifecycle_interface.py`, `model_settings_interface.py`, `ui_pages_interface.py` и `ui_theme_interface.py`; `save_resource_settings` перенесён в `settings_interface.py`.
+- `ISHApp` сохранён как совместимый класс-фасад с прежним публичным API через наследование модулей.
 - Начато масштабное разделение `ISHApp` на модули чатов, исследований, облака, настроек, резервных копий, голоса, памяти, плагинов, саморазвития и обновлений.
 - `PurpleCheckbox` вынесен в `ui_components.py`; публичный импорт `main.PurpleCheckbox` сохранён.
 - Добавлен `app_runtime.py` для совместного runtime-контекста миксинов без циклического импорта `main.py`.

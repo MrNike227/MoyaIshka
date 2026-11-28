@@ -196,4 +196,23 @@ class SettingsInterfaceMixin:
             self.research_results_var.set(str(self.config.get("research_results_limit", 5)))
             self.research_fetch_var.set(str(self.config.get("research_fetch_pages", 3)))
 
-
+    def save_resource_settings(self) -> None:
+        try:
+            ram_mb = int(self.background_ram_var.get())
+            cpu_limit = int(self.background_cpu_var.get())
+        except (ValueError, AttributeError):
+            messagebox.showerror("Нагрузка компьютера", "Выбери допустимый лимит памяти и порог CPU.")
+            return
+        self.config["background_ram_limit_mb"] = max(1024, min(ram_mb, 5120))
+        self.config["background_min_available_ram_mb"] = 8192
+        self.config["background_cpu_limit_percent"] = max(60, min(cpu_limit, 98))
+        self.resource_governor.configure(
+            max_ram_mb=self.config["background_ram_limit_mb"],
+            min_available_ram_mb=self.config["background_min_available_ram_mb"],
+            cpu_pause_percent=self.config["background_cpu_limit_percent"],
+        )
+        atomic_json_save(CONFIG_PATH, self.config)
+        self.resource_status_var.set(
+            f"Применено: бюджет ИИ {ram_mb} МБ; фон приостанавливается около {cpu_limit}% CPU или при свободной ОЗУ менее 8 ГБ."
+        )
+        self._schedule_cloud_sync()

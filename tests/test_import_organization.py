@@ -62,6 +62,11 @@ class ImportOrganizationTests(unittest.TestCase):
         "ui_components.py",
         "update_interface.py",
         "voice_interface.py",
+        "app_initialization_interface.py",
+        "app_lifecycle_interface.py",
+        "model_settings_interface.py",
+        "ui_pages_interface.py",
+        "ui_theme_interface.py",
     )
 
     def test_module_imports_are_grouped_by_dependency_type_and_sorted(self):
@@ -117,7 +122,7 @@ class ImportOrganizationTests(unittest.TestCase):
                 "temporary_storage", "updater", "updater_helper", "voice_assistant",
                 "voice_manager", "web_research", "windows_control", "windows_sandbox",
             ],
-            ["app_runtime","backup_interface","chat_interface","cloud_interface","memory_interface","plugin_interface","research_interface","self_improvement_interface","settings_interface","ui_components","update_interface","voice_interface"],
+            ["app_initialization_interface","app_lifecycle_interface","app_runtime","backup_interface","chat_interface","cloud_interface","memory_interface","model_settings_interface","plugin_interface","research_interface","self_improvement_interface","settings_interface","ui_components","ui_pages_interface","ui_theme_interface","update_interface","voice_interface"],
         )
         local_nodes = [
             node for node in nodes
@@ -150,6 +155,7 @@ class ImportOrganizationTests(unittest.TestCase):
             "windows_control.py": {"ctypes", "ctypes.wintypes"},
             "windows_sandbox.py": {"winreg"},
             "updater_helper.py": set(),
+            "app_initialization_interface.py": {"tkinter.font"},
             "plugin_interface.py": {"webbrowser"},
         }
         for path, allowed in expected_local.items():

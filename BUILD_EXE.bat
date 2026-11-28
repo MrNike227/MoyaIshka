@@ -64,6 +64,11 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "ui_components.py;source_project" ^
   --add-data "update_interface.py;source_project" ^
   --add-data "voice_interface.py;source_project" ^
+  --add-data "app_initialization_interface.py;source_project" ^
+  --add-data "app_lifecycle_interface.py;source_project" ^
+  --add-data "model_settings_interface.py;source_project" ^
+  --add-data "ui_pages_interface.py;source_project" ^
+  --add-data "ui_theme_interface.py;source_project" ^
   --add-data "context_engine.py;source_project" ^
   --add-data "package_onedir.py;source_project" ^
   --add-data "TEST_WINDOWS10.ps1;source_project" ^
