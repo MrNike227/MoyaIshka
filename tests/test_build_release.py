@@ -81,7 +81,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_runtime_temporary_workspaces_use_container_storage(self):
         checks = {
-            "main.py": ('get_temp_directory("update_staging"', 'get_temp_directory("cloud_restore"'),
+            "update_interface.py": ('get_temp_directory("update_staging"',),
+            "backup_interface.py": ('get_temp_directory("cloud_restore"',),
             "updater_helper.py": ('get_temp_directory("installers")',),
             "improvement_testing.py": ('get_temp_directory("self_development")',),
             "windows_sandbox.py": ('get_temp_directory("sandbox_setup")',),
@@ -655,7 +656,7 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_windows_sandbox_is_bundled_and_required_for_proposal_tests(self):
         build = (ROOT / "BUILD_EXE.bat").read_text(encoding="utf-8-sig")
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        voice = (ROOT / "voice_interface.py").read_text(encoding="utf-8")
+        selfdev = (ROOT / "self_improvement_interface.py").read_text(encoding="utf-8")
         testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
         sandbox = (ROOT / "windows_sandbox.py").read_text(encoding="utf-8")
         self.assertIn('--add-data "windows_sandbox.py;source_project"', build)
@@ -664,10 +665,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"tests/test_intelligent_memory.py"', source)
         self.assertIn('"tests/test_supabase_backup.py"', source)
         self.assertIn('"windows_sandbox.py"', source)
-        self.assertIn("request_windows_sandbox_install", voice)
+        self.assertIn("request_windows_sandbox_install", source)
         self.assertIn("record_windows_sandbox_install", voice)
-        self.assertIn("record_windows_sandbox_install(result)", voice)
-        self.assertIn("get_windows_sandbox_status", voice)
+        self.assertIn("record_windows_sandbox_install(result)", selfdev)
+        self.assertIn("get_windows_sandbox_status", source)
         self.assertIn("<ProtectedClient>Enable</ProtectedClient>", sandbox)
         self.assertIn("<Networking>Disable</Networking>", sandbox)
         self.assertIn("<ClipboardRedirection>Disable</ClipboardRedirection>", sandbox)
