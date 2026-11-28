@@ -1,0 +1,172 @@
+# -*- coding: utf-8 -*-
+"""Keep application-owned temporary files inside the selected installation container.
+
+The Windows TEMP/TMP variables are changed only for this process and its children.
+Persistent user data remains in %APPDATA%\\ISH; only scratch files use Container\\Temp.
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Any
+
+
+TEMP_FOLDER_NAME = "Temp"
+TEMP_ENV_KEYS = ("TEMP", "TMP", "TMPDIR")
+
+
+def _default_config_path() -> Path:
+    appdata = os.environ.get("APPDATA")
+    return (Path(appdata) / "ISH" if appdata else Path.home() / ".ish") / "config.json"
+
+
+def _read_config(config_path: str | Path | None) -> dict[str, Any]:
+    path = Path(config_path).expanduser() if config_path else _default_config_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _expand_path(value: str | Path) -> Path:
+    return Path(os.path.expandvars(str(value).strip())).expanduser().resolve()
+
+
+def resolve_container_root(
+    config: dict[str, Any] | None = None,
+    *,
+    config_path: str | Path | None = None,
+    running_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+) -> Path:
+    """Resolve the user's container root without falling back to the system TEMP."""
+    settings = config if isinstance(config, dict) else _read_config(config_path)
+
+    configured_root = str(settings.get("install_root_dir", "")).strip()
+    if configured_root:
+        return _expand_path(configured_root)
+
+    environment_root = os.environ.get("MOYA_CONTAINER_ROOT", "").strip()
+    if environment_root:
+        return _expand_path(environment_root)
+
+    install_dir = str(settings.get("install_dir", "")).strip()
+    if install_dir:
+        install_path = _expand_path(install_dir)
+        # install_dir points to Container\\App in current versions and to the
+        # application folder in legacy configurations. In either case its parent
+        # is the stable location that must survive application replacement.
+        return install_path.parent
+
+    if running_path:
+        executable = _expand_path(running_path)
+        folder = executable.parent
+        name = folder.name.casefold()
+        if name == "update_staging":
+            return folder.parent.parent
+        if name in {"app", "ish", "moyaishka", "моя иишка", "мояишка"}:
+            return folder.parent
+        if name == "temp":
+            return folder.parent
+        return folder
+
+    if source_root:
+        return _expand_path(source_root)
+    return Path(__file__).resolve().parent
+
+
+def configure_temporary_storage(
+    config: dict[str, Any] | None = None,
+    *,
+    config_path: str | Path | None = None,
+    running_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+) -> Path:
+    """Create Container\\Temp and redirect Python/child-process temp paths there."""
+    root = resolve_container_root(
+        config,
+        config_path=config_path,
+        running_path=running_path,
+        source_root=source_root,
+    )
+    temp_root = root / TEMP_FOLDER_NAME
+    try:
+        temp_root.mkdir(parents=True, exist_ok=True)
+        if temp_root.is_symlink():
+            raise OSError("Папка временных файлов не может быть символической ссылкой.")
+        probe = temp_root / f".moya_temp_probe_{os.getpid()}_{uuid.uuid4().hex}"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+    except OSError as exc:
+        raise OSError(
+            f"Не удалось подготовить временную папку контейнера: {temp_root}. "
+            "Проверь доступность диска и права на запись. Системная папка TEMP не используется."
+        ) from exc
+
+    os.environ["MOYA_CONTAINER_ROOT"] = str(root)
+    os.environ["MOYA_TEMP_ROOT"] = str(temp_root)
+    for key in TEMP_ENV_KEYS:
+        os.environ[key] = str(temp_root)
+    # tempfile caches its first result. Reset it so libraries and plugins loaded
+    # later use the container, including when the user changes the container path.
+    tempfile.tempdir = str(temp_root)
+    return temp_root
+
+
+def get_temp_root(
+    *,
+    config: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+    running_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+) -> Path:
+    """Return a writable container temp root, configuring it on first use."""
+    configured = os.environ.get("MOYA_TEMP_ROOT", "").strip()
+    if configured:
+        path = _expand_path(configured)
+        if path.is_dir() and not path.is_symlink():
+            return path
+    return configure_temporary_storage(
+        config,
+        config_path=config_path,
+        running_path=running_path,
+        source_root=source_root,
+    )
+
+
+def get_temp_directory(
+    category: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+    running_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+) -> Path:
+    """Return a category folder below Container\\Temp, creating it if needed."""
+    root = get_temp_root(
+        config=config,
+        config_path=config_path,
+        running_path=running_path,
+        source_root=source_root,
+    )
+    if not category:
+        return root
+    name = str(category).strip()
+    if not name or name in {".", ".."} or any(char in name for char in ("/", "\\\\", ":", "\\x00")):
+        raise ValueError("Недопустимое имя временной папки.")
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    resolved = directory.resolve()
+    if root.resolve() not in resolved.parents or directory.is_symlink():
+        raise ValueError("Временная папка вышла за пределы контейнера.")
+    return resolved
+
+
+def create_temp_directory(prefix: str, category: str | None = None) -> Path:
+    """Create a unique temporary directory inside the selected container."""
+    parent = get_temp_directory(category)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent)))
