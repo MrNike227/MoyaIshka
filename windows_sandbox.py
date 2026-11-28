@@ -306,8 +306,10 @@ $data | ConvertTo-Json -Compress | Set-Content -LiteralPath $resultPath -Encodin
         shell.restype = ctypes.c_void_p
         code = shell(None, "runas", str(powershell), parameters, str(work), 1)
     except Exception as exc:
+        shutil.rmtree(work, ignore_errors=True)
         raise RuntimeError(f"Не удалось запросить права администратора: {exc}") from exc
     if int(code or 0) <= 32:
+        shutil.rmtree(work, ignore_errors=True)
         raise RuntimeError("Установка отменена или Windows не смогла открыть запрос прав администратора.")
     return result_path
 
