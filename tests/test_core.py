@@ -73,7 +73,7 @@ class StoreTests(unittest.TestCase):
 
 class ParsingTests(unittest.TestCase):
     def test_cloud_merge_uses_sqlite_safe_conversation_id_helper(self):
-        source = Path(main_module.__file__).read_text(encoding="utf-8")
+        source = Path(__import__("cloud_interface").__file__).read_text(encoding="utf-8")
         self.assertIn("self.store.conversation_ids()", source)
         self.assertNotIn('str(c.get("id")) for c in self.store.list_conversations()', source)
 
@@ -87,7 +87,7 @@ class ParsingTests(unittest.TestCase):
             self.assertEqual(read_attachment(path), "Тестовый текст")
 
     def test_chat_improvement_ideas_are_connected_to_send_and_analysis(self):
-        source = Path(main_module.__file__).read_text(encoding="utf-8")
+        source = Path(chat_interface.__file__).read_text(encoding="utf-8")
         self.assertIn("save_chat_improvement_idea(", source)
         self.assertIn("load_chat_improvement_ideas(", source)
         self.assertIn("идея сохранена для самоанализа", source)
