@@ -19,6 +19,8 @@ class TemporaryStorageTests(unittest.TestCase):
         self._tempfile_tempdir = tempfile.tempdir
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        for key in self._environment:
+            os.environ.pop(key, None)
 
     def tearDown(self):
         for key, value in self._environment.items():
@@ -85,7 +87,7 @@ class TemporaryStorageTests(unittest.TestCase):
     def test_category_directory_stays_below_container_temp(self):
         container = self.root / "Container"
         configure_temporary_storage({"install_root_dir": str(container)})
-        work = get_temp_directory("self_development")
+        work = get_temp_directory("self_development", config={"install_root_dir": str(container)})
 
         self.assertEqual(work.parent, (container / "Temp").resolve())
         self.assertTrue(work.is_dir())
