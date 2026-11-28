@@ -159,10 +159,10 @@ class ModuleDependencyAnalyzerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "worker.py").write_text(
-                "def save(path, value):\\n"
-                "    result = open(path, 'w')\\n"
-                "    result.write(value)\\n"
-                "    return result.name\\n",
+                "def save(path, value):\n"
+                "    result = open(path, 'w')\n"
+                "    result.write(value)\n"
+                "    return result.name\n",
                 encoding="utf-8",
             )
             result = analyze_function_data_flow(root, "worker.py")
