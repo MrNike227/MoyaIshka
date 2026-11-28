@@ -97,7 +97,7 @@ class ImportOrganizationTests(unittest.TestCase):
             ],
             [
                 "background_developer", "github_pr", "improvement_delivery",
-                "improvement_testing", "module_dependency_analyzer", "self_improvement",
+                "improvement_testing", "module_dependency_analyzer", "architecture_knowledge", "self_improvement",
             ],
             [
                 "temporary_storage", "updater", "updater_helper", "voice_assistant",
