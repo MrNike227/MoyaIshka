@@ -99,7 +99,7 @@ def _safe_repo_path(value: str) -> str:
         or path.startswith("/")
         or any(part in {"", ".", ".."} or ":" in part for part in parts)
         or invalid_windows_component
-        or path.casefold().startswith((".git/", ".github/workflows/"))
+        or (parts and parts[0].casefold() in {".git", ".github"})
         or not path.lower().endswith(".py")
     ):
         raise GitHubProposalError("Draft PR разрешено создавать только для безопасного относительного пути к Python-файлу.")
@@ -349,6 +349,7 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         raise GitHubProposalError(f"Многофайловый diff повреждён: {exc}") from exc
 
     seen: set[str] = set()
+    seen_casefolded: set[str] = set()
     file_payloads: dict[str, bytes] = {}
     total = len(patch_bytes)
     for entry in entries:
@@ -356,11 +357,12 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
             raise GitHubProposalError("Запись файла в манифесте имеет неверный формат.")
         path = _safe_bundle_path(str(entry.get("path", "")))
         folded_path = path.casefold()
-        if folded_path in seen:
+        if folded_path in seen_casefolded:
             raise GitHubProposalError(
                 f"Файл {path} повторяется или отличается только регистром; Windows считает такие пути одним файлом."
             )
-        seen.add(folded_path)
+        seen.add(path)
+        seen_casefolded.add(folded_path)
         updated = _read_bundle_file(root, "files/" + path, MAX_BUNDLE_FILE_BYTES)
         if len(updated) != entry.get("size") or hashlib.sha256(updated).hexdigest() != entry.get("sha256"):
             raise GitHubProposalError(f"Размер или SHA-256 изменённого файла не совпадает: {path}.")
