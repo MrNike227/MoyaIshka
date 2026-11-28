@@ -89,10 +89,10 @@ class ModuleDependencyAnalyzerTests(unittest.TestCase):
             root = Path(temp)
             (root / "pkg").mkdir()
             (root / "pkg" / "__init__.py").write_text(
-                "import importlib\\nworker = importlib.import_module('.worker', __package__)\\n",
+                "import importlib\nworker = importlib.import_module('.worker', __package__)\n",
                 encoding="utf-8",
             )
-            (root / "pkg" / "worker.py").write_text("VALUE = 1\\n", encoding="utf-8")
+            (root / "pkg" / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
             analysis = analyze_module_dependencies(root, "pkg/worker.py")
             self.assertEqual(
                 [item["path"] for item in analysis["direct_dependents"]],
