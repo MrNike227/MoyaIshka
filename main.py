@@ -183,7 +183,7 @@ from windows_sandbox import (
     wait_for_install_result,
 )
 
-# ISHApp feature modules — implementation is split by application responsibility.
+# ISHApp feature modules — extracted methods keep their API through mixins.
 import app_initialization_interface as _app_initialization_interface
 import app_lifecycle_interface as _app_lifecycle_interface
 import app_runtime as _app_runtime
