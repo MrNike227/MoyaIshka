@@ -20,6 +20,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "improvement_testing.py;source_project"', build)
         self.assertIn('--add-data "module_dependency_analyzer.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
+        self.assertIn('--add-data "temporary_storage.py;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.6_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.7_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.8_RU.md;source_project"', build)
@@ -39,6 +40,24 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"PLAN_4.2.8_RU.md"', source)
         self.assertIn('"PLAN_4.3.1_RU.md"', source)
         self.assertIn('"tests/test_multi_file_diff_recovery.py"', source)
+        self.assertIn('"temporary_storage.py"', source)
+        self.assertIn('"tests/test_temporary_storage.py"', source)
+        self.assertIn('"Workspaces"', source)
+
+    def test_runtime_temporary_workspaces_use_container_storage(self):
+        checks = {
+            "main.py": ('get_temp_directory("update_staging"', 'get_temp_directory("cloud_restore"'),
+            "updater_helper.py": ('get_temp_directory("installers")',),
+            "improvement_testing.py": ('get_temp_directory("self_development")',),
+            "windows_sandbox.py": ('get_temp_directory("sandbox_setup")',),
+            "voice_assistant.py": ('get_temp_directory("voice")',),
+            "backup_manager.py": ('get_temp_directory("backups")', 'get_temp_directory("backup_restore")'),
+        }
+        for filename, required in checks.items():
+            source = (ROOT / filename).read_text(encoding="utf-8")
+            for marker in required:
+                with self.subTest(filename=filename, marker=marker):
+                    self.assertIn(marker, source)
 
     def test_pyinstaller_bootloader_version_is_pinned(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
