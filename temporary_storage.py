@@ -57,10 +57,12 @@ def resolve_container_root(
     install_dir = str(settings.get("install_dir", "")).strip()
     if install_dir:
         install_path = _expand_path(install_dir)
-        # install_dir points to Container\\App in current versions and to the
-        # application folder in legacy configurations. In either case its parent
-        # is the stable location that must survive application replacement.
-        return install_path.parent
+        # Current installations point to Container\\App. Legacy installations
+        # are migrated into the sibling Container\\ISH_Container by the app's
+        # default-install policy, so choose that same root before the UI starts.
+        if install_path.name.casefold() == "app":
+            return install_path.parent
+        return install_path.parent / "ISH_Container"
 
     if running_path:
         executable = _expand_path(running_path)
@@ -68,8 +70,10 @@ def resolve_container_root(
         name = folder.name.casefold()
         if name == "update_staging":
             return folder.parent.parent
-        if name in {"app", "ish", "moyaishka", "моя иишка", "мояишка"}:
+        if name == "app":
             return folder.parent
+        if name in {"ish", "moyaishka", "моя иишка", "мояишка"}:
+            return folder.parent / "ISH_Container"
         if name == "temp":
             return folder.parent
         return folder
