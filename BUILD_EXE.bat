@@ -51,6 +51,7 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "app_icon_16.png;." ^
   --add-data "main.py;source_project" ^
   --add-data "conversation_store.py;source_project" ^
+  --add-data "secure_storage.py;source_project" ^
   --add-data "context_engine.py;source_project" ^
   --add-data "package_onedir.py;source_project" ^
   --add-data "TEST_WINDOWS10.ps1;source_project" ^

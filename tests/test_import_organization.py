@@ -49,6 +49,7 @@ class ImportOrganizationTests(unittest.TestCase):
         "windows_control.py",
         "windows_sandbox.py",
         "voice_manager.py",
+        "secure_storage.py",
     )
 
     def test_module_imports_are_grouped_by_dependency_type_and_sorted(self):
@@ -89,7 +90,7 @@ class ImportOrganizationTests(unittest.TestCase):
         expected = (
             [
                 "avatar_widget", "auto_memory", "context_engine", "conversation_store",
-                "intelligent_memory", "plugin_manager", "resource_governor",
+                "intelligent_memory", "plugin_manager", "resource_governor", "secure_storage",
             ],
             [
                 "backup_cloud", "backup_manager", "cloud_sync",

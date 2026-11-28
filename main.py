@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 # Standard library
-import base64
 import ctypes
 import json
 import os
@@ -56,6 +55,7 @@ from intelligent_memory import (
 )
 from plugin_manager import PluginManager
 from resource_governor import ResourceGovernor
+from secure_storage import DATA_BLOB, dpapi_transform, protect_api_key, unprotect_api_key, unprotect_github_pr_token
 
 # Backup and cloud storage integrations.
 from backup_cloud import (
@@ -348,13 +348,13 @@ def prepare_source_workspace() -> Path:
     source_root.parent.mkdir(parents=True, exist_ok=True)
     if not (source_root / "main.py").exists():
         bundled_files = [
-            "main.py", "conversation_store.py", "temporary_storage.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
+            "main.py", "conversation_store.py", "secure_storage.py", "temporary_storage.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
             "avatar_widget.py", "plugin_manager.py", "self_improvement.py", "improvement_testing.py", "windows_sandbox.py", "background_developer.py", "module_dependency_analyzer.py", "updater.py",
             "updater_helper.py", "web_research.py", "cloud_sync.py", "google_drive_sync.py", "resource_governor.py", "supabase_backup.py", "requirements.txt", "requirements_voice.txt", "START.bat",
             "BUILD_EXE.bat", "prepare_python_runtime.py", "verify_pe_dependencies.py", "package_onedir.py", "TEST_WINDOWS10.ps1", "INSTALL_OPTIONAL_DOCS.bat", "INSTALL_VOICE.bat",
             "INSTALLER.iss", "README_RU.md", "SUPABASE_SETUP_RU.md", "GOOGLE_DRIVE_SETUP_RU.md", "CHANGELOG_RU.md", "PLAN_4.2.6_RU.md", "PLAN_4.2.7_RU.md", "PLAN_4.2.8_RU.md", "PLAN_4.2.9_RU.md", "PLAN_4.3.0_RU.md", "PLAN_4.3.1_RU.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "licenses/GPL-3.0.txt",
             "app_icon.ico", "app_icon.png", "app_icon_256.png", "app_icon_128.png", "app_icon_64.png", "app_icon_32.png", "app_icon_16.png",
-            "tests/test_core.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py", "tests/test_multi_file_diff_recovery.py", "tests/test_import_organization.py", "tests/test_temporary_storage.py",
+            "tests/test_core.py", "tests/test_secure_storage.py", "tests/test_extensions.py", "tests/test_backup_manager.py", "tests/test_backup_cloud.py", "tests/test_context_engine.py", "tests/test_onedir_update.py", "tests/test_web_research.py", "tests/test_voice_manager.py", "tests/test_cloud_sync.py", "tests/test_resource_governor.py", "tests/test_google_drive_sync.py", "tests/test_build_release.py", "tests/test_improvement_delivery.py", "tests/test_improvement_testing.py", "tests/test_windows_sandbox.py", "tests/test_intelligent_memory.py", "tests/test_supabase_backup.py", "tests/test_background_developer.py", "tests/test_module_dependency_analyzer.py", "tests/test_github_pr.py", "tests/test_multi_file_diff_recovery.py", "tests/test_import_organization.py", "tests/test_temporary_storage.py",
             "hooks/hook-cryptography.py", ".github/workflows/release.yml", "sql/supabase_setup.sql",
         ]
         for relative in bundled_files:
@@ -374,63 +374,6 @@ def atomic_json_save(path: Path, value: Any) -> None:
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=2)
     temporary.replace(path)
-
-
-# Windows DPAPI protects the cloud API key for the current Windows account.
-class DATA_BLOB(ctypes.Structure):
-    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
-
-
-def dpapi_transform(data: bytes, protect: bool) -> bytes:
-    if os.name != "nt":
-        raise OSError("DPAPI доступен только в Windows")
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    source_buffer = ctypes.create_string_buffer(data)
-    source = DATA_BLOB(len(data), ctypes.cast(source_buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    destination = DATA_BLOB()
-    flags = 0x1  # CRYPTPROTECT_UI_FORBIDDEN
-    if protect:
-        ok = crypt32.CryptProtectData(ctypes.byref(source), ctypes.c_wchar_p("ISH API key"), None, None, None, flags, ctypes.byref(destination))
-    else:
-        ok = crypt32.CryptUnprotectData(ctypes.byref(source), None, None, None, None, flags, ctypes.byref(destination))
-    if not ok:
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(destination.pbData, destination.cbData)
-    finally:
-        kernel32.LocalFree(ctypes.cast(destination.pbData, ctypes.c_void_p))
-
-
-def protect_api_key(key: str) -> tuple[str, str]:
-    if not key:
-        return "", ""
-    if os.name == "nt":
-        encrypted = dpapi_transform(key.encode("utf-8"), True)
-        return base64.b64encode(encrypted).decode("ascii"), ""
-    # Development fallback only; on Windows DPAPI is used.
-    return "", key
-
-
-def unprotect_api_key(config: dict[str, Any]) -> str:
-    protected = str(config.get("online_api_key_protected", ""))
-    if protected and os.name == "nt":
-        try:
-            encrypted = base64.b64decode(protected)
-            return dpapi_transform(encrypted, False).decode("utf-8")
-        except Exception:
-            return ""
-    return str(config.get("online_api_key_plain", ""))
-
-
-def unprotect_github_pr_token(config: dict[str, Any]) -> str:
-    protected = str(config.get("github_pr_token_protected", ""))
-    if protected and os.name == "nt":
-        try:
-            return dpapi_transform(base64.b64decode(protected), False).decode("utf-8")
-        except Exception:
-            return ""
-    return str(config.get("github_pr_token_plain", ""))
 
 
 def normalize_url(url: str) -> str:
