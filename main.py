@@ -7638,14 +7638,14 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
                                 log.write(
                                     f"{datetime.now().astimezone().isoformat()}  "
                                     f"Автоочистка старых копий: найдено {result['found']}, "
-                                    f"удалено {result['deleted']}, ошибок {len(result['errors'])}.\\n"
+                                    f"удалено {result['deleted']}, ошибок {len(result['errors'])}.\n"
                                 )
                                 for error in result["errors"][:10]:
-                                    log.write(f"  {error}\\n")
+                                    log.write(f"  {error}\n")
                         except Exception as exc:
                             try:
                                 with (DATA_DIR / "update.log").open("a", encoding="utf-8") as log:
-                                    log.write(f"{datetime.now().astimezone().isoformat()}  Ошибка автоочистки: {exc}\\n")
+                                    log.write(f"{datetime.now().astimezone().isoformat()}  Ошибка автоочистки: {exc}\n")
                             except OSError:
                                 pass
 
