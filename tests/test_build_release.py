@@ -70,7 +70,7 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertEqual((target / "config.json").read_text(encoding="utf-8"), '{"assistant_name":"old"}')
             self.assertTrue((legacy / "config.json").is_file())
 
-    def test_application_version_is_429(self):
+    def test_application_version_is_431(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_VERSION = "4.3.1"', source)
 
@@ -578,7 +578,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("elseif ($env:GITHUB_REF -eq 'refs/heads/main')", release_step)
         self.assertIn("Refusing to create a new release from main", release_step)
 
-    def test_hotfix_marker_refreshes_existing_v429_release_and_tag_only(self):
+    def test_hotfix_marker_refreshes_existing_v431_release_and_tag_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.3.1' }}", workflow)
         self.assertIn("- name: Update v4.3.1 tag to validated root source", workflow)
@@ -659,7 +659,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
 
 
-    def test_inno_setup_installer_version_is_429(self):
+    def test_inno_setup_installer_version_is_431(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
         self.assertIn("AppVersion=4.3.1", installer)
 
