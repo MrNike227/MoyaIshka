@@ -62,6 +62,9 @@ class ImportOrganizationTests(unittest.TestCase):
         "ui_components.py",
         "update_interface.py",
         "voice_interface.py",
+        "app_configuration.py",
+        "app_helpers.py",
+        "app_startup.py",
         "app_initialization_interface.py",
         "app_lifecycle_interface.py",
         "model_settings_interface.py",
@@ -122,7 +125,7 @@ class ImportOrganizationTests(unittest.TestCase):
                 "temporary_storage", "updater", "updater_helper", "voice_assistant",
                 "voice_manager", "web_research", "windows_control", "windows_sandbox",
             ],
-            ["app_initialization_interface","app_lifecycle_interface","app_runtime","backup_interface","chat_interface","cloud_interface","memory_interface","model_settings_interface","plugin_interface","research_interface","self_improvement_interface","settings_interface","ui_components","ui_pages_interface","ui_theme_interface","update_interface","voice_interface"],
+            ["app_configuration","app_helpers","app_initialization_interface","app_lifecycle_interface","app_runtime","app_startup","backup_interface","chat_interface","cloud_interface","memory_interface","model_settings_interface","plugin_interface","research_interface","self_improvement_interface","settings_interface","ui_components","ui_pages_interface","ui_theme_interface","update_interface","voice_interface"],
         )
         local_nodes = [
             node for node in nodes
@@ -141,10 +144,10 @@ class ImportOrganizationTests(unittest.TestCase):
 
     def test_imports_inside_functions_are_reserved_for_lazy_or_platform_specific_dependencies(self):
         expected_local = {
-            "main.py": {
-                "improvement_testing", "pypdf", "docx", "tkinter.font",
-                "webbrowser", "cffi", "_cffi_backend", "updater_helper",
-            },
+            "main.py": {"improvement_testing", "updater_helper"},
+            "app_helpers.py": {"pypdf", "docx"},
+            "app_initialization_interface.py": {"tkinter.font"},
+            "app_startup.py": {"cffi", "_cffi_backend"},
             "improvement_testing.py": {
                 "windows_sandbox", "ctypes", "ctypes.wintypes",
                 "importlib.machinery", "unittest",

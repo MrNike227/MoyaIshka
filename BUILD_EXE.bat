@@ -64,6 +64,9 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "ui_components.py;source_project" ^
   --add-data "update_interface.py;source_project" ^
   --add-data "voice_interface.py;source_project" ^
+  --add-data "app_configuration.py;source_project" ^
+  --add-data "app_helpers.py;source_project" ^
+  --add-data "app_startup.py;source_project" ^
   --add-data "app_initialization_interface.py;source_project" ^
   --add-data "app_lifecycle_interface.py;source_project" ^
   --add-data "model_settings_interface.py;source_project" ^

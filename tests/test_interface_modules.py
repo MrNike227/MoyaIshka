@@ -4,6 +4,9 @@ from __future__ import annotations
 import unittest
 
 import main
+import app_configuration
+import app_helpers
+import app_startup
 import app_initialization_interface
 import app_lifecycle_interface
 import backup_interface
@@ -70,6 +73,13 @@ class InterfaceModuleTests(unittest.TestCase):
         self.assertIs(ui_pages_interface.tk, main.tk)
         self.assertIs(model_settings_interface.normalize_url, main.normalize_url)
         self.assertIs(app_lifecycle_interface.DATA_DIR, main.DATA_DIR)
+
+    def test_application_support_modules_are_reexported_by_main(self):
+        self.assertIs(main.DEFAULT_CONFIG, app_configuration.DEFAULT_CONFIG)
+        self.assertIs(main.user_data_dir, app_configuration.user_data_dir)
+        self.assertIs(main.read_attachment, app_helpers.read_attachment)
+        self.assertIs(main.prepare_source_workspace, app_helpers.prepare_source_workspace)
+        self.assertIs(main.main, app_startup.main)
 
     def test_custom_checkbox_is_reexported_from_main(self):
         self.assertIs(main.PurpleCheckbox, ui_components.PurpleCheckbox)

@@ -1,4 +1,6 @@
 ## 4.3.1
+- Из `main.py` вынесены конфигурация и постоянные пути (`app_configuration.py`), общие HTTP/файловые помощники и подготовка workspace (`app_helpers.py`), а также запуск/подтверждение обновлений и runtime self-test (`app_startup.py`).
+- Совместимость `from main import ...` сохранена через явные реэкспорты; добавлены тесты привязки и комплектования EXE.
 - Из `main.py` вынесены конструктор приложения, сборка страниц UI, палитры и темы, тесты подключений Ollama/онлайн, а также операции жизненного цикла окна.
 - Созданы `app_initialization_interface.py`, `app_lifecycle_interface.py`, `model_settings_interface.py`, `ui_pages_interface.py` и `ui_theme_interface.py`; `save_resource_settings` перенесён в `settings_interface.py`.
 - `ISHApp` сохранён как совместимый класс-фасад с прежним публичным API через наследование модулей.
