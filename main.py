@@ -139,7 +139,7 @@ from self_improvement import (
 )
 
 # Updates, voice input/output, desktop control and online research.
-from temporary_storage import configure_temporary_storage, get_temp_directory
+from temporary_storage import configure_temporary_storage, get_temp_directory, resolve_container_root
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
     cleanup_old_application_copies,
@@ -327,7 +327,20 @@ def prepare_source_workspace() -> Path:
         os.environ["ISH_PROJECT_DIR"] = str(source_root)
         os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
         return source_root
-    source_root = DATA_DIR / f"source_project_{APP_VERSION}"
+    container_root = resolve_container_root(
+        config=load_json(CONFIG_PATH, {}),
+        config_path=CONFIG_PATH,
+        running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+        source_root=Path(__file__).resolve().parent,
+    )
+    source_root = container_root / "Workspaces" / f"source_project_{APP_VERSION}"
+    legacy_workspace = DATA_DIR / f"source_project_{APP_VERSION}"
+    if not source_root.exists() and legacy_workspace.is_dir():
+        source_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(legacy_workspace, source_root, symlinks=True)
+        if (source_root / "main.py").is_file():
+            shutil.rmtree(legacy_workspace, ignore_errors=True)
+    source_root.parent.mkdir(parents=True, exist_ok=True)
     if not (source_root / "main.py").exists():
         bundled_files = [
             "main.py", "temporary_storage.py", "windows_control.py", "voice_assistant.py", "voice_manager.py", "auto_memory.py", "intelligent_memory.py", "backup_manager.py", "backup_cloud.py", "context_engine.py", "improvement_delivery.py", "github_pr.py",
@@ -2397,8 +2410,9 @@ class ISHApp:
         current_run_label = str(current_run_path if getattr(sys, "frozen", False) else current_run_path.parent)
         target_exe_label = str(Path(initial_install_dir).expanduser().resolve() / "App" / "ISH.exe")
         updates_path_label = str(Path(initial_install_dir).expanduser().resolve() / "Updates")
+        temp_path_label = str(Path(initial_install_dir).expanduser().resolve() / "Temp")
         self.actual_run_path_var = tk.StringVar(
-            value=f"Фактически запущена: {current_run_label}\nНовая папка App: {target_exe_label}\nПредложения: {updates_path_label}"
+            value=f"Фактически запущена: {current_run_label}\nНовая папка App: {target_exe_label}\nПредложения: {updates_path_label}\nВременные файлы: {temp_path_label}"
         )
         ttk.Label(updates, textvariable=self.actual_run_path_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(4, 2))
         self.auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_update_check", True)))
@@ -6958,7 +6972,7 @@ class ISHApp:
         if hasattr(self, "actual_run_path_var"):
             current_run = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
             self.actual_run_path_var.set(
-                f"Фактически запущена: {current_run}\nНовая папка App: {layout['app'] / 'ISH.exe'}\nПредложения: {layout['updates']}"
+                f"Фактически запущена: {current_run}\nНовая папка App: {layout['app'] / 'ISH.exe'}\nПредложения: {layout['updates']}\nВременные файлы: {layout['root'] / 'Temp'}"
             )
         atomic_json_save(CONFIG_PATH, self.config)
         self.update_status_var.set(
@@ -6986,6 +7000,12 @@ class ISHApp:
                 raise ValueError("Папка Updates оказалась внутри текущей установки. Выбери соседнюю папку-контейнер, чтобы обновлятор не удалил предложения.")
             ensure_install_dir_writable(layout["updates"])
             destination = ensure_install_dir_writable(layout["app"])
+            configure_temporary_storage(
+                config={**self.config, "install_root_dir": str(root)},
+                config_path=CONFIG_PATH,
+                running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+                source_root=Path(__file__).resolve().parent,
+            )
 
             if not getattr(sys, "frozen", False):
                 self.config["install_root_dir"] = str(root)
@@ -7047,7 +7067,7 @@ class ISHApp:
                     parent_pid=os.getpid(),
                     log_path=DATA_DIR / "update.log",
                     expected_version=APP_VERSION,
-                    receipt_path=DATA_DIR / "update_confirmation.json",
+                    receipt_path=get_temp_directory("updates") / "update_confirmation.json",
                     staged_verified=True,
                 )
             except Exception:
@@ -7552,6 +7572,11 @@ def migrate_staged_exe_on_first_launch() -> bool:
         saved_config["install_dir"] = str(target_dir)
         saved_config["install_dir_user_selected"] = True
         atomic_json_save(CONFIG_PATH, saved_config)
+        configure_temporary_storage(
+            config=saved_config,
+            config_path=CONFIG_PATH,
+            running_path=running_exe,
+        )
 
         # This process is the staged EXE. The helper waits for it to exit, then
         # atomically replaces target_exe and launches the verified new process.
@@ -7688,7 +7713,7 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
         return
 
     # If the helper rolled back, it leaves a failed receipt for the restored app.
-    failure_receipt = DATA_DIR / "update_confirmation.json"
+    failure_receipt = get_temp_directory("updates") / "update_confirmation.json"
     previous = load_json(failure_receipt, {})
     if isinstance(previous, dict) and previous.get("confirmed") is False:
         try:
