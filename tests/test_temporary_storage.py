@@ -69,6 +69,19 @@ class TemporaryStorageTests(unittest.TestCase):
         self.assertEqual(Path(tempfile.gettempdir()), configured)
         self.assertEqual(Path(os.environ["TEMP"]), configured)
 
+    def test_get_temp_directory_honors_new_config_even_when_environment_is_old(self):
+        first = self.root / "OldContainer"
+        second = self.root / "NewContainer"
+        configure_temporary_storage({"install_root_dir": str(first)})
+
+        new_directory = get_temp_directory(
+            "download",
+            config={"install_root_dir": str(second)},
+        )
+
+        self.assertEqual(new_directory, (second / "Temp" / "download").resolve())
+        self.assertEqual(Path(os.environ["TEMP"]), (second / "Temp").resolve())
+
     def test_category_directory_stays_below_container_temp(self):
         container = self.root / "Container"
         configure_temporary_storage({"install_root_dir": str(container)})
@@ -79,12 +92,12 @@ class TemporaryStorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             get_temp_directory("../outside")
         with self.assertRaises(ValueError):
-            get_temp_directory(r"..\\outside")
+            get_temp_directory(r"..\outside")
 
     def test_unavailable_container_fails_instead_of_using_system_temp(self):
         blocked_file = self.root / "not_a_directory"
         blocked_file.write_text("block", encoding="utf-8")
-        with self.assertRaisesRegex(OSError, "Системная папка TEMP не будет использоваться"):
+        with self.assertRaisesRegex(OSError, "Системная папка TEMP не используется"):
             configure_temporary_storage({"install_root_dir": str(blocked_file / "Container")})
 
 
