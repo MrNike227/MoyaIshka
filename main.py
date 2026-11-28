@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+# Standard library
 import base64
 import ctypes
 import json
@@ -17,76 +18,166 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
 import time
+import tkinter as tk
 import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-import tkinter as tk
 from typing import Any
 
+# Lightweight test entry point: avoid importing the desktop application in Sandbox mode.
 if __name__ == "__main__" and len(sys.argv) >= 4 and sys.argv[1] == "--run-proposal-tests":
     from improvement_testing import run_proposal_tests_cli
     raise SystemExit(run_proposal_tests_cli(sys.argv[2], sys.argv[3]))
 
-from avatar_widget import AvatarWindow
-from auto_memory import extract_memory_candidate
-from intelligent_memory import (
-    MEMORY_CONTEXT_END, MEMORY_CONTEXT_START, add_or_update_memory,
-    edit_memory_entry as edit_memory_record, merge_memory_data,
-    normalize_memory_metadata, select_memory_records,
-)
-from backup_manager import (
-    create_backup, maybe_create_daily_backup, restore_backup, inspect_backup,
-    copy_verified_backups,
-)
-from backup_cloud import (
-    BackupEncryptionError, decrypt_backup_file, encrypt_backup_file, sha256_file as backup_sha256_file,
-)
-from supabase_backup import (
-    MAX_SUPABASE_FILE_BYTES, SupabaseBackupClient, SupabaseBackupError,
-)
-from plugin_manager import PluginManager
-from self_improvement import (editable_project_files, editable_test_files, related_test_path, build_model_source_context, build_multi_file_repair_context, apply_patch_with_backup, apply_unified_diff, apply_multi_file_unified_diff, split_multi_file_unified_diff, generate_validated_multi_file_unified_diff, extract_unified_diff, generate_validated_unified_diff, parse_improvement_suggestions, project_dir, MAX_SELF_IMPROVEMENT_CONTEXT_CHARS)
-from module_dependency_analyzer import analyze_module_dependencies, build_dependency_context, format_dependency_report, build_project_architecture_index, format_project_architecture_index
-from background_developer import run_background_development
-from improvement_delivery import (default_install_root, resolve_install_layout, ensure_install_layout, resolve_updates_directory, save_change_bundle, save_multi_change_bundle, build_improvement_chat_context, save_improvement_suggestions, save_chat_improvement_idea, load_chat_improvement_ideas)
-from improvement_testing import test_change_bundle
-from windows_sandbox import get_windows_sandbox_status, record_windows_sandbox_install, request_windows_sandbox_install, wait_for_install_result
-from github_pr import (GitHubProposalError, create_draft_pull_request, create_draft_pull_request_from_bundle, find_matching_tested_proposal_bundle)
-from updater import check_latest_release, download_verified_update
-from updater_helper import (
-    ensure_install_dir_writable, install_from_source, launch_windows_replacement, launch_windows_directory_replacement, validate_app_directory, sha256_file,
-    resolve_install_dir, user_install_dir, scan_application_copies, delete_application_copy,
-)
-from voice_assistant import listen_once, speak_text, unload_piper_voice
-from voice_manager import (
-    VOICE_CATALOG, delete_voice, download_voice, installed_voice_ids, is_voice_installed,
-    voice_label, voice_paths,
-)
-from windows_control import handle_voice_command, launch_app, open_known_folder
-from web_research import ResearchError, ResearchLibrary, format_research_digest, search_and_fetch
-# Cloud vault encryption is a core application dependency. Keep these imports explicit
-# so PyInstaller's static analysis sees the exact cryptography modules used at runtime.
+# Required encryption dependency; keep imports explicit for PyInstaller analysis.
 from cryptography import __version__ as CRYPTOGRAPHY_VERSION
 from cryptography.exceptions import InvalidTag as _CryptoInvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _CryptoAESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt as _CryptoScrypt
 
-from cloud_sync import (
-    CloudSyncError, SupabaseCloudClient, decrypt_vault, encrypt_vault, snapshot_digest,
-    load_protected_session, save_protected_session, delete_protected_session,
-)
-from google_drive_sync import GoogleDriveError, GoogleDriveVaultClient, backup_file_md5
-from resource_governor import ResourceGovernor
+# Core desktop interface, memory and plugin services.
+from avatar_widget import AvatarWindow
+from auto_memory import extract_memory_candidate
 from context_engine import trim_conversation_context
+from intelligent_memory import (
+    MEMORY_CONTEXT_END,
+    MEMORY_CONTEXT_START,
+    add_or_update_memory,
+    edit_memory_entry as edit_memory_record,
+    merge_memory_data,
+    normalize_memory_metadata,
+    select_memory_records,
+)
+from plugin_manager import PluginManager
+from resource_governor import ResourceGovernor
+
+# Backup and cloud storage integrations.
+from backup_cloud import (
+    BackupEncryptionError,
+    decrypt_backup_file,
+    encrypt_backup_file,
+    sha256_file as backup_sha256_file,
+)
+from backup_manager import (
+    copy_verified_backups,
+    create_backup,
+    inspect_backup,
+    maybe_create_daily_backup,
+    restore_backup,
+)
+from cloud_sync import (
+    CloudSyncError,
+    SupabaseCloudClient,
+    decrypt_vault,
+    delete_protected_session,
+    encrypt_vault,
+    load_protected_session,
+    save_protected_session,
+    snapshot_digest,
+)
+from google_drive_sync import (
+    GoogleDriveError,
+    GoogleDriveVaultClient,
+    backup_file_md5,
+)
+from supabase_backup import (
+    MAX_SUPABASE_FILE_BYTES,
+    SupabaseBackupClient,
+    SupabaseBackupError,
+)
+
+# Self-development, dependency analysis and safe proposal delivery.
+from background_developer import run_background_development
+from github_pr import (
+    GitHubProposalError,
+    create_draft_pull_request,
+    create_draft_pull_request_from_bundle,
+    find_matching_tested_proposal_bundle,
+)
+from improvement_delivery import (
+    build_improvement_chat_context,
+    default_install_root,
+    ensure_install_layout,
+    load_chat_improvement_ideas,
+    resolve_install_layout,
+    resolve_updates_directory,
+    save_change_bundle,
+    save_chat_improvement_idea,
+    save_improvement_suggestions,
+    save_multi_change_bundle,
+)
+from improvement_testing import test_change_bundle
+from module_dependency_analyzer import (
+    analyze_module_dependencies,
+    build_dependency_context,
+    build_project_architecture_index,
+    format_dependency_report,
+    format_project_architecture_index,
+)
+from self_improvement import (
+    MAX_SELF_IMPROVEMENT_CONTEXT_CHARS,
+    apply_multi_file_unified_diff,
+    apply_patch_with_backup,
+    apply_unified_diff,
+    build_model_source_context,
+    build_multi_file_repair_context,
+    editable_project_files,
+    editable_test_files,
+    extract_unified_diff,
+    generate_validated_multi_file_unified_diff,
+    generate_validated_unified_diff,
+    parse_improvement_suggestions,
+    project_dir,
+    related_test_path,
+    split_multi_file_unified_diff,
+)
+
+# Updates, voice input/output, desktop control and online research.
+from updater import check_latest_release, download_verified_update
+from updater_helper import (
+    delete_application_copy,
+    ensure_install_dir_writable,
+    install_from_source,
+    launch_windows_directory_replacement,
+    launch_windows_replacement,
+    resolve_install_dir,
+    scan_application_copies,
+    sha256_file,
+    user_install_dir,
+    validate_app_directory,
+)
+from voice_assistant import listen_once, speak_text, unload_piper_voice
+from voice_manager import (
+    VOICE_CATALOG,
+    delete_voice,
+    download_voice,
+    installed_voice_ids,
+    is_voice_installed,
+    voice_label,
+    voice_paths,
+)
+from web_research import (
+    ResearchError,
+    ResearchLibrary,
+    format_research_digest,
+    search_and_fetch,
+)
+from windows_control import handle_voice_command, launch_app, open_known_folder
+from windows_sandbox import (
+    get_windows_sandbox_status,
+    record_windows_sandbox_install,
+    request_windows_sandbox_install,
+    wait_for_install_result,
+)
 
 APP_NAME = "ISH"
-APP_VERSION = "4.3.0"
+APP_VERSION = "4.3.1"
 MAX_CONTEXT_MESSAGES = 32
 MAX_ATTACHMENT_CHARS = 40_000
 
@@ -250,7 +341,6 @@ def prepare_source_workspace() -> Path:
             if src.is_file():
                 dest = source_root / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                import shutil
                 shutil.copy2(src, dest)
     os.environ["ISH_PROJECT_DIR"] = str(source_root)
     os.environ["MOYA_PROJECT_DIR"] = str(source_root)  # legacy plugin compatibility
@@ -6901,7 +6991,6 @@ class ISHApp:
             ):
                 return
 
-            import shutil
             staging_root = DATA_DIR / "update_staging"
             staging_root.mkdir(parents=True, exist_ok=True)
             staged_dir = staging_root / f"ISH_install_{uuid.uuid4().hex}"
@@ -6942,7 +7031,6 @@ class ISHApp:
             self.on_close()
         except Exception as exc:
             if staged_dir is not None and staged_dir.exists():
-                import shutil
                 shutil.rmtree(staged_dir, ignore_errors=True)
             messagebox.showerror(
                 "Установка",
