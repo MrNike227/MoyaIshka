@@ -72,6 +72,7 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "github_pr.py;source_project" ^
   --add-data "updater.py;source_project" ^
   --add-data "updater_helper.py;source_project" ^
+  --add-data "temporary_storage.py;source_project" ^
   --add-data "web_research.py;source_project" ^
   --add-data "cloud_sync.py;source_project" ^
   --add-data "google_drive_sync.py;source_project" ^
