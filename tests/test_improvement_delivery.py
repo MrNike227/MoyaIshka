@@ -98,6 +98,27 @@ class ImprovementDeliveryTests(unittest.TestCase):
                 save_change_bundle(*args, "pkg/.git/config.py", "x=1", "x=2", "patch")
 
 
+    def test_change_bundle_rejects_windows_reserved_and_invalid_path_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            for invalid in ("CON.py", "pkg/NUL.py", "bad?.py", "trailing./module.py", "folder /module.py"):
+                with self.subTest(path=invalid):
+                    with self.assertRaises(ValueError):
+                        save_change_bundle(updates, invalid, "VALUE = 1\\n", "VALUE = 2\\n", "diff")
+
+    def test_multi_file_bundle_rejects_case_insensitive_duplicate_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updates = Path(temp) / "Updates"
+            with self.assertRaisesRegex(ValueError, "отличается только регистром"):
+                save_multi_change_bundle(
+                    updates,
+                    [
+                        {"path": "feature.py", "original_text": "VALUE = 1\\n", "updated_text": "VALUE = 2\\n"},
+                        {"path": "FEATURE.py", "original_text": "VALUE = 1\\n", "updated_text": "VALUE = 3\\n"},
+                    ],
+                    "--- a/feature.py\\n+++ b/feature.py\\n@@ -1 +1 @@\\n-VALUE = 1\\n+VALUE = 2\\n",
+                )
+
     def test_suggestions_are_saved_and_available_to_chat(self):
         with tempfile.TemporaryDirectory() as temp:
             suggestions = [{
