@@ -314,7 +314,7 @@ def create_backup(
     scratch_root = get_temp_directory("backups")
     work = Path(tempfile.mkdtemp(prefix=".backup-work-", dir=str(scratch_root)))
     temp_archive = scratch_root / f".{filename}.{uuid.uuid4().hex}.tmp.zip"
-    published_partial = folder / f".{filename}.{uuid.uuid4().hex}.partial"
+    published_partial = folder / f".{filename}.{uuid.uuid4().hex}.partial.zip"
     try:
         for name in ROOT_FILES:
             source = root / name
