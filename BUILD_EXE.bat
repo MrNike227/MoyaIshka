@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Building ISH 4.3.0 onedir Windows application...
+echo Building ISH 4.3.1 onedir Windows application...
 
 if defined MOYA_BUILD_PYTHON (
   set "PY=%MOYA_BUILD_PYTHON%"
@@ -95,7 +95,7 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "PLAN_4.2.7_RU.md;source_project" ^
   --add-data "PLAN_4.2.8_RU.md;source_project" ^
   --add-data "PLAN_4.2.9_RU.md;source_project" ^
-  --add-data "PLAN_4.3.0_RU.md;source_project" ^
+  --add-data "PLAN_4.3.1_RU.md;source_project" ^
   --add-data "LICENSE.txt;source_project" ^
   --add-data "THIRD_PARTY_NOTICES.md;source_project" ^
   --add-data "licenses/GPL-3.0.txt;source_project/licenses" ^
@@ -129,9 +129,9 @@ if errorlevel 1 goto dependency_failed
 if errorlevel 1 goto crypto_bundle_failed
 %PY% -c "import shutil; shutil.copy2('TEST_WINDOWS10.ps1', 'dist/ISH/TEST_WINDOWS10.ps1')"
 if errorlevel 1 goto failed
-%PY% package_onedir.py --dist-dir "dist\ISH" --output "dist\ISH.zip" --version 4.3.0
+%PY% package_onedir.py --dist-dir "dist\ISH" --output "dist\ISH.zip" --version 4.3.1
 if errorlevel 1 goto failed
-%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/ISH', '4.3.0')"
+%PY% -c "from updater_helper import validate_app_directory; validate_app_directory('dist/ISH', '4.3.1')"
 if errorlevel 1 goto failed
 
 echo.
