@@ -325,6 +325,15 @@ def wait_for_install_result(result_path: str | Path, timeout_seconds: int = 900)
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
                     raise RuntimeError("Windows вернула результат установки в неизвестном формате.")
+                # A completed UAC request no longer needs its result JSON. Keep
+                # timed-out folders for diagnosis, but remove successful/failed
+                # completed work folders from the container Temp tree.
+                try:
+                    setup_root = get_temp_directory("sandbox_setup").resolve()
+                    if path.parent.parent.resolve() == setup_root and path.parent.name.startswith("moya_sandbox_setup_"):
+                        shutil.rmtree(path.parent, ignore_errors=True)
+                except OSError:
+                    pass
                 return payload
             except (OSError, ValueError):
                 pass
