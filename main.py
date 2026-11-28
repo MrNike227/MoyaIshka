@@ -7766,10 +7766,20 @@ def _packaged_import_self_test() -> int:
 def main() -> None:
     try:
         startup_config = load_json(CONFIG_PATH, {})
+        if not isinstance(startup_config, dict):
+            startup_config = {}
+        running_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
+        if not str(startup_config.get("install_root_dir", "")).strip():
+            startup_config["install_root_dir"] = str(
+                default_install_root(
+                    legacy_install_dir=startup_config.get("install_dir"),
+                    running_exe=running_exe,
+                )
+            )
         configure_temporary_storage(
-            config=startup_config if isinstance(startup_config, dict) else {},
+            config=startup_config,
             config_path=CONFIG_PATH,
-            running_path=Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None,
+            running_path=running_exe,
             source_root=Path(__file__).resolve().parent,
         )
     except Exception as exc:
