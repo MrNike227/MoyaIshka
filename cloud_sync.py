@@ -7,12 +7,13 @@ vault passphrase are protected with Windows DPAPI on Windows installations.
 """
 from __future__ import annotations
 
+# Standard library
 import base64
 import ctypes
+import hashlib
 import json
 import os
 import secrets
-import hashlib
 import time
 import zlib
 from datetime import datetime, timezone
