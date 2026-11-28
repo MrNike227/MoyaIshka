@@ -667,7 +667,7 @@ def scan_application_copies(
             try:
                 for sibling in resolved_anchor.iterdir():
                     sibling_name = sibling.name.casefold()
-                    if sibling.is_dir() and (
+                    if sibling.is_dir() and not _is_reparse_point(sibling) and (
                         sibling_name.startswith("app.previous.")
                         or sibling_name.startswith("ish.previous.")
                         or sibling_name.startswith("moyaishka.previous.")
@@ -706,9 +706,9 @@ def scan_application_copies(
     }
     for raw_root, max_depth in roots:
         try:
-            root = raw_root.resolve()
-            if not root.is_dir() or _is_reparse_point(root):
+            if not raw_root.is_dir() or _is_reparse_point(raw_root):
                 continue
+            root = raw_root.resolve()
             root_key = os.path.normcase(str(root))
             if root_key in scanned_roots:
                 continue
@@ -764,8 +764,8 @@ def scan_application_copies(
 def delete_application_copy(path: str | Path, current_exe: str | Path | None = None) -> None:
     """Delete an obsolete app copy, including its onedir folder when verified safe."""
     raw_target = Path(path).expanduser()
-    if _is_reparse_point(raw_target):
-        raise ValueError("Нельзя удалять ссылку или reparse point вместо обычного файла.")
+    if _is_reparse_point(raw_target) or _is_reparse_point(raw_target.parent):
+        raise ValueError("Нельзя удалять файл или папку через ссылку/reparse point.")
     target = raw_target.resolve(strict=True)
     if not target.is_file() or not _looks_like_ish_executable(target.name):
         raise ValueError("Выбранный файл не распознан как исполняемый файл ISH/MoyaIshka.")
