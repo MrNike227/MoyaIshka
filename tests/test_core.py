@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as main_module
+from conversation_store import Store as ConversationStore
 from main import DEFAULT_CONFIG, ISHApp, Store, extract_openai_content, read_attachment
 
 
@@ -23,6 +24,9 @@ class StoreTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+
+    def test_main_keeps_store_compatibility_alias(self):
+        self.assertIs(Store, ConversationStore)
 
     def test_create_message_and_title(self):
         chat_id = self.store.create_conversation()

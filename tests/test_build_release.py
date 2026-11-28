@@ -21,6 +21,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('--add-data "module_dependency_analyzer.py;source_project"', build)
         self.assertIn('--add-data "github_pr.py;source_project"', build)
         self.assertIn('--add-data "temporary_storage.py;source_project"', build)
+        self.assertIn('--add-data "conversation_store.py;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.6_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.7_RU.md;source_project"', build)
         self.assertIn('--add-data "PLAN_4.2.8_RU.md;source_project"', build)
@@ -32,6 +33,8 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_module_dependency_analyzer_is_in_packaged_source_workspace(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("from module_dependency_analyzer import (", source)
+        self.assertIn("from conversation_store import Store, load_json, now_iso, pretty_time", source)
+        self.assertNotIn("class Store:", source)
         dependency_imports = source.split("from module_dependency_analyzer import (", 1)[1].split(")", 1)[0]
         self.assertIn("analyze_module_dependencies", dependency_imports)
         self.assertIn('"module_dependency_analyzer.py"', source)
@@ -41,6 +44,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"PLAN_4.3.1_RU.md"', source)
         self.assertIn('"tests/test_multi_file_diff_recovery.py"', source)
         self.assertIn('"temporary_storage.py"', source)
+        self.assertIn('"conversation_store.py"', source)
         self.assertIn('"tests/test_temporary_storage.py"', source)
         self.assertIn('"Workspaces"', source)
 

@@ -88,7 +88,7 @@ class ImportOrganizationTests(unittest.TestCase):
 
         expected = (
             [
-                "avatar_widget", "auto_memory", "context_engine",
+                "avatar_widget", "auto_memory", "context_engine", "conversation_store",
                 "intelligent_memory", "plugin_manager", "resource_governor",
             ],
             [
