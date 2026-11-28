@@ -298,6 +298,31 @@ X
         updated = apply_multi_file_unified_diff(sources, patch)
         self.assertEqual(updated["plugin_manager.py"], "A\nX\nB\nC\nD2\nE\n")
 
+    def test_case_insensitive_duplicate_paths_are_rejected(self):
+        patch = """--- a/plugin_manager.py
++++ b/plugin_manager.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- a/PLUGIN_MANAGER.py
++++ b/PLUGIN_MANAGER.py
+@@ -1 +1 @@
+-OTHER = 1
++OTHER = 2
+"""
+        with self.assertRaisesRegex(ValueError, "отличаются только регистром"):
+            split_multi_file_unified_diff(patch)
+
+    def test_windows_reserved_device_paths_are_rejected(self):
+        for path in ("CON.py", "pkg/NUL.py", "bad?.py", "trailing./module.py"):
+            with self.subTest(path=path):
+                patch = (
+                    f"--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n"
+                    "-VALUE = 1\\n+VALUE = 2\\n"
+                )
+                with self.assertRaises(ValueError):
+                    split_multi_file_unified_diff(patch)
+
     def test_exact_duplicate_hunk_is_deduplicated(self):
         patch = """--- a/plugin_manager.py
 +++ b/plugin_manager.py
