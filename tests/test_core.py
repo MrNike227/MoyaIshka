@@ -88,8 +88,9 @@ class ParsingTests(unittest.TestCase):
 
     def test_chat_improvement_ideas_are_connected_to_send_and_analysis(self):
         source = Path(chat_interface.__file__).read_text(encoding="utf-8")
+        selfdev_source = Path(__import__("self_improvement_interface").__file__).read_text(encoding="utf-8")
         self.assertIn("save_chat_improvement_idea(", source)
-        self.assertIn("load_chat_improvement_ideas(", source)
+        self.assertIn("load_chat_improvement_ideas(", selfdev_source)
         self.assertIn("идея сохранена для самоанализа", source)
 
     def test_attachment_size_is_limited(self):
