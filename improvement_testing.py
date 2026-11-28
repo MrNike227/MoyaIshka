@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from improvement_delivery import _safe_relative_path, _write_text_atomic
+from improvement_delivery import _is_test_module_path, _safe_relative_path, _write_text_atomic
 from self_improvement import split_multi_file_unified_diff, apply_multi_file_unified_diff
 from windows_sandbox import _is_reparse_point
 
@@ -363,9 +363,9 @@ def test_change_bundle(
             f"Состав diff не совпадает с манифестом. Нет в diff: {missing}; лишние: {extra}."
         )
     if len(seen) > 1:
-        has_source = any(not path.startswith("tests/") for path in seen)
+        has_source = any(not _is_test_module_path(path) for path in seen)
         has_test = any(
-            path.startswith("tests/") and Path(path).name.startswith("test_")
+            _is_test_module_path(path)
             for path in seen
         )
         if not has_source or not has_test:
