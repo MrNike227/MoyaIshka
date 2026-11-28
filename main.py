@@ -756,8 +756,12 @@ class ISHApp:
         self.avatar: AvatarWindow | None = None
         self.plugin_manager = PluginManager(DATA_DIR, enabled_python=bool(self.config.get("plugins_enabled", False)))
         self.pending_patch_text = ""
+        self.pending_patch_target = ""
         self.improvement_suggestions: list[dict[str, str]] = []
         self.improvement_analysis_busy = False
+        self.improvement_patch_busy = False
+        self.background_development_busy = False
+        self.improvement_test_busy = False
         self.improvement_suggestions_target = ""
         self._auto_improvement_after_id: str | None = None
         self.staged_update_path: Path | None = None
@@ -3791,13 +3795,26 @@ class ISHApp:
                     self.improve_status_var.set(str(payload))
                     messagebox.showerror("Фоновая разработка", str(payload))
                 elif event == "patch_generated":
-                    self.pending_patch_text = str(payload)
+                    self.improvement_patch_busy = False
+                    if isinstance(payload, (tuple, list)) and len(payload) >= 2:
+                        patch_value, patch_target = payload[0], str(payload[1])
+                    else:
+                        patch_value, patch_target = payload, str(self.improve_target_var.get()).strip()
+                    self.pending_patch_text = str(patch_value)
+                    self.pending_patch_target = patch_target
                     self.patch_preview.delete("1.0", "end")
                     self.patch_preview.insert("1.0", self.pending_patch_text)
-                    self.improve_status_var.set("Diff подготовлен. Проверь его перед применением.")
+                    if patch_target and patch_target != str(self.improve_target_var.get()).strip():
+                        self.improve_status_var.set(
+                            f"Diff подготовлен для {patch_target}. Выбери этот файл перед сохранением или отправкой."
+                        )
+                    else:
+                        self.improve_status_var.set("Diff подготовлен. Проверь его перед применением.")
                 elif event == "patch_error":
-                    self.improve_status_var.set(str(payload))
-                    messagebox.showerror("Саморазвитие", str(payload))
+                    self.improvement_patch_busy = False
+                    error_value = payload[0] if isinstance(payload, (tuple, list)) and payload else payload
+                    self.improve_status_var.set(str(error_value))
+                    messagebox.showerror("Саморазвитие", str(error_value))
                 elif event == "windows_sandbox_status":
                     self.windows_sandbox_status_busy = False
                     ready = bool(payload.get("ready"))
@@ -3848,6 +3865,7 @@ class ISHApp:
                         self.sandbox_install_button.configure(state="normal")
                     messagebox.showerror("Установка Windows Sandbox", str(payload))
                 elif event == "improvement_test_completed":
+                    self.improvement_test_busy = False
                     sandboxed = bool(payload.get("sandboxed"))
                     if sandboxed:
                         result_label = "УСПЕШНО" if payload.get("passed") else "ОШИБКИ"
@@ -3873,6 +3891,7 @@ class ISHApp:
                             f"Отчёт: {payload.get('report_path', '')}",
                         )
                 elif event == "improvement_test_error":
+                    self.improvement_test_busy = False
                     self.improve_status_var.set(f"Проверка предложения не пройдена: {payload}")
                     messagebox.showerror("Проверка саморазвития", str(payload))
                 elif event == "improvement_pr_created":
@@ -5869,7 +5888,11 @@ class ISHApp:
         if (
             self.busy
             or bool(getattr(self, "research_busy", False))
+            or bool(getattr(self, "voice_busy", False))
             or bool(getattr(self, "improvement_analysis_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_test_busy", False))
         ):
             self.improve_status_var.set("Автоанализ отложен: программа занята. Повторю проверку позже.")
             self._auto_improvement_after_id = self.root.after(
@@ -6084,8 +6107,16 @@ class ISHApp:
             if not silent:
                 messagebox.showerror("Саморазвитие", error)
             return
-        if bool(getattr(self, "improvement_analysis_busy", False)):
-            self.improve_status_var.set("Самоанализ уже выполняется. Дождись завершения текущей проверки.")
+        if (
+            bool(getattr(self, "improvement_analysis_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_test_busy", False))
+            or self.busy
+            or bool(getattr(self, "research_busy", False))
+            or bool(getattr(self, "voice_busy", False))
+        ):
+            self.improve_status_var.set("Саморазвитие отложено: уже выполняется другая задача. Повтори попытку после её завершения.")
             return
         try:
             source = target.read_text(encoding="utf-8")
@@ -6208,8 +6239,16 @@ class ISHApp:
 
     def run_background_developer(self) -> None:
         """Run one opt-in architect/coder/tester/reviewer cycle without editing live sources."""
-        if bool(getattr(self, "background_development_busy", False)):
-            self.improve_status_var.set("Фоновый разработчик уже выполняет задачу.")
+        if (
+            bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_analysis_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or bool(getattr(self, "improvement_test_busy", False))
+            or self.busy
+            or bool(getattr(self, "research_busy", False))
+            or bool(getattr(self, "voice_busy", False))
+        ):
+            self.improve_status_var.set("Фоновая разработка не запущена: заверши текущий чат, поиск или задачу саморазвития и повтори запуск.")
             return
         relative = self.improve_target_var.get().strip()
         if not relative:
@@ -6239,8 +6278,13 @@ class ISHApp:
         threading.Thread(target=worker, daemon=True, name="MoyaBackgroundDeveloper").start()
 
     def prepare_selected_improvement(self) -> None:
-        if bool(getattr(self, "improvement_analysis_busy", False)):
-            messagebox.showwarning("Саморазвитие", "Дождись завершения текущего самоанализа.")
+        if (
+            bool(getattr(self, "improvement_analysis_busy", False))
+            or bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or bool(getattr(self, "improvement_test_busy", False))
+        ):
+            messagebox.showwarning("Саморазвитие", "Дождись завершения текущей задачи саморазвития.")
             return
         analyzed_target = str(getattr(self, "improvement_suggestions_target", "") or "")
         selected_target = self.improve_target_var.get().strip()
@@ -6295,6 +6339,17 @@ class ISHApp:
         if not relative or not prompt_text:
             messagebox.showwarning("Саморазвитие", "Выбери файл проекта и опиши желаемое улучшение.")
             return
+        if (
+            bool(getattr(self, "improvement_analysis_busy", False))
+            or bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or bool(getattr(self, "improvement_test_busy", False))
+            or self.busy
+            or bool(getattr(self, "research_busy", False))
+            or bool(getattr(self, "voice_busy", False))
+        ):
+            messagebox.showwarning("Саморазвитие", "Сначала дождись завершения текущей задачи.")
+            return
         project = project_dir()
         try:
             sources = self._proposal_sources_for_target(project, relative)
@@ -6330,8 +6385,10 @@ class ISHApp:
             messagebox.showerror("Саморазвитие", f"Не удалось подготовить исходники и тесты: {exc}")
             return
 
-        self.improve_status_var.set("Модель готовит многофайловый diff: код + соответствующие тесты…")
+        self.improvement_patch_busy = True
         self.pending_patch_text = ""
+        self.pending_patch_target = relative
+        self.improve_status_var.set("Модель готовит многофайловый diff: код + соответствующие тесты…")
         self.patch_preview.delete("1.0", "end")
         system = (
             "Ты опытный Python-разработчик и тест-инженер. Подготовь один объединённый unified diff ровно "
@@ -6380,9 +6437,9 @@ class ISHApp:
                     ),
                     max_attempts=3,
                 )
-                self.events.put(("patch_generated", diff))
+                self.events.put(("patch_generated", (diff, relative)))
             except Exception as exc:
-                self.events.put(("patch_error", str(exc)))
+                self.events.put(("patch_error", (str(exc), relative)))
         threading.Thread(target=worker, daemon=True).start()
 
     def save_patch_file(self) -> None:
@@ -6402,6 +6459,13 @@ class ISHApp:
     def save_improvement_bundle(self) -> None:
         patch = self.patch_preview.get("1.0", "end").strip()
         relative = self.improve_target_var.get().strip()
+        generated_target = str(getattr(self, "pending_patch_target", "") or "").strip()
+        if generated_target and generated_target != relative:
+            messagebox.showwarning(
+                "Саморазвитие",
+                f"Этот Diff был подготовлен для {generated_target}. Выбери исходный файл перед сохранением.",
+            )
+            return
         if not patch:
             messagebox.showwarning("Саморазвитие", "Сначала подготовь diff.")
             return
@@ -6486,6 +6550,15 @@ class ISHApp:
 
     def test_latest_improvement_bundle(self) -> None:
         """Test the latest proposal in a disposable copy, never in the installed app."""
+        if (
+            bool(getattr(self, "improvement_test_busy", False))
+            or bool(getattr(self, "background_development_busy", False))
+            or bool(getattr(self, "improvement_patch_busy", False))
+            or self.busy
+            or bool(getattr(self, "research_busy", False))
+        ):
+            messagebox.showwarning("Проверка саморазвития", "Сначала заверши текущую задачу саморазвития или чата.")
+            return
         try:
             proposals = self._updates_directory() / "Proposals"
             if not proposals.is_dir():
@@ -6512,6 +6585,7 @@ class ISHApp:
                 "Если Windows Sandbox не готова, тестирование будет заблокировано. Продолжить?",
             ):
                 return
+            self.improvement_test_busy = True
             self.improve_status_var.set(f"Подготавливаю изолированную Windows Sandbox для предложения {bundle.name}…")
             source_root = project_dir()
             def worker() -> None:
@@ -6551,6 +6625,13 @@ class ISHApp:
     def create_improvement_pr(self) -> None:
         patch = self.patch_preview.get("1.0", "end").strip()
         relative = self.improve_target_var.get().strip()
+        generated_target = str(getattr(self, "pending_patch_target", "") or "").strip()
+        if generated_target and generated_target != relative:
+            messagebox.showwarning(
+                "GitHub Draft PR",
+                f"Этот Diff был подготовлен для {generated_target}. Выбери исходный файл перед отправкой.",
+            )
+            return
         if not patch:
             messagebox.showwarning("GitHub Draft PR", "Сначала подготовь diff.")
             return
@@ -6645,6 +6726,13 @@ class ISHApp:
     def apply_improvement(self) -> None:
         patch = self.patch_preview.get("1.0", "end").strip()
         relative = self.improve_target_var.get().strip()
+        generated_target = str(getattr(self, "pending_patch_target", "") or "").strip()
+        if generated_target and generated_target != relative:
+            messagebox.showwarning(
+                "Саморазвитие",
+                f"Этот Diff был подготовлен для {generated_target}. Выбери исходный файл перед применением.",
+            )
+            return
         if not patch:
             messagebox.showwarning("Саморазвитие", "Сначала подготовь или загрузи diff.")
             return
