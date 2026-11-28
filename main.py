@@ -7047,7 +7047,11 @@ class ISHApp:
             ):
                 return
 
-            staging_root = get_temp_directory("update_staging", config=self.config, config_path=CONFIG_PATH)
+            staging_root = get_temp_directory(
+                "update_staging",
+                config={**self.config, "install_root_dir": str(root)},
+                config_path=CONFIG_PATH,
+            )
             staging_root.mkdir(parents=True, exist_ok=True)
             staged_dir = staging_root / f"ISH_install_{uuid.uuid4().hex}"
             shutil.copytree(current_dir, staged_dir)
