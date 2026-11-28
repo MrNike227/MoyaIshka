@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from backup_manager import (
     BackupError, copy_verified_backups, create_backup, inspect_backup,
@@ -61,7 +62,7 @@ class BackupManagerTests(unittest.TestCase):
         source.write_bytes(b"verified database snapshot")
 
         cross_device = OSError(errno.EXDEV, "cross-device link")
-        with unittest.mock.patch("backup_manager.os.replace", side_effect=cross_device):
+        with patch("backup_manager.os.replace", side_effect=cross_device):
             _move_restore_path(source, destination)
 
         self.assertEqual(destination.read_bytes(), b"verified database snapshot")
