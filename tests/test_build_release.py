@@ -378,10 +378,11 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_context_engine_is_bundled_and_used(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
+        workspace_source = (ROOT / "app_helpers.py").read_text(encoding="utf-8")
         self.assertIn("select_memory_records", source)
         self.assertIn("MEMORY_CONTEXT_START", source)
         self.assertIn("trim_conversation_context", source)
-        self.assertIn("context_engine.py", source)
+        self.assertIn("context_engine.py", workspace_source)
         self.assertTrue((ROOT / "tests" / "test_context_engine.py").is_file())
 
     def test_workflow_parses_folder_updater_with_windows_powershell(self):
@@ -705,7 +706,7 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_self_improvement_generates_and_tests_matching_multi_file_changes(self):
         main = (ROOT / "self_improvement_interface.py").read_text(encoding="utf-8")
-        workspace = (ROOT / "main.py").read_text(encoding="utf-8")
+        workspace = (ROOT / "app_helpers.py").read_text(encoding="utf-8")
         source = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
         delivery = (ROOT / "improvement_delivery.py").read_text(encoding="utf-8")
         testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
