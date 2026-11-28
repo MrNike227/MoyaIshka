@@ -340,8 +340,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("scroll_canvas.create_window", windows_page)
         self.assertIn('"<Configure>"', windows_page)
         self.assertIn("self.windows_page_canvas = scroll_canvas", windows_page)
-        self.assertIn("if isinstance(ancestor, tk.Canvas):", source)
-        self.assertIn("ancestor.yview_scroll(steps, \"units\")", source)
+        chat_source = (ROOT / "chat_interface.py").read_text(encoding="utf-8")
+        self.assertIn("if isinstance(ancestor, tk.Canvas):", chat_source)
+        self.assertIn("ancestor.yview_scroll(steps, \"units\")", chat_source)
 
     def test_native_dependency_audit_is_required_before_release(self):
         audit = (ROOT / "verify_pe_dependencies.py").read_text(encoding="utf-8")
