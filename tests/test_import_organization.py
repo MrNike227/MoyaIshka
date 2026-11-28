@@ -100,8 +100,8 @@ class ImportOrganizationTests(unittest.TestCase):
                 "improvement_testing", "module_dependency_analyzer", "self_improvement",
             ],
             [
-                "updater", "updater_helper", "voice_assistant", "voice_manager",
-                "web_research", "windows_control", "windows_sandbox",
+                "temporary_storage", "updater", "updater_helper", "voice_assistant",
+                "voice_manager", "web_research", "windows_control", "windows_sandbox",
             ],
         )
         local_nodes = [
