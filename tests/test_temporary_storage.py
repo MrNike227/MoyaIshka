@@ -49,6 +49,12 @@ class TemporaryStorageTests(unittest.TestCase):
         resolved = resolve_container_root({"install_dir": str(app)})
         self.assertEqual(resolved, container.resolve())
 
+    def test_legacy_install_folder_resolves_to_new_default_container(self):
+        programs = self.root / "Programs"
+        legacy_install = programs / "ISH"
+        resolved = resolve_container_root({"install_dir": str(legacy_install)})
+        self.assertEqual(resolved, (programs / "ISH_Container").resolve())
+
     def test_running_executable_resolves_app_container_without_config(self):
         container = self.root / "ISH_Container"
         executable = container / "App" / "ISH.exe"
