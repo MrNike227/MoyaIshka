@@ -277,7 +277,7 @@ class PatchTests(unittest.TestCase):
             captured.update(url=url, payload=payload, timeout=timeout)
             return {"message": {"content": "diff"}}
 
-        with patch.object(main, "post_json", side_effect=fake_post_json):
+        with patch.object(__import__("chat_interface"), "post_json", side_effect=fake_post_json):
             result = main.ISHApp._call_ollama(
                 {
                     "ollama_url": "http://localhost:11434",
