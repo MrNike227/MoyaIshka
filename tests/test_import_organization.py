@@ -150,6 +150,7 @@ class ImportOrganizationTests(unittest.TestCase):
             "windows_control.py": {"ctypes", "ctypes.wintypes"},
             "windows_sandbox.py": {"winreg"},
             "updater_helper.py": set(),
+            "plugin_interface.py": {"webbrowser"},
         }
         for path, allowed in expected_local.items():
             with self.subTest(path=path):
