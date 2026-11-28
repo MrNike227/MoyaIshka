@@ -386,7 +386,7 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
             f"Состав diff не совпадает с манифестом. Нет в diff: {missing}; лишние: {extra}."
         )
     if len(seen) > 1:
-        has_source = any(not path.startswith("tests/") for path in seen)
+        has_source = any(not (path.split("/", 1)[0].casefold() == "tests" and Path(path).name.casefold().startswith("test_")) for path in seen)
         has_test = any(path.split("/", 1)[0].casefold() == "tests" and Path(path).name.casefold().startswith("test_") for path in seen)
         if not has_source or not has_test:
             raise GitHubProposalError("Многофайловый пакет должен содержать программу и тест tests/test_*.py.")
