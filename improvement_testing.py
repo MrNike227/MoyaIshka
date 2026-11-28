@@ -586,7 +586,6 @@ def _is_windows_sandbox_guest() -> bool:
 def run_proposal_tests_cli(project_root: str | Path, result_path: str | Path) -> int:
     """Entry point used by the frozen EXE guest runner to test source files from the mapped project."""
     import importlib.machinery
-    import os
     import unittest
 
     if not _is_windows_sandbox_guest():
