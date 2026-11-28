@@ -19,6 +19,7 @@ from self_improvement import (
     generate_validated_multi_file_unified_diff,
     related_test_path,
     parse_improvement_suggestions,
+    _contains_reparse_component,
 )
 
 ModelCall = Callable[[list[dict[str, str]], int], str]
@@ -36,8 +37,8 @@ def _safe_target(project_root: Path, relative_path: str) -> tuple[Path, str]:
         raise ValueError("Фоновая разработка разрешена только для Python-модулей проекта вне служебных папок.")
     root = project_root.expanduser().resolve()
     candidate = root / relative
-    if candidate.is_symlink():
-        raise ValueError("Выбранный файл не должен быть символической ссылкой.")
+    if _contains_reparse_component(candidate, root):
+        raise ValueError("Выбранный файл или один из родительских каталогов является ссылкой/reparse point.")
     target = candidate.resolve()
     if root not in target.parents or not target.is_file():
         raise ValueError("Выбранный файл отсутствует, является ссылкой или находится вне проекта.")
@@ -259,7 +260,7 @@ def run_background_development(
             continue
         test_candidate = root / Path(*Path(candidate).parts)
         try:
-            if test_candidate.is_symlink() or not test_candidate.is_file() or root not in test_candidate.resolve().parents:
+            if _contains_reparse_component(test_candidate, root) or not test_candidate.is_file() or root not in test_candidate.resolve().parents:
                 continue
             related_test_paths.append(candidate)
             sources[candidate] = test_candidate.read_text(encoding="utf-8")
