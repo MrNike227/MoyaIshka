@@ -141,6 +141,7 @@ from self_improvement import (
 # Updates, voice input/output, desktop control and online research.
 from updater import check_latest_release, download_verified_update
 from updater_helper import (
+    cleanup_old_application_copies,
     delete_application_copy,
     ensure_install_dir_writable,
     install_from_source,
@@ -275,6 +276,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "plugins_enabled": False,
     "update_repo": "MrNike227/MoyaIshka",
     "auto_update_check": True,
+    "auto_cleanup_old_versions": True,
     "install_dir": "",
     "install_dir_user_selected": False,
     "install_root_dir": "",
@@ -2394,6 +2396,15 @@ class ISHApp:
         ttk.Label(updates, textvariable=self.actual_run_path_var, style="MutedPanel.TLabel", wraplength=880).pack(anchor="w", pady=(4, 2))
         self.auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_update_check", True)))
         self._make_checkbox(updates, "Проверять наличие обновлений при запуске", self.auto_update_var, background_key="panel").pack(anchor="w", pady=4)
+        self.auto_cleanup_old_versions_var = tk.BooleanVar(
+            value=bool(self.config.get("auto_cleanup_old_versions", True))
+        )
+        self._make_checkbox(
+            updates,
+            "После успешного обновления автоматически искать и удалять старые копии ISH и MoyaIshka",
+            self.auto_cleanup_old_versions_var,
+            background_key="panel",
+        ).pack(anchor="w", pady=4)
         update_buttons = ttk.Frame(updates, style="Panel.TFrame")
         update_buttons.pack(fill="x")
         ttk.Button(update_buttons, text="Проверить обновления", command=self.check_for_updates).pack(side="left")
@@ -4344,6 +4355,7 @@ class ISHApp:
             "plugins_enabled": bool(self.python_plugins_var.get()) if hasattr(self, "python_plugins_var") else bool(self.config.get("plugins_enabled", False)),
             "update_repo": self.update_repo_var.get().strip() if hasattr(self, "update_repo_var") else str(self.config.get("update_repo", "")),
             "auto_update_check": bool(self.auto_update_var.get()) if hasattr(self, "auto_update_var") else bool(self.config.get("auto_update_check", True)),
+            "auto_cleanup_old_versions": bool(self.auto_cleanup_old_versions_var.get()) if hasattr(self, "auto_cleanup_old_versions_var") else bool(self.config.get("auto_cleanup_old_versions", True)),
             "install_dir": self.update_install_dir_var.get().strip() if hasattr(self, "update_install_dir_var") else str(self.config.get("install_dir", "")),
             "cloud_url": self.cloud_url_var.get().strip() if hasattr(self, "cloud_url_var") else str(self.config.get("cloud_url", "")),
             "cloud_publishable_key": self.cloud_publishable_key_var.get().strip() if hasattr(self, "cloud_publishable_key_var") else str(self.config.get("cloud_publishable_key", "")),
@@ -4430,6 +4442,8 @@ class ISHApp:
             self.update_repo_var.set(str(self.config.get("update_repo", "")))
         if hasattr(self, "auto_update_var"):
             self.auto_update_var.set(bool(self.config.get("auto_update_check", True)))
+        if hasattr(self, "auto_cleanup_old_versions_var"):
+            self.auto_cleanup_old_versions_var.set(bool(self.config.get("auto_cleanup_old_versions", True)))
         if hasattr(self, "web_enabled_var"):
             self.web_enabled_var.set(bool(self.config.get("web_search_enabled", True)))
             self.auto_search_current_var.set(bool(self.config.get("auto_search_current", False)))
@@ -6914,6 +6928,9 @@ class ISHApp:
             return
         self.config["update_repo"] = self.update_repo_var.get().strip()
         self.config["auto_update_check"] = bool(self.auto_update_var.get())
+        self.config["auto_cleanup_old_versions"] = bool(
+            self.auto_cleanup_old_versions_var.get()
+        )
         self.config["install_root_dir"] = str(root)
         self.config["updates_dir"] = str(layout["updates"])
         # The running legacy copy stays in place for this session; subsequent
@@ -7039,7 +7056,7 @@ class ISHApp:
 
     def search_old_versions(self) -> None:
         """Scan common user folders for obsolete/staged ISH executables."""
-        self.update_status_var.set("Ищу старые копии в папках установки, Загрузки и Рабочего стола…")
+        self.update_status_var.set("Ищу старые копии ISH и MoyaIshka в известных папках пользователя и рядом с установкой…")
 
         def worker() -> None:
             try:
@@ -7073,7 +7090,7 @@ class ISHApp:
         ).pack(anchor="w")
         ttk.Label(
             outer,
-            text="Текущая запущенная копия исключена. Выбери файлы, которые больше не нужны. Поиск выполняется только в известных папках пользователя, а не по всему диску.",
+            text="Текущая запущенная копия исключена. Поиск охватывает ISH и MoyaIshka, включая старые папки установки. Удаление выполняется только для распознанных копий в известных местах, весь диск не сканируется.",
             style="MutedPanel.TLabel",
             wraplength=880,
         ).pack(anchor="w", pady=(4, 12))
@@ -7142,7 +7159,7 @@ class ISHApp:
                 preview += f"\n… и ещё {len(paths) - 8} файлов"
             if not messagebox.askyesno(
                 "Подтверждение удаления",
-                "Удалить выбранные копии Моей ИИшки? Это удалит только отмеченные EXE-файлы, папки с настройками и историю чатов останутся нетронутыми.\n\n" + preview,
+                "Удалить выбранные копии Моей ИИшки? Для распознанной onedir-установки будет удалена вся папка программы; отдельный EXE удаляется без посторонних файлов. Настройки и история чатов остаются нетронутыми.\n\n" + preview,
                 parent=window,
             ):
                 return
@@ -7600,6 +7617,41 @@ def _handle_update_confirmation_args(root: tk.Tk) -> None:
                     f"ISH версии {version} успешно установлена и запущена.\n\nФактический путь:\n{detail}",
                     parent=root,
                 )
+
+                # Search for legacy copies only after the updater has received a
+                # valid startup receipt. A short delay lets its final backup cleanup
+                # finish before this process inspects neighboring install folders.
+                def start_old_version_cleanup() -> None:
+                    def worker() -> None:
+                        settings = load_json(CONFIG_PATH, DEFAULT_CONFIG)
+                        if not isinstance(settings, dict) or not bool(
+                            settings.get("auto_cleanup_old_versions", True)
+                        ):
+                            return
+                        try:
+                            result = cleanup_old_application_copies(
+                                configured_install_dir=settings.get("install_dir") or Path(sys.executable).resolve().parent,
+                                current_exe=Path(sys.executable).resolve(),
+                                data_dir=DATA_DIR,
+                            )
+                            with (DATA_DIR / "update.log").open("a", encoding="utf-8") as log:
+                                log.write(
+                                    f"{datetime.now().astimezone().isoformat()}  "
+                                    f"Автоочистка старых копий: найдено {result['found']}, "
+                                    f"удалено {result['deleted']}, ошибок {len(result['errors'])}.\\n"
+                                )
+                                for error in result["errors"][:10]:
+                                    log.write(f"  {error}\\n")
+                        except Exception as exc:
+                            try:
+                                with (DATA_DIR / "update.log").open("a", encoding="utf-8") as log:
+                                    log.write(f"{datetime.now().astimezone().isoformat()}  Ошибка автоочистки: {exc}\\n")
+                            except OSError:
+                                pass
+
+                    threading.Thread(target=worker, daemon=True).start()
+
+                root.after(5000, start_old_version_cleanup)
             else:
                 messagebox.showerror(
                     "Проверка обновления не пройдена",
