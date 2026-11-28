@@ -196,8 +196,19 @@ def _run_windows_sandbox(
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ProposalTestError(f"Отчёт песочницы повреждён: {exc}") from exc
-    if not isinstance(report, dict) or report.get("schema") != 1 or report.get("sandboxed") is not True:
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != 1
+        or report.get("sandboxed") is not True
+    ):
         raise ProposalTestError("Отчёт не подтвердил выполнение внутри Windows Sandbox.")
+    if (
+        completion.get("sandboxed") is not True
+        or completion.get("guest_exit_code") != report.get("tests_exit_code")
+    ):
+        raise ProposalTestError(
+            "Квитанция завершения Windows Sandbox не совпадает с кодом возврата тестового процесса."
+        )
     report["guest_completion"] = completion
     report["runner_path"] = str(runner)
     return report
@@ -408,7 +419,14 @@ def test_change_bundle(
                 "writable_host_mapping": sandbox_report.get("writable_host_mapping", "dedicated_results_only" if sandbox_report.get("sandboxed") else "test_executor"),
             },
         )
-        report["passed"] = report["passed"] and report["tests_run"] > 0 and report["tests_exit_code"] == 0
+        report["passed"] = (
+            report["passed"]
+            and report["tests_run"] > 0
+            and report["tests_exit_code"] == 0
+            and report["failures"] == 0
+            and report["errors"] == 0
+            and (sandbox_executor is not None or report["sandboxed"] is True)
+        )
         if not report["tests_run"] and not report["error"]:
             report["error"] = "В копии проекта не найдено ни одного unit-теста."
         if sandbox_report.get("workspace_must_be_kept"):
