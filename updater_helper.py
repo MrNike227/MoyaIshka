@@ -8,6 +8,7 @@ never asked to replace itself while it is locked by Windows.
 from __future__ import annotations
 
 # Standard library
+import datetime as _dt
 import hashlib
 import json
 import os
