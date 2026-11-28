@@ -107,7 +107,7 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_application_identity_is_ish(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('APP_NAME = "ISH"', source)
-        self.assertIn("class ISHApp:", source)
+        self.assertIn("class ISHApp(", source)
         self.assertNotIn("class MoyaIshkaApp:", source)
         self.assertIn('"assistant_name": "ISH"', source)
 
@@ -379,7 +379,7 @@ class ReleaseBuildTests(unittest.TestCase):
         )
 
     def test_migration_persists_app_target_only_after_user_confirmation(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
         start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
         end = source.index("    def search_old_versions(self) -> None:", start)
         method = source[start:end]
@@ -397,7 +397,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("target_dir=destination", method)
 
     def test_update_download_dialog_selects_container_root_and_targets_app(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "chat_interface.py").read_text(encoding="utf-8")
         start = source.index('                elif event == "update_downloaded":')
         end = source.index('                elif event == "old_versions_scan_complete":', start)
         handler = source[start:end]
@@ -415,7 +415,7 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertEqual(layout["app"].name, "App")
             self.assertEqual(layout["updates"].name, "Updates")
             self.assertEqual(layout["app"].parent, layout["updates"].parent)
-            source = (ROOT / "main.py").read_text(encoding="utf-8")
+            source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
             start = source.index("    def _selected_install_dir(self) -> Path:")
             end = source.index("    def open_install_folder", start)
             selector = source[start:end]
@@ -425,9 +425,10 @@ class ReleaseBuildTests(unittest.TestCase):
     def test_container_layout_is_created_on_application_start_and_before_update(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("install_layout = ensure_install_layout(self.config[\"install_root_dir\"])", source)
-        start = source.index("    def _start_staged_update_install(")
-        end = source.index("    def _install_staged_update_from_source", start)
-        installer = source[start:end]
+        update_source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
+        start = update_source.index("    def _start_staged_update_install(")
+        end = update_source.index("    def _install_staged_update_from_source", start)
+        installer = update_source[start:end]
         self.assertIn("layout = ensure_install_layout(container_root)", installer)
         self.assertIn('self.config["updates_dir"] = str(layout["updates"])', installer)
         self.assertIn('self.config["install_dir"] = str(destination)', installer)
@@ -441,9 +442,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn(r'Name: "{app}\..\Uninstall"', installer)
 
     def test_staged_update_modes_share_one_install_implementation(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
         start = source.index("    def _start_staged_update_install(")
-        end = source.index("    # ---------- memory ----------", start)
+        end = source.index("    def _selected_install_dir(", start)
         installer = source[start:end]
         self.assertEqual(installer.count("launch_windows_directory_replacement("), 1)
         self.assertIn("staged_verified=True", installer)
@@ -451,7 +452,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("self._start_staged_update_install(install_dir, source_process=False)", installer)
 
     def test_move_current_build_copies_complete_onedir_folder(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
         start = source.index("    def install_current_build_to_selected_folder(self) -> None:")
         end = source.index("    def search_old_versions(self) -> None:", start)
         method = source[start:end]
@@ -607,7 +608,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("ISH.zip.sha256", workflow)
 
     def test_self_improvement_retries_when_model_does_not_return_diff(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = (ROOT / "self_improvement_interface.py").read_text(encoding="utf-8")
         helper = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
         self.assertIn("generate_validated_multi_file_unified_diff", source)
         self.assertIn("generate_validated_multi_file_unified_diff(", source)
@@ -681,7 +682,8 @@ class ReleaseBuildTests(unittest.TestCase):
 
 
     def test_self_improvement_generates_and_tests_matching_multi_file_changes(self):
-        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        main = (ROOT / "self_improvement_interface.py").read_text(encoding="utf-8")
+        workspace = (ROOT / "main.py").read_text(encoding="utf-8")
         source = (ROOT / "self_improvement.py").read_text(encoding="utf-8")
         delivery = (ROOT / "improvement_delivery.py").read_text(encoding="utf-8")
         testing = (ROOT / "improvement_testing.py").read_text(encoding="utf-8")
@@ -697,12 +699,19 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('if base_hash == "absent":', testing)
         self.assertIn("apply_multi_file_unified_diff", testing)
         self.assertIn("save_multi_change_bundle", background)
-        self.assertIn("tests/test_background_developer.py", main)
+        self.assertIn('"tests/test_background_developer.py"', workspace)
 
     def test_multi_file_patch_is_never_applied_directly_or_sent_as_single_file_pr(self):
-        main = (ROOT / "main.py").read_text(encoding="utf-8")
-        apply_method = main[main.index("    def apply_improvement("):main.index("    # Updates are obtained", main.index("    def apply_improvement("))]
-        pr_method = main[main.index("    def create_improvement_pr("):main.index("    def open_updates_folder(", main.index("    def create_improvement_pr("))]
+        update_source = (ROOT / "update_interface.py").read_text(encoding="utf-8")
+        selfdev_source = (ROOT / "self_improvement_interface.py").read_text(encoding="utf-8")
+        apply_start = update_source.index("    def apply_improvement(")
+        apply_end = update_source.index("\n    def ", apply_start + 1)
+        apply_method = update_source[apply_start:apply_end]
+        pr_start = selfdev_source.index("    def create_improvement_pr(")
+        pr_end = selfdev_source.find("\n    def ", pr_start + 1)
+        if pr_end < 0:
+            pr_end = len(selfdev_source)
+        pr_method = selfdev_source[pr_start:pr_end]
         self.assertIn("split_multi_file_unified_diff", apply_method)
         self.assertIn("нельзя применить пакет к исходникам напрямую", apply_method.lower())
         self.assertIn("split_multi_file_unified_diff", pr_method)
@@ -711,9 +720,6 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("create_draft_pull_request_from_bundle", pr_method)
         self.assertIn("if multi_file and bundle_dir is not None:", pr_method)
         self.assertIn("create_draft_pull_request(", pr_method)
-
-
-
 
     def test_inno_setup_installer_version_is_431(self):
         installer = (ROOT / "INSTALLER.iss").read_text(encoding="utf-8")
