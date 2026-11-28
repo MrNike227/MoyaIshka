@@ -32,6 +32,17 @@ def _normalized_text_sha256(data: bytes) -> str:
     return _sha256(text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
 
 
+def _path_has_reparse_component(path: Path) -> bool:
+    """Check the supplied path and each existing parent without resolving links first."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if os.path.lexists(current) and _is_reparse_point(current):
+            return True
+    return False
+
+
 def _ignore_sandbox_copy(directory: str, names: list[str]) -> set[str]:
     """Omit secrets, user state, links and bulky local artifacts from the guest copy."""
     ignored_dirs = {
@@ -225,12 +236,17 @@ def test_change_bundle(
 
     New Python test files are supported. Production callers never execute generated code on the host.
     """
-    bundle = Path(bundle_dir).expanduser().resolve()
-    source = Path(source_root).expanduser().resolve()
+    bundle_input = Path(bundle_dir).expanduser()
+    source_input = Path(source_root).expanduser()
+    if _path_has_reparse_component(bundle_input) or _path_has_reparse_component(source_input):
+        raise ProposalTestError("Путь к предложению или исходникам содержит ссылку/reparse point.")
+    try:
+        bundle = bundle_input.resolve(strict=True)
+        source = source_input.resolve(strict=True)
+    except OSError as exc:
+        raise ProposalTestError(f"Не удалось открыть папку предложения или исходников: {exc}") from exc
     if not bundle.is_dir() or not source.is_dir():
         raise ProposalTestError("Не найдена папка предложения или исходников.")
-    if _is_reparse_point(bundle) or _is_reparse_point(source):
-        raise ProposalTestError("Папка предложения или исходников содержит недопустимую ссылку.")
 
     manifest_path = bundle / "manifest.json"
     if _is_reparse_point(manifest_path) or not manifest_path.is_file() or manifest_path.stat().st_size > 128 * 1024:
