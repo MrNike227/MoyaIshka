@@ -198,7 +198,7 @@ def save_multi_change_bundle(
         })
 
     if len(normalized) > 1:
-        has_source = any(not item["path"].startswith("tests/") for item in normalized)
+        has_source = any(not _is_test_module_path(item["path"]) for item in normalized)
         has_test = any(_is_test_module_path(item["path"]) for item in normalized)
         if not has_source or not has_test:
             raise ValueError(
