@@ -265,7 +265,7 @@ def _safe_bundle_path(value: str) -> str:
     forbidden = {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"}
     if any(part.casefold() in forbidden for part in parts):
         raise GitHubProposalError(f"Изменение служебного или сборочного пути запрещено: {path}.")
-    if parts[0].casefold() == "tests" and not parts[-1].startswith("test_"):
+    if parts[0].casefold() == "tests" and not parts[-1].casefold().startswith("test_"):
         raise GitHubProposalError("В папке tests разрешено изменять только tests/test_*.py.")
     return path
 
@@ -370,7 +370,7 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
             raise GitHubProposalError(f"Файл {path} содержит некорректный Python: {exc}") from exc
         base_hash = entry.get("base_sha256")
         if base_hash == "absent":
-            if not (path.startswith("tests/") and Path(path).name.startswith("test_")):
+            if not (path.split("/", 1)[0].casefold() == "tests" and Path(path).name.casefold().startswith("test_")):
                 raise GitHubProposalError("Новые файлы разрешено добавлять только как tests/test_*.py.")
         elif not isinstance(base_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", base_hash):
             raise GitHubProposalError(f"В манифесте указан неверный base SHA-256: {path}.")
@@ -387,7 +387,7 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         )
     if len(seen) > 1:
         has_source = any(not path.startswith("tests/") for path in seen)
-        has_test = any(path.startswith("tests/") and Path(path).name.startswith("test_") for path in seen)
+        has_test = any(path.split("/", 1)[0].casefold() == "tests" and Path(path).name.casefold().startswith("test_") for path in seen)
         if not has_source or not has_test:
             raise GitHubProposalError("Многофайловый пакет должен содержать программу и тест tests/test_*.py.")
 
