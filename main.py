@@ -6976,8 +6976,8 @@ class ISHApp:
             )
         atomic_json_save(CONFIG_PATH, self.config)
         self.update_status_var.set(
-            f"Контейнер сохранён. Новые установки и обновления будут направляться в {layout['app']}. "
-            f"Предложения и резервные материалы: {layout['updates']}. Текущая запущенная копия пока не перемещалась."
+            f"Контейнер сохранён. App: {layout['app']}; Updates: {layout['updates']}; временные файлы: {layout['root'] / 'Temp'}. "
+            f"Текущая запущенная копия пока не перемещалась."
         )
         if show_message:
             messagebox.showinfo(
@@ -7331,7 +7331,7 @@ class ISHApp:
                 parent_pid=os.getpid(),
                 log_path=DATA_DIR / "update.log",
                 expected_version=self.staged_update_version,
-                receipt_path=DATA_DIR / "update_confirmation.json",
+                receipt_path=get_temp_directory("updates") / "update_confirmation.json",
                 # download_verified_update validates the extracted manifest;
                 # the detached helper validates it again immediately before install.
                 staged_verified=True,
@@ -7586,7 +7586,7 @@ def migrate_staged_exe_on_first_launch() -> bool:
             parent_pid=os.getpid(),
             log_path=DATA_DIR / "update.log",
             expected_version=APP_VERSION,
-            receipt_path=DATA_DIR / "update_confirmation.json",
+            receipt_path=get_temp_directory("updates") / "update_confirmation.json",
         )
         return True
     except Exception as exc:
