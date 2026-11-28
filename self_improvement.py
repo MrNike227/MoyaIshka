@@ -604,11 +604,24 @@ def _validated_multi_diff_path(old_header: str, new_header: str) -> str:
     new_path = _normalize_diff_path(new_header)
     if new_path == "/dev/null":
         raise ValueError("Удаление файлов в предложении саморазвития запрещено.")
+    raw_parts = new_path.split("/")
     relative = PurePosixPath(new_path)
+    windows_reserved_names = {
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    invalid_windows_component = any(
+        part.endswith((" ", "."))
+        or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+        or part.split(".", 1)[0].casefold() in windows_reserved_names
+        for part in raw_parts
+    )
     if (
         not new_path
         or relative.is_absolute()
-        or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or invalid_windows_component
         or any(part.casefold() in {".git", ".github", "__pycache__", ".venv", "venv", "build", "dist"} for part in relative.parts)
         or relative.suffix.casefold() != ".py"
         or len(new_path) > 240
@@ -646,6 +659,15 @@ def _parse_multi_file_unified_diff(candidate: str) -> dict[str, str]:
 
     def add_section(old_header: str, new_header: str, section_lines: list[str]) -> None:
         path = _validated_multi_diff_path(old_header, new_header)
+        case_collision = next(
+            (existing for existing in result if existing.casefold() == path.casefold() and existing != path),
+            None,
+        )
+        if case_collision is not None:
+            raise ValueError(
+                f"Пути {case_collision!r} и {path!r} отличаются только регистром; "
+                "Windows считает их одним файлом."
+            )
         hunks = _extract_multi_diff_hunks(section_lines)
         if not hunks:
             raise ValueError(f"Для файла {path} не найден корректный блок изменений @@.")
@@ -853,6 +875,16 @@ def apply_multi_file_unified_diff(
     allow_subset: bool = False,
 ) -> dict[str, str]:
     """Apply a multi-file diff to exact in-memory originals; reject no-op file sections."""
+    source_paths = list(sources)
+    folded_paths: dict[str, str] = {}
+    for source_path in source_paths:
+        folded = str(source_path).casefold()
+        if folded in folded_paths and folded_paths[folded] != source_path:
+            raise ValueError(
+                f"Пути {folded_paths[folded]!r} и {source_path!r} отличаются только регистром; "
+                "Windows считает их одним файлом."
+            )
+        folded_paths[folded] = str(source_path)
     patches = split_multi_file_unified_diff(patch_text)
     missing = sorted(set(sources) - set(patches))
     extra = sorted(set(patches) - set(sources))
