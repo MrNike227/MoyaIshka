@@ -122,6 +122,7 @@ def configure_temporary_storage(
     except OSError as exc:
         raise OSError(
             f"Не удалось подготовить временную папку контейнера: {temp_root}. "
+            f"Причина: {exc}. "
             "Проверь доступность диска и права на запись. Системная папка TEMP не используется."
         ) from exc
 
