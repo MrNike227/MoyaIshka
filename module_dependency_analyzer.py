@@ -118,7 +118,12 @@ def _static_dynamic_import(
         package_value = None
         if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
             package_value = node.args[1].value if isinstance(node.args[1].value, str) else None
-        package = str(package_value or (current_module.rpartition(".")[0]))
+        default_package = (
+            current_module
+            if PurePosixPath(relative_path).name == "__init__.py"
+            else current_module.rpartition(".")[0]
+        )
+        package = str(package_value or default_package)
         parts = package.split(".") if package else []
         level = len(raw_name) - len(raw_name.lstrip("."))
         if level > len(parts) + 1:
