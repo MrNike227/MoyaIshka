@@ -161,7 +161,7 @@ def get_temp_directory(
     if not category:
         return root
     name = str(category).strip()
-    if not name or name in {".", ".."} or "/" in name or "\\\\" in name or ":" in name or "\\x00" in name:
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or ":" in name or "\x00" in name:
         raise ValueError("Недопустимое имя временной папки.")
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
