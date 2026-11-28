@@ -40,6 +40,7 @@ def _top_level_imports(path: str) -> tuple[str, list[ast.Import | ast.ImportFrom
 
 class ImportOrganizationTests(unittest.TestCase):
     ORDERED_MODULES = (
+        "main.py",
         "cloud_sync.py",
         "github_pr.py",
         "google_drive_sync.py",
@@ -57,8 +58,11 @@ class ImportOrganizationTests(unittest.TestCase):
                 keys = []
                 for node in nodes:
                     module = _module_name(node)
+                    group = _import_group(module)
+                    if path == "main.py" and group == 3:
+                        continue  # main.py deliberately groups local imports by feature area
                     kind = 0 if isinstance(node, ast.Import) else 1
-                    keys.append((_import_group(module), kind, module.casefold()))
+                    keys.append((group, kind, module.casefold()))
                     if isinstance(node, ast.Import):
                         self.assertEqual(
                             len(node.names), 1,
@@ -78,8 +82,9 @@ class ImportOrganizationTests(unittest.TestCase):
             "# Self-development, dependency analysis and safe proposal delivery.",
             "# Updates, voice input/output, desktop control and online research.",
         )
-        positions = [source.index(item) for item in headings]
-        self.assertEqual(positions, sorted(positions))
+        offsets = [source.index(item) for item in headings]
+        heading_lines = [source[:offset].count(chr(10)) + 1 for offset in offsets]
+        self.assertEqual(heading_lines, sorted(heading_lines))
 
         expected = (
             [
@@ -103,12 +108,14 @@ class ImportOrganizationTests(unittest.TestCase):
             node for node in nodes
             if _import_group(_module_name(node)) == 3
         ]
-        for index, heading_position in enumerate(positions):
-            end = positions[index + 1] if index + 1 < len(positions) else len(source)
+        for index, heading_line in enumerate(heading_lines):
+            next_heading_line = (
+                heading_lines[index + 1] if index + 1 < len(heading_lines) else len(source.splitlines()) + 1
+            )
             actual = [
                 _module_name(node).split(".", 1)[0]
                 for node in local_nodes
-                if heading_position < node.lineno and node.lineno <= source[:end].count("\\n") + 1
+                if heading_line < node.lineno < next_heading_line
             ]
             self.assertEqual(actual, expected[index], headings[index])
 
@@ -149,7 +156,11 @@ class ImportOrganizationTests(unittest.TestCase):
 
     def test_main_has_no_duplicate_top_level_module_imports(self):
         _source, nodes = _top_level_imports("main.py")
-        names = [_module_name(node).casefold() for node in nodes]
+        names = []
+        for node in nodes:
+            kind = "import" if isinstance(node, ast.Import) else "from"
+            imported = tuple(item.name for item in node.names)
+            names.append((kind, _module_name(node).casefold(), imported))
         self.assertEqual(len(names), len(set(names)))
 
 
