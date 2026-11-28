@@ -153,9 +153,7 @@ def analyze_module_dependencies(
 
     path_to_module: dict[str, str] = {}
     module_to_path: dict[str, str] = {}
-    source_by_path: dict[str, str] = {}
-    tree_by_path: dict[str, ast.Module] = {}
-    for path, full_path in files:
+    for path, _full_path in files:
         module_name = _module_name(path)
         if not module_name:
             continue
@@ -163,22 +161,29 @@ def analyze_module_dependencies(
         # The first stable match wins if a project has both a module and a
         # package initializer with the same import name.
         module_to_path.setdefault(module_name, path)
-        try:
-            source = full_path.read_text(encoding="utf-8")
-            tree_by_path[path] = ast.parse(source, filename=path)
-            source_by_path[path] = source
-        except (OSError, UnicodeError, SyntaxError) as exc:
-            warnings.append(f"{path}: не удалось разобрать статические импорты ({type(exc).__name__}).")
 
     if relative not in path_to_module:
         raise ValueError("Выбранный модуль не удалось включить в карту Python-импортов.")
     target_module = path_to_module[relative]
 
-    edges: dict[str, set[str]] = {path: set() for path in tree_by_path}
-    imports_by_path: dict[str, set[str]] = {path: set() for path in tree_by_path}
+    # Parse one file at a time. Retaining every AST and source string until the
+    # graph is complete can consume several gigabytes on large projects.
+    edges: dict[str, set[str]] = {}
     imported_names_by_path: dict[str, set[str]] = defaultdict(set)
-    for path, tree in tree_by_path.items():
-        current_module = path_to_module[path]
+    parsed_paths: list[str] = []
+    for path, full_path in files:
+        current_module = path_to_module.get(path)
+        if not current_module:
+            continue
+        try:
+            source = full_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=path)
+        except (OSError, UnicodeError, SyntaxError) as exc:
+            warnings.append(f"{path}: не удалось разобрать статические импорты ({type(exc).__name__}).")
+            continue
+
+        parsed_paths.append(path)
+        module_edges: set[str] = set()
         for node in ast.walk(tree):
             candidates: set[str] = set()
             if isinstance(node, ast.Import):
@@ -216,8 +221,8 @@ def analyze_module_dependencies(
             for imported_module in candidates:
                 imported_path = module_to_path.get(imported_module)
                 if imported_path and imported_path != path:
-                    edges[path].add(imported_path)
-                    imports_by_path[path].add(imported_module)
+                    module_edges.add(imported_path)
+        edges[path] = module_edges
 
     reverse: dict[str, set[str]] = defaultdict(set)
     for source_path, destinations in edges.items():
@@ -245,7 +250,7 @@ def analyze_module_dependencies(
     transitive_dependents = [path for path in walk(relative, reverse) if not is_test_module(path)]
     affected_modules = sorted({relative, *direct_dependents, *transitive_dependents})
     tests = []
-    for path in sorted(tree_by_path):
+    for path in sorted(parsed_paths):
         parts = PurePosixPath(path).parts
         if not parts or parts[0].casefold() != "tests" or not PurePosixPath(path).name.startswith("test_"):
             continue
@@ -264,7 +269,7 @@ def analyze_module_dependencies(
     return {
         "target": relative,
         "target_module": target_module,
-        "scanned_files": len(tree_by_path),
+        "scanned_files": len(parsed_paths),
         "direct_dependencies": module_rows(direct_dependencies),
         "transitive_dependencies": module_rows(transitive_dependencies),
         "direct_dependents": module_rows(direct_dependents),
