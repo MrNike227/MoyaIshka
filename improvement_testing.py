@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from temporary_storage import get_temp_directory
 from improvement_delivery import _is_test_module_path, _safe_relative_path, _write_text_atomic
 from self_improvement import split_multi_file_unified_diff, apply_multi_file_unified_diff
 from windows_sandbox import _is_reparse_point
@@ -399,7 +400,7 @@ def test_change_bundle(
         "tests_run": 0, "failures": 0, "errors": 0, "stdout": "", "stderr": "",
         "error": "", "sandboxed": False, "sandbox": "Windows Sandbox",
     }
-    workspace = Path(tempfile.mkdtemp(prefix="moya_sandbox_test_"))
+    workspace = Path(tempfile.mkdtemp(prefix="moya_sandbox_test_", dir=str(get_temp_directory("self_development"))))
     keep_workspace = False
     try:
         readonly_root = workspace / "readonly"
