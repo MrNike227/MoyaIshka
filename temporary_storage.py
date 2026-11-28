@@ -125,11 +125,16 @@ def get_temp_root(
     source_root: str | Path | None = None,
 ) -> Path:
     """Return a writable container temp root, configuring it on first use."""
+    root = resolve_container_root(
+        config,
+        config_path=config_path,
+        running_path=running_path,
+        source_root=source_root,
+    )
+    desired = root / TEMP_FOLDER_NAME
     configured = os.environ.get("MOYA_TEMP_ROOT", "").strip()
-    if configured:
-        path = _expand_path(configured)
-        if path.is_dir() and not path.is_symlink():
-            return path
+    if configured and _expand_path(configured) == desired and desired.is_dir() and not desired.is_symlink():
+        return desired
     return configure_temporary_storage(
         config,
         config_path=config_path,
@@ -156,7 +161,7 @@ def get_temp_directory(
     if not category:
         return root
     name = str(category).strip()
-    if not name or name in {".", ".."} or any(char in name for char in ("/", "\\\\", ":", "\\x00")):
+    if not name or name in {".", ".."} or "/" in name or "\\\\" in name or ":" in name or "\\x00" in name:
         raise ValueError("Недопустимое имя временной папки.")
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
