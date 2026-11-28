@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 import uuid
 from pathlib import Path
@@ -34,6 +35,15 @@ def _read_config(config_path: str | Path | None) -> dict[str, Any]:
 
 def _expand_path(value: str | Path) -> Path:
     return Path(os.path.expandvars(str(value).strip())).expanduser().resolve()
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return True
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return path.is_symlink() or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
 def resolve_container_root(
@@ -104,8 +114,8 @@ def configure_temporary_storage(
     temp_root = root / TEMP_FOLDER_NAME
     try:
         temp_root.mkdir(parents=True, exist_ok=True)
-        if temp_root.is_symlink():
-            raise OSError("Папка временных файлов не может быть символической ссылкой.")
+        if _is_reparse_point(temp_root):
+            raise OSError("Папка временных файлов не может быть ссылкой или junction.")
         probe = temp_root / f".moya_temp_probe_{os.getpid()}_{uuid.uuid4().hex}"
         probe.write_bytes(b"ok")
         probe.unlink()
@@ -141,7 +151,7 @@ def get_temp_root(
     )
     desired = root / TEMP_FOLDER_NAME
     configured = os.environ.get("MOYA_TEMP_ROOT", "").strip()
-    if configured and _expand_path(configured) == desired and desired.is_dir() and not desired.is_symlink():
+    if configured and _expand_path(configured) == desired and desired.is_dir() and not _is_reparse_point(desired):
         return desired
     return configure_temporary_storage(
         config,
@@ -174,7 +184,7 @@ def get_temp_directory(
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     resolved = directory.resolve()
-    if root.resolve() not in resolved.parents or directory.is_symlink():
+    if root.resolve() not in resolved.parents or _is_reparse_point(directory):
         raise ValueError("Временная папка вышла за пределы контейнера.")
     return resolved
 
