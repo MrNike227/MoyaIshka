@@ -52,6 +52,18 @@ if exist "dist\ISH.zip.sha256" del /q "dist\ISH.zip.sha256"
   --add-data "main.py;source_project" ^
   --add-data "conversation_store.py;source_project" ^
   --add-data "secure_storage.py;source_project" ^
+  --add-data "app_runtime.py;source_project" ^
+  --add-data "backup_interface.py;source_project" ^
+  --add-data "chat_interface.py;source_project" ^
+  --add-data "cloud_interface.py;source_project" ^
+  --add-data "memory_interface.py;source_project" ^
+  --add-data "plugin_interface.py;source_project" ^
+  --add-data "research_interface.py;source_project" ^
+  --add-data "self_improvement_interface.py;source_project" ^
+  --add-data "settings_interface.py;source_project" ^
+  --add-data "ui_components.py;source_project" ^
+  --add-data "update_interface.py;source_project" ^
+  --add-data "voice_interface.py;source_project" ^
   --add-data "context_engine.py;source_project" ^
   --add-data "package_onedir.py;source_project" ^
   --add-data "TEST_WINDOWS10.ps1;source_project" ^

@@ -50,6 +50,18 @@ class ImportOrganizationTests(unittest.TestCase):
         "windows_sandbox.py",
         "voice_manager.py",
         "secure_storage.py",
+        "app_runtime.py",
+        "backup_interface.py",
+        "chat_interface.py",
+        "cloud_interface.py",
+        "memory_interface.py",
+        "plugin_interface.py",
+        "research_interface.py",
+        "self_improvement_interface.py",
+        "settings_interface.py",
+        "ui_components.py",
+        "update_interface.py",
+        "voice_interface.py",
     )
 
     def test_module_imports_are_grouped_by_dependency_type_and_sorted(self):
@@ -82,6 +94,7 @@ class ImportOrganizationTests(unittest.TestCase):
             "# Backup and cloud storage integrations.",
             "# Self-development, dependency analysis and safe proposal delivery.",
             "# Updates, voice input/output, desktop control and online research.",
+            "# ISHApp feature modules — extracted methods keep their API through mixins.",
         )
         offsets = [source.index(item) for item in headings]
         heading_lines = [source[:offset].count(chr(10)) + 1 for offset in offsets]
@@ -104,6 +117,7 @@ class ImportOrganizationTests(unittest.TestCase):
                 "temporary_storage", "updater", "updater_helper", "voice_assistant",
                 "voice_manager", "web_research", "windows_control", "windows_sandbox",
             ],
+            ["app_runtime","backup_interface","chat_interface","cloud_interface","memory_interface","plugin_interface","research_interface","self_improvement_interface","settings_interface","ui_components","update_interface","voice_interface"],
         )
         local_nodes = [
             node for node in nodes
