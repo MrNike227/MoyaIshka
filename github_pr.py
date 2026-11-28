@@ -49,7 +49,7 @@ def _api_request(
             "Accept": "application/vnd.github+json",
             "Authorization": "Bearer " + token,
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "ISH/4.2.9",
+            "User-Agent": "MoyaIshka self-development client",
             "Content-Type": "application/json",
         },
         method=method.upper(),
@@ -83,10 +83,22 @@ def _api_request(
 def _safe_repo_path(value: str) -> str:
     path = str(value or "").replace("\\", "/").strip()
     parts = path.split("/")
+    reserved_names = {
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    invalid_windows_component = any(
+        part.endswith((" ", "."))
+        or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+        or part.split(".", 1)[0].casefold() in reserved_names
+        for part in parts
+    )
     if (
         not path
         or path.startswith("/")
         or any(part in {"", ".", ".."} or ":" in part for part in parts)
+        or invalid_windows_component
         or path.casefold().startswith((".git/", ".github/workflows/"))
         or not path.lower().endswith(".py")
     ):
@@ -308,11 +320,16 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         or report.get("schema") != 1
         or report.get("passed") is not True
         or report.get("sandboxed") is not True
+        or type(report.get("tests_exit_code")) is not int
         or report.get("tests_exit_code") != 0
-        or int(report.get("tests_run", 0) or 0) < 1
-        or int(report.get("failures", 0) or 0) != 0
-        or int(report.get("errors", 0) or 0) != 0
-        or int(report.get("checked_files", 0) or 0) != len(entries)
+        or type(report.get("tests_run")) is not int
+        or report["tests_run"] < 1
+        or type(report.get("failures")) is not int
+        or report["failures"] != 0
+        or type(report.get("errors")) is not int
+        or report["errors"] != 0
+        or type(report.get("checked_files")) is not int
+        or report["checked_files"] != len(entries)
     ):
         raise GitHubProposalError("Отчёт не подтверждает успешный запуск unit-тестов в Windows Sandbox.")
 
@@ -338,9 +355,12 @@ def load_tested_proposal_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         if not isinstance(entry, dict):
             raise GitHubProposalError("Запись файла в манифесте имеет неверный формат.")
         path = _safe_bundle_path(str(entry.get("path", "")))
-        if path in seen:
-            raise GitHubProposalError(f"Файл повторяется в манифесте: {path}.")
-        seen.add(path)
+        folded_path = path.casefold()
+        if folded_path in seen:
+            raise GitHubProposalError(
+                f"Файл {path} повторяется или отличается только регистром; Windows считает такие пути одним файлом."
+            )
+        seen.add(folded_path)
         updated = _read_bundle_file(root, "files/" + path, MAX_BUNDLE_FILE_BYTES)
         if len(updated) != entry.get("size") or hashlib.sha256(updated).hexdigest() != entry.get("sha256"):
             raise GitHubProposalError(f"Размер или SHA-256 изменённого файла не совпадает: {path}.")
@@ -503,7 +523,10 @@ def create_draft_pull_request_from_bundle(
     tree_sha = str(tree.get("sha", ""))
     if not tree_sha:
         raise GitHubProposalError("GitHub не создал дерево многофайловых изменений.")
-    branch = "moya-improvement/4.2.8/" + uuid.uuid4().hex[:10]
+    version_label = re.sub(
+        r"[^A-Za-z0-9._-]+", "-", str(bundle["manifest"].get("version", "")).strip()
+    )[:40] or "proposal"
+    branch = "moya-improvement/" + version_label + "/" + uuid.uuid4().hex[:10]
     commit = api(token, "POST", prefix + "/git/commits", {
         "message": str(title).strip()[:120] or "Propose tested multi-file improvement",
         "tree": tree_sha,
