@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from temporary_storage import (
     configure_temporary_storage,
@@ -106,6 +107,12 @@ class TemporaryStorageTests(unittest.TestCase):
             get_temp_directory("../outside")
         with self.assertRaises(ValueError):
             get_temp_directory(r"..\outside")
+
+    def test_reparse_point_temp_root_is_rejected(self):
+        container = self.root / "JunctionContainer"
+        with patch("temporary_storage._is_reparse_point", return_value=True):
+            with self.assertRaisesRegex(OSError, "ссылкой или junction"):
+                configure_temporary_storage({"install_root_dir": str(container)})
 
     def test_unavailable_container_fails_instead_of_using_system_temp(self):
         blocked_file = self.root / "not_a_directory"
