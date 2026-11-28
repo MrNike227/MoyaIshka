@@ -2,8 +2,8 @@
 """Windows updater helpers.
 
 A separate PowerShell process performs the EXE replacement after the GUI exits.
-The helper is written to the system temporary directory, so the running EXE is
-never asked to replace itself while it is locked by Windows.
+The helper is written under the selected installation container's Temp directory,
+so the running EXE is never asked to replace itself while it is locked by Windows.
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from temporary_storage import get_temp_directory
 
 
 WINDOWS_GENERATED_METADATA_FILES = frozenset({"desktop.ini", "thumbs.db", "ehthumbs.db"})
@@ -448,7 +450,9 @@ def launch_windows_replacement(
             stream.write(f"Целевой EXE: {target}\nВременный EXE: {staged}\n")
     except OSError as exc:
         raise OSError(f"Не удалось создать журнал обновления {log}: {exc}") from exc
-    helper_fd, helper_name = tempfile.mkstemp(prefix="ISH_Updater_", suffix=".ps1")
+    helper_fd, helper_name = tempfile.mkstemp(
+        prefix="ISH_Updater_", suffix=".ps1", dir=str(get_temp_directory("installers"))
+    )
     os.close(helper_fd)
     helper = Path(helper_name)
     try:
@@ -1296,7 +1300,9 @@ def launch_windows_directory_replacement(
     log.parent.mkdir(parents=True, exist_ok=True)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.unlink(missing_ok=True)
-    helper_fd, helper_name = tempfile.mkstemp(prefix="ISH_DirUpdater_", suffix=".ps1")
+    helper_fd, helper_name = tempfile.mkstemp(
+        prefix="ISH_DirUpdater_", suffix=".ps1", dir=str(get_temp_directory("installers"))
+    )
     os.close(helper_fd)
     helper = Path(helper_name)
     try:
