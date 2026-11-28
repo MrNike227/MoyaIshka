@@ -163,7 +163,7 @@ class GitHubMultiFileProposalTests(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             report["tests_run"] = "three"
             report_path.write_text(json.dumps(report), encoding="utf-8")
-            with self.assertRaisesRegex(GitHubProposalError, "отчёт"):
+            with self.assertRaisesRegex(GitHubProposalError, "Отчёт"):
                 load_tested_proposal_bundle(bundle)
 
     def test_bundle_rejects_case_insensitive_manifest_path_collisions(self):
