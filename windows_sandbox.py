@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from temporary_storage import get_temp_directory
+
 FEATURE_NAME = "Containers-DisposableClientVM"
 MINIMUM_BUILD = 18362
 SUPPORTED_EDITIONS = {"Professional", "ProfessionalN", "Enterprise", "Education", "ProfessionalEducation", "ProfessionalEducationN"}
@@ -269,7 +271,7 @@ def request_windows_sandbox_install() -> Path:
     if not powershell.is_file():
         raise RuntimeError("Не найден Windows PowerShell.")
 
-    work = Path(tempfile.mkdtemp(prefix="moya_sandbox_setup_"))
+    work = Path(tempfile.mkdtemp(prefix="moya_sandbox_setup_", dir=str(get_temp_directory("sandbox_setup"))))
     result_path = work / "install_result.json"
     result_literal = str(result_path).replace("'", "''")
     # Use an inline encoded command rather than elevating a script from the
